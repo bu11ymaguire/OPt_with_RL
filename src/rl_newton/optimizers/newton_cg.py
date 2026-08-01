@@ -51,17 +51,24 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import torch
 from torch import Tensor
 
-from rl_newton.benchmark.cost_model import CostModel
 from rl_newton.curvature.hvp import HvpGraph
 from rl_newton.curvature.operators import DampedHessianOperator
 from rl_newton.solvers.conjugate_gradient import conjugate_gradient
 from rl_newton.types import CGResult, ControllerAction, StepRecord
 from rl_newton.utils.flatten import ParameterFlattener
+
+if TYPE_CHECKING:
+    # 런타임 import 를 피한다. ``benchmark.__init__`` 이 ``metrics`` 를 불러오고
+    # ``metrics`` 가 다시 이 모듈을 참조하므로, 여기서 실제로 import 하면
+    # ``optimizers`` 를 먼저 불러올 때 순환 import 가 된다.
+    # ``from __future__ import annotations`` 덕분에 타입 힌트는 문자열이므로
+    # 런타임에 필요하지 않다.
+    from rl_newton.benchmark.cost_model import CostModel
 
 __all__ = [
     "Controller",

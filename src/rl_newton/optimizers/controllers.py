@@ -387,6 +387,11 @@ class PlannerChoice:
     damping_after: float = float("nan")
     n_cg_converged: int = 0
     """CG 가 수렴한 후보 수. loss 감소와 분리해서 본다."""
+    chosen_depth: int = 1
+    """채택된 계획의 시퀀스 길이. planner 가 실제로 깊은 계획을 쓰는지 분석용.
+
+    항상 1이면 horizon 을 늘려도 의미가 없다는 직접적 증거다.
+    """
 
 
 class OneStepEfficiencyController:
@@ -515,6 +520,8 @@ class _BeamNode:
     cumulative_cost: float
     loss: float
     snapshot: tuple[object, float]
+    depth: int = 1
+    """이 노드가 대응하는 시퀀스 길이. 어느 depth 의 계획이 채택됐는지 분석용."""
 
 
 class HorizonPlannerController:
@@ -603,6 +610,7 @@ class HorizonPlannerController:
         self._name = name or f"mpc_H{horizon}_{track}({space.name})"
         self._choices: list[PlannerChoice] = []
         self._trajectory: list[tuple[StepContext, ControllerAction]] = []
+        self._last_utility = float("nan")
 
     @property
     def name(self) -> str:
@@ -627,6 +635,17 @@ class HorizonPlannerController:
     @property
     def trajectory(self) -> list[tuple[StepContext, ControllerAction]]:
         return self._trajectory
+
+    @property
+    def last_utility(self) -> float:
+        """직전 ``select`` 에서 채택한 계획의 효용.
+
+        구현 불변조건 검증용이다. **incumbent carry-over 덕분에 같은 상태에서
+        H 를 늘리면 이 값은 감소할 수 없다.** 실현 성능의 단조성은 보장되지
+        않는다 (MPC 는 매 step 재계획하므로). 따라서 테스트는 이 값에 대해서만
+        단조성을 주장한다.
+        """
+        return self._last_utility
 
     def _utility(self, loss_start: float, node: _BeamNode) -> float:
         return horizon_utility(
@@ -666,10 +685,13 @@ class HorizonPlannerController:
             return self._fallback(context, optimizer, root, actions)
 
         beam.sort(key=lambda n: self._utility(loss_start, n), reverse=True)
+        # incumbent: 지금까지 본 모든 depth 중 최선. depth 확장이 실패해도
+        # 이것을 잃지 않는다.
+        incumbent = beam[0]
         beam = beam[: self._beam_width]
 
         # --- depth 1..horizon-1 ---
-        for _ in range(self._horizon - 1):
+        for depth in range(2, self._horizon + 1):
             expanded: list[_BeamNode] = []
             for node in beam:
                 for action in actions:
@@ -683,6 +705,7 @@ class HorizonPlannerController:
                             cumulative_cost=node.cumulative_cost + cost_ge,
                             loss=loss_after,
                             snapshot=optimizer.snapshot(),
+                            depth=depth,
                         )
                     )
             optimizer.restore(root)
@@ -690,21 +713,34 @@ class HorizonPlannerController:
                 break
             # 효용은 시퀀스 끝에서 terminal loss 와 누적 비용으로 계산한다.
             expanded.sort(key=lambda n: self._utility(loss_start, n), reverse=True)
+            # **incumbent carry-over.** depth 를 늘렸다고 이전 depth 의 최선을
+            # 버리면 안 된다. beam search 는 정확한 planner 가 아니므로 깊은
+            # 탐색이 좋은 branch 를 중간에 잘라낼 수 있다. 이 처리가 없으면
+            # H 를 늘렸을 때 오히려 나빠질 수 있고, 게이트 C 의 해석이 불가능해진다.
+            #
+            # 효용은 길이로 정규화되어 있으므로(fixed_budget: gain/cost) 서로 다른
+            # 길이의 시퀀스를 비교하는 것이 타당하다.
+            if self._utility(loss_start, expanded[0]) > self._utility(
+                loss_start, incumbent
+            ):
+                incumbent = expanded[0]
             beam = expanded[: self._beam_width]
 
         optimizer.restore(root)
-        best = max(beam, key=lambda n: self._utility(loss_start, n))
+        best = incumbent
+        self._last_utility = self._utility(loss_start, best)
 
         self._choices.append(
             PlannerChoice(
                 step=context.step,
                 chosen_flat=actions.index(best.first_action),
-                chosen_score=self._utility(loss_start, best),
+                chosen_score=self._last_utility,
                 best_loss=min(n.loss for n in beam),
                 worst_loss=max(n.loss for n in beam),
                 n_finite=len(beam),
                 n_candidates=len(actions),
                 damping_before=context.damping,
+                chosen_depth=best.depth,
             )
         )
         self._trajectory.append((context, best.first_action))
@@ -727,6 +763,7 @@ class HorizonPlannerController:
                 best_loss = loss_after
                 best_action = action
         optimizer.restore(root)  # type: ignore[arg-type]
+        self._last_utility = -math.inf
         self._choices.append(
             PlannerChoice(
                 step=context.step,

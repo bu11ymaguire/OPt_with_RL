@@ -69,6 +69,8 @@ __all__ = [
     "WIDE",
     "ABSOLUTE",
     "PRESETS",
+    "LATTICE_BASE",
+    "LATTICE_STEP_LOG10",
 ]
 
 DampingMode = Literal["relative", "absolute"]
@@ -239,11 +241,9 @@ class ActionSpace:
 # 프리셋
 # ---------------------------------------------------------------------------
 
-_THIRD = 1.0 / 3.0
-
 NARROW = ActionSpace(
     name="narrow",
-    damping_values=(_THIRD, 1.0, 3.0),
+    damping_values=(1.0 / 3.0, 1.0, 3.0),
     cg_budgets=(3, 5, 10, 20),
     step_sizes=(0.25, 0.5, 1.0),
 )
@@ -258,65 +258,75 @@ README 의 ``0.3`` 을 정확한 ``1/3`` 로 바꿨다. ``3 x 0.3 = 0.9`` 라서
 
 WIDE = ActionSpace(
     name="wide",
-    damping_values=(1.0 / 30.0, 0.1, _THIRD, 1.0, 3.0, 10.0, 30.0),
+    damping_values=tuple(3.0**e for e in range(-3, 4)),
     cg_budgets=(3, 5, 10, 20),
     step_sizes=(0.25, 0.5, 1.0),
 )
-"""damping 배수를 넓힌 프리셋. 84 조합, CG solve 28회, sweep 당 266 HVP.
+"""damping 배수를 넓힌 프리셋. ``{1/27, 1/9, 1/3, 1, 3, 9, 27}``.
 
-정확한 역수쌍이므로 로그 공간에서 대칭이고 표류가 없다.
-``x30`` 이면 ``1e-2 -> 1e6`` 에 6 step 이면 도달한다.
+3의 거듭제곱이므로 **역수 대칭이면서 로그 균등**이다. 두 성질이 모두 필요하다.
+
+- 역수 대칭: ``3 x (1/3) = 1`` 이 정확해 damping 표류가 없다
+- 로그 균등: 간격이 모두 ``log10(3)`` 이므로 ``NARROW`` 와 해상도가 같다
+
+초기 구성 ``{1/30, 1/10, 1/3, 1, 3, 10, 30}`` 은 역수 대칭이었으나 로그
+균등이 아니었다. ``1/10 -> 1/3`` 이 3배가 아니라 3.33배여서 간격이
+``0.477, 0.523, 0.477, ...`` 로 흔들렸다. 게이트 B는 세 공간의 해상도를
+통제한 상태에서 **범위 차이만** 재야 하므로 이것을 고정해야 한다.
+
+``x27`` 이면 ``1e-2 -> 1e6`` 에 6 step 이면 도달한다 (``27^6 = 3.9e8``).
 """
 
-def _log_spaced_damping(
-    low_log10: float, high_log10: float, step_log10: float
-) -> tuple[float, ...]:
-    """``[low, high]`` 를 ``step_log10`` 간격으로 채운 damping 값들.
+LATTICE_BASE = 3.0
+"""세 프리셋이 공유하는 damping 격자의 밑.
 
-    상한을 반드시 포함하도록 개수를 올림한다.
-    """
-    n = int(math.floor((high_log10 - low_log10) / step_log10)) + 1
-    values = [10.0 ** (low_log10 + i * step_log10) for i in range(n)]
-    if values[-1] < 10.0**high_log10 * (1.0 - 1e-12):
-        values.append(10.0**high_log10)
-    return tuple(values)
+``NARROW``, ``WIDE``, ``ABSOLUTE`` 의 damping 값이 모두 ``3^e`` 형태다.
+따라서 로그 해상도가 정확히 같고, ``NARROW`` 와 ``WIDE`` 의 배수 집합은
+``ABSOLUTE`` 의 값 집합과 같은 격자 위에 있다. 게이트 B가 **범위 차이만**
+재려면 이 정렬이 필요하다.
+"""
 
-
-ABSOLUTE_STEP_LOG10 = math.log10(3.0)
-"""absolute 프리셋의 로그 간격. ``NARROW`` 의 배수 간격과 동일하다."""
+LATTICE_STEP_LOG10 = math.log10(LATTICE_BASE)
+"""격자의 로그 간격. ``log10(3) ~ 0.477``."""
 
 ABSOLUTE = ActionSpace(
     name="absolute",
-    damping_values=_log_spaced_damping(-8.0, 8.0, ABSOLUTE_STEP_LOG10),
+    damping_values=tuple(LATTICE_BASE**e for e in range(-16, 17)),
     cg_budgets=(3, 5, 10, 20),
     step_sizes=(0.25, 0.5, 1.0),
     damping_mode="absolute",
 )
-"""도달성 제약이 없는 **분석 전용** 프리셋.
+"""도달성 제약이 없는 **분석 전용** 프리셋. ``{3^-16 ... 3^16}``, 33점.
 
 현재 damping 과 무관하게 지정값으로 즉시 이동한다. 학습 정책은 이 모드를
-쓰지 않는다. 프로토콜 게이트 A/B의 기준이다.
+쓰지 않는다. 프로토콜 게이트 A1/B의 기준이다.
 
 해상도를 반드시 맞춘다
 ----------------------
 게이트 B는 ``ABSOLUTE`` 와 ``WIDE`` / ``NARROW`` 의 격차를 "도달성 손실" 로
 해석한다. 그 해석이 성립하려면 **로그 해상도가 같아야** 한다.
 
-초기 구성은 두 번 틀렸다.
+초기 구성은 세 번 틀렸다.
 
 ```text
-1차  {1e-6, 1e-4, ..., 1e6}   7점, 2 decade 간격    -> narrow 대비 4배 거침
-2차  {1e-6, ..., 1e6}        13점, 1 decade 간격    -> narrow 대비 2배 거침
-현재 log10 lambda in [-8, 8], 간격 log10(3)        -> narrow 와 동일
+1차  {1e-6, 1e-4, ..., 1e6}       7점,  2 decade 간격   -> narrow 대비 4배 거침
+2차  {1e-6, ..., 1e6}            13점,  1 decade 간격   -> narrow 대비 2배 거침
+3차  [-8, 8] 을 log10(3) 간격     34점,  마지막 간격만 0.255 -> 상한 강제 삽입 탓
+현재 {3^-16 ... 3^16}            33점,  모든 간격 log10(3) -> narrow 와 동일
 ```
 
 1차 구성에서는 absolute 쪽이 범위가 4배 넓은데도 narrow 보다 **나쁜** 결과를
 냈다. 도달성 이득이 해상도 손실에 잠식된 것이다. 그 상태로는 게이트 B가
 두 효과를 분리하지 못한다.
 
+범위는 ``[2.3e-8, 4.3e7]`` 로 optimizer 기본 경계 ``[1e-8, 1e8]`` 안에 들어간다.
+경계에서 클립되면 서로 다른 action 이 같은 damping 으로 붕괴하므로 피한다.
+
 ``ABSOLUTE`` 와 ``WIDE`` 의 차이가 "배수 전이와 도달성 때문에 잃는 양"이다.
-후보 수가 많아지므로 Stage 2 기본 조건은 ``with_fixed_step_size()`` 로
-``damping x CG budget`` 만 본다.
+후보 수가 많으므로 Stage 2 기본 조건은 ``with_fixed_step_size()`` 로
+``damping x CG budget`` 만 본다. H=3, 5 planning 에는 쓰지 않는다 —
+absolute 는 damping ramp-up 자체를 없애므로 게이트 C의 질문과 무관하고
+비용도 감당할 수 없다.
 """
 
 PRESETS: dict[str, ActionSpace] = {

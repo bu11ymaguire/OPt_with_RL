@@ -407,24 +407,40 @@ def run_headroom(
     report.groups["heuristic"] = summarize_group(heuristic_runs, controller="heuristic")
     report.tuning_runs["heuristic"] = 1
 
-    # --- one-step efficiency (상한이 아니라 비교군) ---
-    log("one_step_efficiency(narrow)")
-    onestep_runs = run_controller(
-        config,
-        lambda _t, _g: OneStepEfficiencyController(narrow),
-        label="one_step_efficiency",
-    )
-    report.groups["one_step_efficiency"] = summarize_group(
-        onestep_runs, controller="one_step_efficiency"
-    )
-    report.tuning_runs["one_step_efficiency"] = 0
+    # --- H=1 (one-step efficiency): 행동 공간 3종. 게이트 A1, B ---
+    #
+    # H=1 에서 planner 의 fixed_budget 효용은 gain/cost 이고, one-step 의
+    # efficiency_score 와 같은 식이다. 그런데 one-step 은 HVP 그래프를
+    # 후보 전체에 공유하므로 약 10배 싸다. absolute (34 damping x 4 budget =
+    # 136 action, sweep 1292 HVP) 를 감당할 수 있는 유일한 경로다.
+    onestep_runs: dict[str, list[RunSummary]] = {}
+    for space_label, space in (
+        ("narrow", narrow),
+        ("wide", wide),
+        ("absolute", absolute),
+    ):
+        label = f"onestep_{space_label}"
+        log(f"{label} (sweep {space.hvp_per_sweep} HVP)")
+        runs = run_controller(
+            config,
+            lambda _t, _g, s=space: OneStepEfficiencyController(s),
+            label=label,
+        )
+        onestep_runs[label] = runs
+        report.groups[label] = summarize_group(runs, controller=label)
+        report.tuning_runs[label] = 0
 
-    # --- Track E planner: 행동 공간 3종 x horizon ---
+    # --- Track E planner: narrow / wide 만. 게이트 A2, C ---
+    #
+    # absolute 는 여기서 제외한다. 현재 damping 과 무관하게 순간 이동하므로
+    # damping ramp-up 과 temporal credit assignment 를 **제거해 버린다.**
+    # 장기 계획의 필요성을 묻는 게이트 C에 넣을 이유가 없고, 비용도
+    # 감당할 수 없다 (실제 step 당 약 1,200회 시뮬레이션).
     planner_runs: dict[str, list[RunSummary]] = {}
-    for space_label, space in (("narrow", narrow), ("wide", wide), ("absolute", absolute)):
+    for space_label, space in (("narrow", narrow), ("wide", wide)):
         for horizon in config.horizons:
             label = f"mpc_H{horizon}_{space_label}"
-            log(f"{label} (sweep {space.hvp_per_sweep} HVP, beam {config.beam_width})")
+            log(f"{label} ({len(space)} actions, beam {config.beam_width})")
             runs = run_controller(
                 config,
                 lambda _t, _g, s=space, h=horizon: HorizonPlannerController(
@@ -446,15 +462,20 @@ def run_headroom(
     max_h = max(config.horizons)
     min_h = min(config.horizons)
     e_pairs = [
-        (static_runs, planner_runs[f"mpc_H{max_h}_absolute"]),
+        # 게이트 A1: 순간적 absolute headroom (도달성 제약 제거, H=1)
+        (static_runs, onestep_runs["onestep_absolute"]),
+        # 게이트 A2: 도달 가능한 sequential headroom
         (static_runs, planner_runs[f"mpc_H{max_h}_narrow"]),
         (static_runs, planner_runs[f"mpc_H{max_h}_wide"]),
-        (planner_runs[f"mpc_H{max_h}_narrow"], planner_runs[f"mpc_H{max_h}_wide"]),
-        (planner_runs[f"mpc_H{max_h}_narrow"], planner_runs[f"mpc_H{max_h}_absolute"]),
+        # 게이트 B: action-space restriction (모두 H=1, 같은 조건)
+        (onestep_runs["onestep_narrow"], onestep_runs["onestep_absolute"]),
+        (onestep_runs["onestep_narrow"], onestep_runs["onestep_wide"]),
+        # 게이트 C: temporal planning value (absolute 제외)
         (planner_runs[f"mpc_H{min_h}_narrow"], planner_runs[f"mpc_H{max_h}_narrow"]),
+        (planner_runs[f"mpc_H{min_h}_wide"], planner_runs[f"mpc_H{max_h}_wide"]),
+        # 참고 baseline
         (static_runs, open_group.runs),
         (static_runs, heuristic_runs),
-        (static_runs, onestep_runs),
     ]
     report.track_e_deltas = [delta(b, t) for b, t in e_pairs]
 
@@ -499,31 +520,58 @@ def run_headroom(
         d = by_e.get((base, treat))
         return d.median_delta if d else float("nan")
 
-    gate_a = e_delta("best_static", f"mpc_H{max_h}_absolute")
+    gate_a1 = e_delta("best_static", "onestep_absolute")
     report.gates.append(
         GateVerdict(
-            name="A",
+            name="A1",
             track="Track E",
-            question="적응 제어에 내재적 여지가 있는가 (absolute planner vs best_static)",
-            statistic=gate_a,
+            question=(
+                "현재 상태에서 좋은 damping 이 존재하는가 "
+                "(instantaneous absolute-action headroom, H=1)"
+            ),
+            statistic=gate_a1,
             unit="nat",
             go_threshold=1.0,
             pivot_threshold=0.3,
             detail=(
-                f"loss {math.exp(gate_a):.2f}배 차이"
-                if math.isfinite(gate_a)
-                else "쌍이 부족하다"
+                (f"loss {math.exp(gate_a1):.2f}배 차이. " if math.isfinite(gate_a1) else "")
+                + "도달성 제약을 완전히 없앤 **순간적** 이득이다. "
+                "전역 상한이나 장기 헤드룸이 아니다."
             ),
         )
     )
 
-    gate_b = e_delta(f"mpc_H{max_h}_narrow", f"mpc_H{max_h}_absolute")
-    wide_gain = e_delta(f"mpc_H{max_h}_narrow", f"mpc_H{max_h}_wide")
+    gate_a2_narrow = e_delta("best_static", f"mpc_H{max_h}_narrow")
+    gate_a2_wide = e_delta("best_static", f"mpc_H{max_h}_wide")
+    gate_a2 = max(
+        v for v in (gate_a2_narrow, gate_a2_wide) if math.isfinite(v)
+    ) if any(math.isfinite(v) for v in (gate_a2_narrow, gate_a2_wide)) else float("nan")
+    report.gates.append(
+        GateVerdict(
+            name="A2",
+            track="Track E",
+            question=(
+                "현실적인 multiplier action 으로 그 이득에 접근할 수 있는가 "
+                f"(narrow/wide H{max_h} vs best_static)"
+            ),
+            statistic=gate_a2,
+            unit="nat",
+            go_threshold=0.7,
+            pivot_threshold=0.2,
+            detail=(
+                f"narrow {gate_a2_narrow:+.3f}, wide {gate_a2_wide:+.3f} nat. "
+                "A1 대비 크게 낮으면 행동 공간 도달성이 병목이다."
+            ),
+        )
+    )
+
+    gate_b = e_delta("onestep_narrow", "onestep_absolute")
+    wide_gain = e_delta("onestep_narrow", "onestep_wide")
     report.gates.append(
         GateVerdict(
             name="B",
             track="Track E",
-            question="행동 공간이 병목인가 (absolute vs narrow, 해상도 정렬됨)",
+            question="행동 공간이 병목인가 (absolute vs narrow, 모두 H=1, 해상도 정렬)",
             statistic=gate_b,
             unit="nat",
             go_threshold=0.5,
@@ -532,24 +580,33 @@ def run_headroom(
         )
     )
 
-    gate_c = e_delta(f"mpc_H{min_h}_narrow", f"mpc_H{max_h}_narrow")
-    horizon_curve = " → ".join(
-        f"H{h}:{report.groups[f'mpc_H{h}_narrow'].median_log_improvement:.3f}"
-        for h in config.horizons
-    )
+    gate_c_narrow = e_delta(f"mpc_H{min_h}_narrow", f"mpc_H{max_h}_narrow")
+    gate_c_wide = e_delta(f"mpc_H{min_h}_wide", f"mpc_H{max_h}_wide")
+    gate_c = max(
+        v for v in (gate_c_narrow, gate_c_wide) if math.isfinite(v)
+    ) if any(math.isfinite(v) for v in (gate_c_narrow, gate_c_wide)) else float("nan")
+    curves = []
+    for label in ("narrow", "wide"):
+        points = " → ".join(
+            f"H{h}:{report.groups[f'mpc_H{h}_{label}'].median_log_improvement:.3f}"
+            for h in config.horizons
+        )
+        curves.append(f"{label} {points}")
     report.gates.append(
         GateVerdict(
             name="C",
             track="Track E",
-            question=f"장기 의사결정이 필요한가 (H{max_h} vs H{min_h})",
+            question=f"그 접근에 여러 step 의 planning 이 필요한가 (H{max_h} vs H{min_h})",
             statistic=gate_c,
             unit="nat",
             go_threshold=0.3,
             pivot_threshold=0.05,
             detail=(
-                f"horizon 곡선 {horizon_curve}. "
-                "재설계 판정이면 contextual bandit / heuristic 으로 충분하며 "
-                "PPO 를 시작하지 않는다 (프로토콜 PPO 착수 조건 1)."
+                f"horizon 곡선: {' | '.join(curves)}. "
+                "beam search 는 정확한 planner 가 아니므로 실현 성능의 단조성은 "
+                "보장되지 않는다. incumbent carry-over 로 planner 효용의 단조성만 "
+                "보장된다. 재설계 판정이면 contextual bandit / heuristic 으로 "
+                "충분하며 PPO 를 시작하지 않는다 (프로토콜 PPO 착수 조건 1)."
             ),
         )
     )

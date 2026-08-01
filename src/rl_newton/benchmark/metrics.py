@@ -25,9 +25,11 @@ import math
 import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from rl_newton.optimizers.newton_cg import OptimizationTrace
+if TYPE_CHECKING:
+    # 타입 힌트 전용. 런타임 import 하면 ``optimizers`` 와 순환이 된다.
+    from rl_newton.optimizers.newton_cg import OptimizationTrace
 
 __all__ = [
     "TargetSpec",
