@@ -63,15 +63,29 @@ class ControllerAction:
     이 타입을 출력한다. 덕분에 비교군 사이에 action space가 동일하다는 점을
     구조적으로 보장한다 (프로토콜 D4).
 
+    damping 의 두 가지 모드
+    -----------------------
+    기본은 **상대 모드**다. ``damping_multiplier`` 가 현재 damping 에 곱해지며,
+    damping 은 step 사이에 누적되는 지속 상태다. 실제 컨트롤러(heuristic, RL)가
+    쓰는 방식이다.
+
+    ``damping_absolute`` 를 지정하면 **절대 모드**가 되어 현재 damping 과
+    무관하게 그 값으로 즉시 이동한다. 이는 분석 전용이다. 도달성 제약이 없는
+    오라클(프로토콜 게이트 A)을 만들 때만 쓴다. 절대 모드 오라클과 상대 모드
+    오라클의 차이가 "배수 전이와 도달성 때문에 잃는 양"이다.
+
     Attributes:
-        damping_multiplier: 현재 damping에 곱할 계수. 예: 0.3 / 1.0 / 3.0
+        damping_multiplier: 현재 damping에 곱할 계수. 절대 모드에서는 무시된다.
         cg_budget: 이번 step에서 허용할 CG 최대 반복 수.
         step_size: Newton 방향에 적용할 step size.
+        damping_absolute: 지정되면 이 값으로 damping 을 직접 설정한다.
+            분석용 오라클 전용이며 학습 정책은 쓰지 않는다.
     """
 
     damping_multiplier: float
     cg_budget: int
     step_size: float
+    damping_absolute: float | None = None
 
     def __post_init__(self) -> None:
         if self.damping_multiplier <= 0.0:
@@ -80,6 +94,15 @@ class ControllerAction:
             raise ValueError(f"cg_budget must be >= 1, got {self.cg_budget}")
         if self.step_size <= 0.0:
             raise ValueError(f"step_size must be > 0, got {self.step_size}")
+        if self.damping_absolute is not None and self.damping_absolute <= 0.0:
+            raise ValueError(
+                f"damping_absolute must be > 0 when given, got {self.damping_absolute}"
+            )
+
+    @property
+    def is_absolute(self) -> bool:
+        """절대 damping 모드인지. ``True`` 면 분석용 오라클 action 이다."""
+        return self.damping_absolute is not None
 
 
 # ---------------------------------------------------------------------------
