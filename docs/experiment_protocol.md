@@ -58,10 +58,21 @@ Newton-CG step (k iters)       = c_grad_graph + k·c_hvp + c_fwd  GE
 (`scripts/measure_cost_model.py`). 산출값은 `configs/cost_model.<model>.yaml` 로
 저장하고 config·commit hash와 함께 기록한다.
 
-- 주 지표: **cost-to-target (GE)** — 하드웨어 독립적, 재현 가능
+- 주 지표: **GE** — 하드웨어 독립적, 재현 가능. 단 GE를 무엇에 쓰는지는
+  트랙에 따라 다르다 (D9 참조)
 - 보조 지표: wall-clock — "실제로도 이득이 남는가" 확인용, 오버헤드 지배 구간임을 명시하여 보고
 - Stage 5에서 최소 하나의 task는 FLOP 지배 규모(수백만 파라미터급 CNN)로 두어
   wall-clock 결론을 별도 검증한다
+
+**주장의 범위를 넘지 않는다.** 아래 실측에서 도출할 수 있는 결론은
+
+> 소규모 GPU workload에서는 kernel-launch overhead와 낮은 utilization 때문에
+> wall-clock이 계산량을 제대로 반영하지 않을 수 있다.
+
+까지다. "wall-clock 기반 optimizer 논문을 신뢰할 수 없다"로 일반화하려면 다른
+GPU, CPU 실험, 여러 모델 크기와 batch size, GPU utilization 또는 profiler 근거가
+필요하다. 현재 근거는 단일 GPU에서의 **calibration finding** 이며 독립적인
+주요 기여로 선언하지 않는다.
 
 #### 실측 결과 (2026-08-01, RTX 3060 Ti, torch 2.13.0+cu130)
 
@@ -98,29 +109,64 @@ B_curv / B_grad ∈ {1/4, 1/2, 1}
 **동일 배치**(`B_c = B_g`)로 두고, 분리 방식(Martens 2010 스타일)은 ablation으로 돌린다.
 CG solve 1회 내부에서 curvature batch를 바꾸지 않는다는 README 원칙은 유지한다.
 
-### D3. 보상은 log-loss 감소 기반
+### D3. 보상은 트랙마다 다르다. per-step ratio 보상은 쓰지 않는다
+
+초판은 단일 보상을 썼다.
 
 ```text
-r_t = (log L_t − log L_{t+1}) − β · (cost_t / GE_ref) − γ · I_failure
+r_t = (log L_t − log L_{t+1}) − β · (cost_t / GE_ref) − γ · I_failure      [폐기]
 ```
 
-에피소드 리턴이 텔레스코핑되어 다음이 된다.
+**Stage 2 파일럿에서 이 설계의 결함이 드러났다.** 같은 형태의 목적
+(`Δlog L / cost`)으로 매 step 최선을 고르는 컨트롤러가 고정 설정보다
+cost-to-target에서 **나빴다** (비율 0.967x). 국소 효율 최대화가 총비용 최소화와
+다른 문제이기 때문이다.
 
 ```text
-Return = log(L_0 / L_T) − β · (총 GE 비용) − γ · (총 실패 횟수)
+행동 A:  3 GE 로 loss 10% 감소     → 순간 효율 높음
+행동 B: 20 GE 로 loss 60% 감소     → 목표까지 총비용은 더 적을 수 있음
 ```
 
-- 스케일 프리. loss의 절대 크기와 무관하다.
-- 리턴이 곧 "총 loss 감소 자릿수 − 비용"이므로, 정책이 최적화하는 목적과
-  보고 지표(cost-to-target)가 같은 방향을 가리킨다.
-- `β` 가 "연산 1 GE와 교환할 loss 감소량(nat)"이라는 해석을 갖는다.
+per-step ratio 보상을 쓰면 정책이 `k=3` 같은 싸고 작은 행동만 반복할 유인이
+생긴다. 그래서 보상을 트랙별로 분리한다 (D9).
 
-초기값: `β = 0.02`, `γ = 1.0`, per-step reward clip `[-5, 5]`.
-README의 상대 감소량 형태 `clip((L_t − L_{t+1}) / (|L_t| + ε), −1, 1)` 는 ablation으로 남긴다.
+#### Track E 보상 (고정 GE 예산)
 
-`log L` 이 정의되지 않는 경우(loss ≤ 0)는 quadratic task에서 발생할 수 있으므로,
-task별로 loss에 하한 `L_min`을 두거나 `log(L − L*)` 형태(최적값 기지 시)를 쓴다.
-결정: **quadratic 계열은 `L* = 0` 으로 구성하고 `log(max(L, 1e-30))` 를 쓴다.**
+```text
+r_t = (log L_t − log L_{t+1}) − γ · I_failure
+에피소드 종료: 누적 GE ≥ B
+```
+
+리턴이 텔레스코핑되어 `log(L_0 / L_B) − γ·(총 실패)` 가 된다. **트랙 E의 목적과
+정확히 일치한다.** 행동별 비용 차이는 보상을 나누는 대신 **남은 예산에서
+차감**하는 방식으로 반영한다. 비용이 큰 행동은 예산을 더 많이 먹으므로 자연히
+에피소드가 짧아진다.
+
+#### Track T 보상 (목표 도달 총비용)
+
+```text
+r_t = −c_t / GE_ref − γ · I_failure
+에피소드 종료: L ≤ τ (도달) 또는 누적 GE ≥ B (절단)
+```
+
+stochastic shortest-path 형태다. 리턴이 `−(총 GE)/GE_ref` 가 되어 트랙 T의
+목적과 정확히 일치한다. 미도달 절단에 큰 임의 벌점을 주지 않고 D6의 절단 규칙을
+유지한다. 학습이 불안정하면 potential-based shaping을 더한다.
+
+```text
+r'_t = r_t + γ_disc · Φ(s_{t+1}) − Φ(s_t),   Φ(s) = −max(0, log L − log τ)
+```
+
+potential-based shaping은 최적 정책을 바꾸지 않는다는 것이 알려져 있으므로
+목적을 훼손하지 않는다.
+
+#### 공통 사항
+
+- `γ = 1.0` (실패 패널티), per-step reward clip `[-5, 5]`
+- `log L` 이 정의되지 않는 경우를 막기 위해 quadratic 계열은 `L* = 0` 으로
+  구성하고 `log(max(L, 1e-30))` 를 쓴다
+- indefinite quadratic은 아래로 유계가 아니므로 두 트랙 모두에서 제외한다
+- README의 상대 감소량 형태와 폐기된 ratio 형태는 ablation으로 보존한다
 
 ### D4. baseline에 open-loop schedule과 best-of-36 static을 추가
 
@@ -150,37 +196,84 @@ best_static · open_loop · rl_newton_cg
 | Optimizer | 튜닝/학습 비용 (GE) | 튜닝 run 수 | Cost-to-target (GE) | Wall-clock (s) | Final Acc | Failure Rate |
 |---|---:|---:|---:|---:|---:|---:|
 
-탐색 예산 규칙: 모든 baseline에 **동일한 36회 튜닝 run**을 부여한다.
-- `fixed`: damping × step_size × cg_budget grid에서 36개
-- `heuristic`: 규칙 임계값 랜덤 서치 36회
-- `adamw` / `sgd`: learning rate + weight decay 랜덤 서치 36회
-- `open_loop`: 스케줄 파라미터 랜덤 서치 36회
-- `rl`: PPO 하이퍼파라미터 탐색 횟수를 기록하고 meta-training GE를 합산
+**탐색 예산은 모든 컨트롤러에 동일해야 한다.** `best_static` 을 200개 설정에서
+찾고 `open_loop` 은 50개만 평가하면 static 쪽에 유리하다. 반대도 마찬가지다.
+파일럿에서 이 문제가 실제로 발생했다. static 12개 조합 전수 탐색 대 open_loop
+랜덤 서치 12회였는데, open_loop 우승자가 static과 **완전히 동일**한 결과를 냈다
+(비율 1.000x, CI 1.000–1.000). 12회로는 스케줄 공간을 사실상 탐색하지 못한다.
 
-선택은 **meta-train task에서만** 하고, 선택된 설정을 meta-test에 그대로 적용한다.
+```text
+탐색 예산 N_tune = 각 컨트롤러가 평가받는 설정 후보 수. 모두 같게 맞춘다.
+  best_static   행동 공간 전수 (부족하면 N_tune 까지 반복 없이 확장)
+  open_loop     스케줄 파라미터 랜덤 서치 N_tune 회
+  heuristic     rho_low / rho_high / 배수 랜덤 서치 N_tune 회
+  adamw / sgd   learning rate + weight decay 랜덤 서치 N_tune 회
+  rl            PPO 하이퍼파라미터 탐색 횟수를 기록하고 meta-training GE 합산
+```
 
-### D6. 목표치 사전 등록과 절단 규칙
+행동 공간이 `N_tune` 보다 작으면 `N_tune` 을 행동 공간 크기로 내리거나, static에
+초기 damping 축을 추가해 후보를 늘린다. **어느 쪽이든 실제 사용한 횟수를
+결과 표에 기록한다.**
 
-`time-to-target` / `cost-to-target` 은 target을 먼저 정의해야 의미가 있다.
+**선택은 dev task/seed 에서만** 하고, 선택된 설정을 held-out task/seed 에 그대로
+적용한다 (D6의 pilot / confirmatory 구분과 동일한 분할을 쓴다).
 
-**사전 등록 target** (실험 전 확정, 변경 시 §9에 기록):
+planner의 분석 비용도 별도 열로 기록한다. one-step efficiency controller는 step당
+행동 공간 전수 sweep, H-step MPC planner는 그 위에 beam 확장 비용이 든다. 이
+비용은 배포 비용(deployment GE)과 합치지 않지만 반드시 보고한다.
 
-| Task | 주 target | 보조 target |
+### D6. 목표치 다단계 사전 등록, pilot / confirmatory 분리, 절단 규칙
+
+#### target은 난이도별로 여러 개 둔다
+
+target 하나만 잡으면 그 값 선정에 따라 결론이 흔들린다. Track T는 난이도
+3단계로 본다.
+
+```text
+easy    L / L_0 ≤ 1e-2
+medium  L / L_0 ≤ 1e-4
+hard    L / L_0 ≤ 1e-6
+```
+
+Rosenbrock은 `L* = 0` 이므로 절대값으로 `{1e-1, 1e-2, 1e-4}` 를 쓴다.
+신경망 task는 Stage 3에서 확정한다.
+
+#### pilot과 confirmatory를 분리한다
+
+예산과 target을 결과를 본 뒤에 고치면 사후적으로 유리한 프로토콜을 고른 것이
+된다. 그래서 두 국면으로 나눈다.
+
+| 국면 | task / seed | 용도 |
 |---|---|---|
-| SPD quadratic | `L / L_0 ≤ 1e-6` | `1e-3`, `1e-9` |
-| ill-conditioned quadratic | `L / L_0 ≤ 1e-4` | `1e-2` |
-| Rosenbrock (2D) | `L ≤ 1e-4` | `1e-2` |
-| MNIST MLP | train loss ≤ 0.10 | val acc ≥ 97.0% |
-| Fashion-MNIST MLP | train loss ≤ 0.30 | val acc ≥ 87.0% |
-| CIFAR-10 small CNN | train loss ≤ 1.00 | val acc ≥ 60.0% |
+| **pilot** | dev seed `{0, 1, 2}`, 초기 condition number 집합 | GE 예산과 target 난이도 **선정**. 프로토콜 결정에만 사용 |
+| **confirmatory** | held-out seed `{100..109}`, 새 condition number와 초기점 | 최종 결론. 선정된 예산/target을 그대로 적용 |
 
-**절단(censoring) 규칙.** 예산 내 미도달 run은 삭제하거나 최댓값으로 대입하지 않는다.
+pilot 절차:
+
+1. 여러 GE 예산을 시험한다
+2. 방법 대부분이 너무 쉽게 성공하지도, 전부 실패하지도 않는 예산을 고른다
+   (도달률이 20~80% 구간에 오도록)
+3. easy / medium / hard target을 pilot 분포를 보고 확정한다
+4. 예산과 target을 §9 변경 이력에 **고정**하고 이후 바꾸지 않는다
+5. confirmatory에서 held-out seed로 재평가한다
+
+**2026-08-01 시점의 파일럿 결과는 예산 300 GE, seed {0,1}에서 도달률 67% 였다.
+이 결과는 pilot으로만 분류하며 어떤 결론에도 쓰지 않는다.**
+
+#### 절단(censoring) 규칙
+
+예산 내 미도달 run은 삭제하거나 최댓값으로 대입하지 않는다.
 
 - `success_rate` = 도달한 run 비율 (별도 보고)
 - `cost_to_target` = **도달한 run만의 중앙값** (평균이 아님)
-- 두 지표를 항상 함께 보고한다. 하나만 보면 왜곡된다.
+- `restricted_mean` = 미도달을 예산값으로 절단한 제한 평균 (보조 지표)
+- 위 세 지표를 항상 함께 보고한다. 하나만 보면 왜곡된다.
 - 실패 run도 `results/raw/` 에 보존하고 실패 원인 태그(`nan`, `budget_exhausted`,
-  `divergence`, `oom`)를 기록한다.
+  `divergence`, `cg_breakdown`, `oom`)를 기록한다.
+
+파일럿에서 이 규칙이 실제로 작동했다. heuristic은 cost-to-target 중앙값이
+best_static보다 68% 나빴지만 도달률은 더 높았다(75% vs 67%). 중앙값만 봤다면
+"느리지만 더 자주 도달한다"는 다른 성격을 놓쳤을 것이다.
 
 ### D7. Paired design과 통계 프로토콜
 
@@ -201,6 +294,62 @@ best_static · open_loop · rl_newton_cg
 - seed 수: 최소 5, 주장 근거가 되는 비교는 10
 - 다중 비교: 주 가설(RL vs fixed, RL vs heuristic, RL vs open_loop) 3개에 대해
   Holm 보정
+
+### D9. 실험을 두 트랙으로 분리한다
+
+Stage 2 파일럿에서 드러난 것은 지표 불일치가 아니라 **서로 다른 두 최적화 문제를
+한 실험에 섞고 있었다**는 사실이다. 분리한다.
+
+#### Track E — 고정 예산에서 얼마나 개선하는가
+
+> 동일한 GE 예산 `B` 를 받았을 때 어떤 컨트롤러가 loss를 가장 많이 낮추는가?
+
+```text
+목적:  max  log(L_0 / L_B)      s.t.  Σ c_t ≤ B
+지표:  J_E = log L_0 − log L_B  (B가 모두 같으므로 사실상 최종 loss 비교)
+```
+
+#### Track T — 목표까지 얼마나 싸게 도달하는가
+
+> 사전 지정한 target loss `τ` 에 도달하는 데 필요한 총 GE는 얼마인가?
+
+```text
+목적:  min  Σ_{t≤T_τ} c_t       s.t.  L ≤ τ
+지표:  J_T = GE-to-target,  도달률,  제한 예산 내 restricted mean,  절단 run 수
+```
+
+#### 두 트랙은 같은 답을 주지 않는다
+
+파일럿이 이미 보여줬다. 국소 효율 컨트롤러는 고정 예산에서는 쓸 만하지만
+cost-to-target에서는 고정 설정보다 나빴다. 다음도 충분히 가능하다.
+
+```text
+고정 예산에서는 adaptive 가 좋다
+하지만 특정 target 까지는 best_static 이 더 싸다
+```
+
+**이 불일치 자체가 연구 결과다.** 그래서 둘 다 보고한다.
+
+#### 헤드룸도 트랙별로 정의한다
+
+```text
+H_E = J_E(planner) − J_E(best_static)              [nat, 클수록 여지 큼]
+H_T = C_τ(best_static) / C_τ(planner)              [배수, 클수록 여지 큼]
+```
+
+하나의 "헤드룸"으로 묶으면 같은 혼동이 재발한다.
+
+#### 상한이라고 부르지 않는다
+
+이름과 해석을 정정한다.
+
+| 초판 이름 | 정정된 이름 | 이유 |
+|---|---|---|
+| `greedy_oracle` | **one-step efficiency controller** | 전역 상한이 아니다. 매 step 즉시 효율이 가장 좋은 후보를 고르는 컨트롤러일 뿐이며, 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
+| `lookahead_oracle` | **H-step MPC planner** | 유한 horizon과 beam 폭에 제한된 근사다. 전역 최적해가 아니다 |
+
+문서와 표에서 `oracle` 이라는 단어는 도달성 제약이 없는 `absolute` 행동 공간을
+쓰는 planner에 한해서만, 그리고 "one-step" / "H-step" 을 함께 붙여서 쓴다.
 
 ### D8. Truncated horizon의 근시안 편향 대응
 
@@ -312,39 +461,124 @@ action space의 damping 배수 `{0.3, 1.0, 3.0}` 만으로는 극단적 ill-cond
 구간에 도달하는 데 여러 step이 걸린다는 뜻이다. 이 점이 헤드룸의 크기에
 영향을 줄 수 있으므로, 초기 damping 설정과 배수 범위를 Stage 2에서 함께 본다.
 
-### Stage 2 — 헤드룸 측정  (2~3일)  ← 이 프로젝트의 분기점
+### Stage 2 — 헤드룸 측정  ← 이 프로젝트의 분기점
 
-**목적.** RL 스택을 만들기 전에, 이 문제에 적응 제어의 여지가 얼마나 있는지 측정한다.
+**목적.** RL 스택을 만들기 전에 적응 제어의 여지가 얼마나 있는지 측정한다.
 README 순서대로 가면 RL이 돌아가기까지 2~3주가 걸리고 그때서야 "애초에 이득이
-있었나"를 알게 된다. 이 질문은 여기서 며칠이면 답할 수 있다.
+있었나"를 알게 된다.
 
-대상: SPD quadratic, ill-conditioned quadratic, indefinite quadratic, Rosenbrock, MNIST MLP.
+**초판 설계는 파일럿에서 실패했다.** 단일 `greedy_oracle` 을 상한으로 쓰려 했으나,
+그것의 목적(`Δlog L / cost`)과 평가 지표(cost-to-target)가 다른 문제여서 오라클이
+고정 설정보다 나쁜 결과를 냈다. D9에 따라 두 트랙으로 분리하고 게이트를 재정의한다.
 
-세 가지를 같은 paired 조건에서 비교한다.
+#### 비교군
 
 ```text
-A. best_static          36개 action 조합 각각 고정 → 전부 실행 → 최고 선택
-B. best_open_loop       progress 만 보는 스케줄, 랜덤 서치 36회
-C. greedy_oracle        매 step 36개 action을 모두 시도해 실제 결과를 보고
-                        (Δlog L / cost_GE) 최대인 것을 선택 후 진행
+best_static           행동 공간 전수 고정 → 최고 선택            (N_tune 회)
+best_open_loop        progress 만 보는 스케줄, 랜덤 서치         (N_tune 회)
+heuristic             trust ratio 규칙                          (N_tune 회)
+one_step_efficiency   매 step 전수 sweep, 즉시 효율 최대 선택
+mpc_H1 / H3 / H5      H-step beam search, terminal objective 기준
 ```
 
-C는 매 step 36배 비용이 들지만 작은 task에서는 수 분이다. C가 A를 얼마나 앞서는지가
-**어떤 컨트롤러도 실질적으로 넘기 어려운 상한의 대리 지표**다.
-(엄밀한 상한은 아니다. greedy는 장기적으로 최적이 아니므로 C를 넘는 정책도 원리적으로
-가능하다. 그러나 C가 A와 비슷하다면 상태 기반 제어의 여지가 작다는 강한 신호다.)
+`one_step_efficiency` 는 **상한이 아니다** (D9). `mpc_*` 도 유한 horizon 근사다.
+행동 공간은 `narrow` / `wide` / `absolute` 세 가지를 쓰며, 세 공간의 **로그
+해상도를 맞춘다**. `absolute` 가 범위만 넓고 해상도가 거칠면 게이트 B가 도달성
+손실과 해상도 손실을 섞는다 (파일럿에서 실제로 발생).
 
-**게이트 (go / no-go).** 지표는 `cost_to_target(A) / cost_to_target(C)` 의 기하평균.
+기본 조건은 **step_size 고정 1.0** 이다. damping이 큰 구간에서 update가
+`-(α/λ)g` 로 근사되어 `(λ, α)` 와 `(10λ, 10α)` 가 aliasing되므로, 먼저
+`damping × CG budget` 만 분리해 본다. 헤드룸이 확인되면 step_size 축을 추가한다.
 
-| 헤드룸 | 판단 |
+#### 게이트
+
+**Gate A — Fixed-budget adaptive headroom (Track E)**
+
+동일 GE 예산에서 `absolute` MPC planner가 `best_static` 대비 terminal loss를
+얼마나 더 낮추는가.
+
+```text
+H_E = J_E(mpc_absolute) − J_E(best_static)      [nat]
+```
+
+| H_E | 판단 |
 |---|---|
-| ≥ 1.30 | Stage 3 진행. 주 지표를 cost-to-target으로 유지 |
-| 1.10 ~ 1.30 | Stage 3 진행하되 주 주장을 **실패율/강건성**으로 이동 (README §17 기준 2) |
-| < 1.10 | **중단하고 재설계.** task 분포를 더 어렵게(조건수 범위 확대, indefinite 비중 증가) 하거나 action space를 확장 |
+| ≥ 1.0 nat (약 2.7배 loss) | GO |
+| 0.3 ~ 1.0 nat | 조건부. 주 주장을 강건성으로 이동 |
+| < 0.3 nat | 적응 제어 연구를 중단하거나 음성 결과로 정리 |
 
-**부수 산출물.** C의 trajectory가 그대로 behavior cloning 데이터셋이 된다.
-README 위험 2번(PPO 불안정)의 대응책으로 적힌 warm start를 여기서 공짜로 얻는다.
-`results/raw/oracle/` 에 `(state, action)` 쌍으로 저장한다.
+**Gate B — Action-space restriction**
+
+```text
+absolute  vs  wide multiplier  vs  narrow multiplier
+```
+
+세 공간의 로그 해상도와 나머지 축을 맞춘 상태에서 비교한다. 격차가 크면
+`narrow` 를 고쳐야 한다. 격차가 작으면 원안 행동 공간이 충분하다.
+
+**Gate C — Temporal planning value**
+
+같은 terminal objective, 같은 행동 공간에서 `H = 1, 3, 5` 를 비교한다.
+
+| 결과 | 판단 |
+|---|---|
+| H 증가에 따라 단조 개선, H5/H1 ≥ 1.15 | 순차적 의사결정에 가치가 있다. RL 진행 근거 |
+| 개선이 미미 | contextual bandit이나 heuristic이 적절하다. **PPO를 시작하지 않는다** |
+
+**이 게이트가 Stage 4 착수 여부를 직접 결정한다.** 가장 비싼 단계를 시작하기
+전에 그것이 필요한지 먼저 확인한다.
+
+**Gate D — Cost-to-target headroom (Track T)**
+
+target 난이도별로 `best_static` 과 MPC planner의 GE-to-target, 도달률,
+restricted mean을 비교한다.
+
+```text
+H_T(τ) = C_τ(best_static) / C_τ(mpc)      [배수]
+```
+
+Gate A와 결론이 다를 수 있다. **그 불일치 자체를 결과로 보고한다.**
+
+**Gate E — Micro-neural transfer (Stage 2.5)**
+
+가장 큰 미지 위험은 synthetic → 신경망 전이다. PPO 전에 확인한다.
+
+- 아주 작은 2-layer MLP, MNIST 일부 샘플
+- 짧은 horizon, 고정 배치와 확률적 배치 각각
+- absolute / multiplier planner 모두
+
+| 결과 | 판단 |
+|---|---|
+| synthetic 헤드룸 큼, neural 거의 없음 | PPO 중단. 연구 질문을 synthetic 수치해석으로 축소 |
+| absolute 헤드룸 큼, multiplier 만 낮음 | 행동 공간 재설계 |
+| H1 이 이미 충분히 좋음 | contextual bandit 우선 |
+| look-ahead 만 좋음 | sequential RL 진행 근거 확보 |
+
+**Gate F — Learnability (Stage 4 이후)**
+
+```text
+Recovery = (J_learned − J_static) / (J_reachable_planner − J_static)
+```
+
+분모는 `absolute` 가 아니라 **정책과 같은 행동 공간을 쓰는 reachable planner**다.
+absolute를 분모에 두면 정책이 구조적으로 도달할 수 없는 부분까지 요구하게 된다.
+
+#### 부수 산출물
+
+MPC planner의 trajectory가 behavior cloning 데이터셋이 된다.
+README 위험 2번(PPO 불안정)의 대응책으로 적힌 warm start를 여기서 얻는다.
+`results/raw/planner/` 에 `(state, action)` 쌍으로 저장한다.
+
+#### 재현성 확인 항목
+
+파일럿에서 나온 "높은 damping은 CG를 쉽게 만들지만 최적화를 망친다"는 결과는
+단일 quadratic 조건에서 관측됐다. 기여로 올리기 전에 다음에서 재현되는지 본다.
+
+- 여러 condition number
+- 여러 eigenvalue 분포 (log-spaced 외에 clustered, two-cluster)
+- Rosenbrock
+- 작은 MLP
+- step_size 고정과 line search 각각
 
 ### Stage 3 — baseline 정면 비교  (3~4일)
 
@@ -494,3 +728,23 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-01 | 비용 모델 실측을 Stage 1 → Stage 0 으로 이동 | Stage 0에서 이미 완료했고, 이후 모든 지표가 여기에 의존 |
 | 2026-08-01 | Stage 1 완료. negative curvature 판정을 상대 기준으로 변경 | 절대 임계값은 수렴 구간에서 오탐. RL 상태 특징을 오염시킬 수 있었다 |
 | 2026-08-01 | indefinite quadratic을 진단 전용으로 명시 | 아래로 유계가 아니므로 cost-to-target 과 log 보상이 정의되지 않는다 |
+| 2026-08-01 | `max_damping` 1e3 → 1e8, damping을 로그공간 지속 상태로 | Stage 1에서 κ=1e6이 damping ~1e6을 요구함이 확인됨. 이전 값은 그 자체로 병목 |
+| 2026-08-01 | damping 배수를 정확한 역수쌍으로 (`0.3` → `1/3`) | `3 × 0.3 = 0.9` 라 배수를 번갈아 고르면 damping이 step당 10% 아래로 표류. `1/3` 이면 `3 × (1/3) = 1` 로 표류 없음 |
+| 2026-08-01 | **D9 신설: 실험을 Track E / Track T로 분리** | 파일럿에서 `Δlog L / cost` 목적의 컨트롤러가 cost-to-target에서 best_static보다 나빴다(0.967x). 국소 효율 최대화와 총비용 최소화는 다른 문제다 |
+| 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
+| 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
+| 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |
+| 2026-08-01 | D5에 탐색 예산 동일화 규칙 강화 | 파일럿에서 open_loop 랜덤 서치 12회가 static 전수 12개와 동일한 결과를 냈다. 스케줄 공간을 사실상 탐색하지 못했다 |
+| 2026-08-01 | Stage 2 게이트를 A~F로 재정의, Stage 2.5(micro-neural)를 Gate E로 편입 | 단일 헤드룸 게이트로는 도달성·해상도·시간축 가치가 구분되지 않는다 |
+| 2026-08-01 | D1의 wall-clock 주장 범위를 명시적으로 축소 | 단일 GPU 관측을 "wall-clock 논문 불신"으로 일반화할 수 없다. calibration finding으로 위치를 낮춤 |
+
+### PPO 착수 조건 (명시)
+
+다음이 모두 성립할 때만 Stage 4를 시작한다.
+
+1. Gate C에서 `H` 증가에 따른 단조 개선이 확인된다 (순차 의사결정의 가치)
+2. Gate E에서 micro-neural 헤드룸이 남아 있다 (synthetic 전용 현상이 아니다)
+3. Gate B로 행동 공간이 병목이 아님을 확인했거나, 병목을 고친 공간을 확정했다
+
+하나라도 실패하면 contextual bandit 또는 supervised policy imitation으로 축소하고,
+그 판단 근거를 결과로 보고한다.

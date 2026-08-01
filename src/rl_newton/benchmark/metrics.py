@@ -34,9 +34,11 @@ __all__ = [
     "RunSummary",
     "GroupSummary",
     "PairedComparison",
+    "PairedDelta",
     "summarize_run",
     "summarize_group",
     "compare_paired",
+    "compare_paired_delta",
     "recovery_ratio",
     "geometric_mean",
     "bootstrap_ci",
@@ -441,6 +443,139 @@ def compare_paired(
         ratio_geometric_mean=geometric_mean(ratios),
         ratio_ci=bootstrap_ci(ratios, n_boot=n_boot, seed=seed),
         p_value=wilcoxon_signed_rank_p(diffs),
+        baseline_median=_median(base_values),
+        treatment_median=_median(treat_values),
+    )
+
+
+@dataclass(slots=True)
+class PairedDelta:
+    """높을수록 좋은 지표의 쌍별 **차이** 비교.
+
+    Track E(고정 GE 예산)의 헤드룸은 비율이 아니라 차이로 정의된다
+    (프로토콜 D9).
+
+    ```text
+    H_E = J_E(planner) - J_E(best_static)      [nat]
+    ```
+
+    비율을 쓰면 ``J_E`` 가 0에 가까울 때 폭발하고, nat 단위의 해석
+    ("몇 배 loss 차이")도 잃는다.
+    """
+
+    baseline: str
+    treatment: str
+    metric: str
+    n_pairs: int
+    n_valid: int
+    median_delta: float
+    """중앙값 차이. 양수면 treatment 가 좋다."""
+    delta_ci: tuple[float, float]
+    p_value: float
+    baseline_median: float
+    treatment_median: float
+
+    @property
+    def loss_ratio_equivalent(self) -> float:
+        """``exp(median_delta)``. "loss 몇 배 차이" 로 읽을 수 있다."""
+        if not math.isfinite(self.median_delta):
+            return float("nan")
+        return math.exp(self.median_delta)
+
+    def describe(self) -> str:
+        ci = self.delta_ci
+        p = f"{self.p_value:.4f}" if math.isfinite(self.p_value) else "n/a"
+        return (
+            f"{self.treatment} vs {self.baseline} [{self.metric}]: "
+            f"차이 {self.median_delta:+.3f} nat "
+            f"(95% CI {ci[0]:+.3f}~{ci[1]:+.3f}), "
+            f"loss {self.loss_ratio_equivalent:.2f}배, p={p}, "
+            f"쌍 {self.n_valid}/{self.n_pairs}"
+        )
+
+
+def _bootstrap_median_ci(
+    values: Sequence[float],
+    *,
+    n_boot: int = 10000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> tuple[float, float]:
+    """차이 표본의 중앙값 부트스트랩 CI. 음수를 허용한다."""
+    import random
+
+    clean = [v for v in values if math.isfinite(v)]
+    if len(clean) < 2:
+        return float("nan"), float("nan")
+    rng = random.Random(seed)
+    n = len(clean)
+    samples = [
+        statistics.median([clean[rng.randrange(n)] for _ in range(n)])
+        for _ in range(n_boot)
+    ]
+    samples.sort()
+    alpha = (1.0 - confidence) / 2.0
+    lo = samples[int(alpha * len(samples))]
+    hi = samples[min(len(samples) - 1, int((1.0 - alpha) * len(samples)))]
+    return lo, hi
+
+
+def compare_paired_delta(
+    baseline: Sequence[RunSummary],
+    treatment: Sequence[RunSummary],
+    *,
+    metric: str = "log_improvement",
+    n_boot: int = 10000,
+    seed: int = 0,
+) -> PairedDelta:
+    """같은 ``(task_instance_id, seed)`` 쌍에서 **차이**를 비교한다.
+
+    Track E 용이다. ``metric`` 은 높을수록 좋은 지표여야 한다.
+
+    Args:
+        baseline: 기준 컨트롤러의 run 들.
+        treatment: 비교 대상.
+        metric: ``log_improvement`` | ``log_improvement_per_ge``.
+        n_boot: 부트스트랩 재표본 횟수.
+        seed: 부트스트랩 시드.
+
+    Raises:
+        ValueError: 알 수 없는 metric.
+    """
+    if metric not in ("log_improvement", "log_improvement_per_ge"):
+        raise ValueError(f"unknown metric: {metric!r}")
+
+    def key(r: RunSummary) -> tuple[str, int]:
+        return r.task_instance_id, r.seed
+
+    def value(r: RunSummary) -> float:
+        return getattr(r, metric)
+
+    base_map = {key(r): r for r in baseline}
+    treat_map = {key(r): r for r in treatment}
+    shared = sorted(set(base_map) & set(treat_map))
+
+    deltas: list[float] = []
+    base_values: list[float] = []
+    treat_values: list[float] = []
+    for k in shared:
+        b = value(base_map[k])
+        t = value(treat_map[k])
+        if not (math.isfinite(b) and math.isfinite(t)):
+            continue
+        deltas.append(t - b)
+        base_values.append(b)
+        treat_values.append(t)
+
+    return PairedDelta(
+        baseline=baseline[0].controller if baseline else "?",
+        treatment=treatment[0].controller if treatment else "?",
+        metric=metric,
+        n_pairs=len(shared),
+        n_valid=len(deltas),
+        median_delta=_median(deltas),
+        delta_ci=_bootstrap_median_ci(deltas, n_boot=n_boot, seed=seed),
+        p_value=wilcoxon_signed_rank_p(deltas),
         baseline_median=_median(base_values),
         treatment_median=_median(treat_values),
     )

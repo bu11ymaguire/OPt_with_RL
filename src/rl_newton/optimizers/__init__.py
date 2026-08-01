@@ -36,13 +36,15 @@ from rl_newton.optimizers.action_space import (
 )
 from rl_newton.optimizers.controllers import (
     FixedController,
-    GreedyOracleController,
     HeuristicController,
-    LookaheadOracleController,
+    HorizonPlannerController,
+    OneStepEfficiencyController,
     OpenLoopController,
-    OracleChoice,
+    PlannerChoice,
+    PlannerTrack,
     ScheduleSegment,
     efficiency_score,
+    horizon_utility,
     make_open_loop_controller,
 )
 from rl_newton.optimizers.newton_cg import (
@@ -71,10 +73,12 @@ __all__ = [
     "FixedController",
     "OpenLoopController",
     "HeuristicController",
-    "GreedyOracleController",
-    "LookaheadOracleController",
-    "OracleChoice",
+    "OneStepEfficiencyController",
+    "HorizonPlannerController",
+    "PlannerTrack",
+    "PlannerChoice",
     "ScheduleSegment",
     "efficiency_score",
+    "horizon_utility",
     "make_open_loop_controller",
 ]

@@ -48,6 +48,18 @@ MNIST MLP 규모(약 10만 파라미터)에서는 GPU 시간이 FLOP이 아니�
 """
 
 from rl_newton.benchmark.cost_model import CostModel, measure_cost_model
+from rl_newton.benchmark.metrics import (
+    GroupSummary,
+    PairedComparison,
+    PairedDelta,
+    RunSummary,
+    TargetSpec,
+    compare_paired,
+    compare_paired_delta,
+    recovery_ratio,
+    summarize_group,
+    summarize_run,
+)
 from rl_newton.benchmark.paired import (
     PairedTaskFactory,
     make_task,
@@ -62,4 +74,14 @@ __all__ = [
     "make_task",
     "quadratic_meta_test_specs",
     "quadratic_meta_train_specs",
+    "TargetSpec",
+    "RunSummary",
+    "GroupSummary",
+    "PairedComparison",
+    "PairedDelta",
+    "summarize_run",
+    "summarize_group",
+    "compare_paired",
+    "compare_paired_delta",
+    "recovery_ratio",
 ]

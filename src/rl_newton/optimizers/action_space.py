@@ -268,30 +268,55 @@ WIDE = ActionSpace(
 ``x30`` 이면 ``1e-2 -> 1e6`` 에 6 step 이면 도달한다.
 """
 
+def _log_spaced_damping(
+    low_log10: float, high_log10: float, step_log10: float
+) -> tuple[float, ...]:
+    """``[low, high]`` 를 ``step_log10`` 간격으로 채운 damping 값들.
+
+    상한을 반드시 포함하도록 개수를 올림한다.
+    """
+    n = int(math.floor((high_log10 - low_log10) / step_log10)) + 1
+    values = [10.0 ** (low_log10 + i * step_log10) for i in range(n)]
+    if values[-1] < 10.0**high_log10 * (1.0 - 1e-12):
+        values.append(10.0**high_log10)
+    return tuple(values)
+
+
+ABSOLUTE_STEP_LOG10 = math.log10(3.0)
+"""absolute 프리셋의 로그 간격. ``NARROW`` 의 배수 간격과 동일하다."""
+
 ABSOLUTE = ActionSpace(
     name="absolute",
-    damping_values=tuple(10.0**e for e in range(-6, 7)),
+    damping_values=_log_spaced_damping(-8.0, 8.0, ABSOLUTE_STEP_LOG10),
     cg_budgets=(3, 5, 10, 20),
     step_sizes=(0.25, 0.5, 1.0),
     damping_mode="absolute",
 )
-"""도달성 제약이 없는 **분석 전용** 프리셋. 13 x 4 x 3 = 156 조합.
+"""도달성 제약이 없는 **분석 전용** 프리셋.
 
 현재 damping 과 무관하게 지정값으로 즉시 이동한다. 학습 정책은 이 모드를
-쓰지 않는다. 프로토콜 게이트 A(내재적 one-step 헤드룸)의 기준이다.
+쓰지 않는다. 프로토콜 게이트 A/B의 기준이다.
 
-해상도를 반드시 함께 고려해야 한다
-----------------------------------
-초기 구성은 ``{1e-6, 1e-4, ..., 1e6}`` 7점이었는데, 이는 **2 decade 간격**이다.
-``NARROW`` 의 배수 간격은 ``log10(3) = 0.48 decade`` 이므로 absolute 쪽이
-범위는 넓지만 해상도가 4배 거칠었다. 실제로 absolute 오라클이 narrow 보다
-나쁜 결과를 냈다.
+해상도를 반드시 맞춘다
+----------------------
+게이트 B는 ``ABSOLUTE`` 와 ``WIDE`` / ``NARROW`` 의 격차를 "도달성 손실" 로
+해석한다. 그 해석이 성립하려면 **로그 해상도가 같아야** 한다.
 
-그 상태로는 ``ABSOLUTE - WIDE`` 격차가 "도달성 손실"과 "해상도 손실"을 섞어
-버려 게이트 B의 해석이 불가능하다. absolute 의 목적은 도달성 제약만 제거하는
-것이므로, 1 decade 간격(13점)으로 촘촘하게 둔다.
+초기 구성은 두 번 틀렸다.
+
+```text
+1차  {1e-6, 1e-4, ..., 1e6}   7점, 2 decade 간격    -> narrow 대비 4배 거침
+2차  {1e-6, ..., 1e6}        13점, 1 decade 간격    -> narrow 대비 2배 거침
+현재 log10 lambda in [-8, 8], 간격 log10(3)        -> narrow 와 동일
+```
+
+1차 구성에서는 absolute 쪽이 범위가 4배 넓은데도 narrow 보다 **나쁜** 결과를
+냈다. 도달성 이득이 해상도 손실에 잠식된 것이다. 그 상태로는 게이트 B가
+두 효과를 분리하지 못한다.
 
 ``ABSOLUTE`` 와 ``WIDE`` 의 차이가 "배수 전이와 도달성 때문에 잃는 양"이다.
+후보 수가 많아지므로 Stage 2 기본 조건은 ``with_fixed_step_size()`` 로
+``damping x CG budget`` 만 본다.
 """
 
 PRESETS: dict[str, ActionSpace] = {
