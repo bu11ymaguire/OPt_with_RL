@@ -21,3 +21,18 @@
 ``diagonal.py``
     Hutchinson estimator 기반 Hessian diagonal. diagonal preconditioner용.
 """
+
+from rl_newton.curvature.hvp import HvpGraph, hessian_vector_product
+from rl_newton.curvature.operators import (
+    DampedHessianOperator,
+    DiagonalPreconditioner,
+    IdentityPreconditioner,
+)
+
+__all__ = [
+    "HvpGraph",
+    "hessian_vector_product",
+    "DampedHessianOperator",
+    "DiagonalPreconditioner",
+    "IdentityPreconditioner",
+]

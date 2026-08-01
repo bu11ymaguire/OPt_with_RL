@@ -141,7 +141,11 @@ class SolverConfig:
     min_damping: float = 1.0e-6
     max_damping: float = 1.0e3
     pap_eps: float = 1.0e-12
-    """``p^T A p`` 가 이 값 이하이면 negative curvature 또는 붕괴로 판정한다."""
+    """negative curvature 판정 임계값. **상대 기준**이다.
+
+    ``p^T A p <= pap_eps * ||p||^2`` 이면 탐지된 것으로 본다. 절대 기준을 쓰면
+    ``p`` 가 작아지는 수렴 구간에서 양정 행렬에도 오탐이 생긴다.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +159,7 @@ class CGResult:
         solution: 근사해 ``p``. flatten된 1차원 텐서.
         iterations: 실제 수행한 CG 반복 수.
         hvp_count: 소모한 HVP 횟수.
+        budget: 허용된 최대 반복 수. RL action의 ``cg_budget``.
         initial_residual: 초기 residual norm ``||r_0||``.
         final_residual: 최종 residual norm ``||r_k||``.
         converged: tolerance 기준 수렴 여부.
@@ -165,6 +170,7 @@ class CGResult:
     solution: Tensor
     iterations: int
     hvp_count: int
+    budget: int
     initial_residual: float
     final_residual: float
     converged: bool
@@ -173,16 +179,25 @@ class CGResult:
 
     @property
     def residual_ratio(self) -> float:
-        """``||r_k|| / ||r_0||``. 0 나눗셈은 1.0으로 처리한다."""
+        """``||r_k|| / ||r_0||``. 0 나눗셈은 1.0으로 처리한다.
+
+        RL 상태 특징 ``cg_residual_ratio``. 작을수록 선형계를 정확히 풀었다는 뜻이다.
+        """
         if self.initial_residual <= 0.0:
             return 1.0
         return self.final_residual / self.initial_residual
 
     @property
     def iters_used_ratio(self) -> float:
-        """사용한 반복 수 / 허용 예산. 예산이 0이면 0.0."""
-        budget = max(self.hvp_count, 1)
-        return self.iterations / budget
+        """사용한 반복 수 / 허용 예산.
+
+        RL 상태 특징 ``cg_iters_used_ratio``. 1.0 이면 예산을 다 썼다는
+        뜻이므로 예산이 부족했을 가능성을 시사한다. 1.0 미만이면 tolerance
+        기준으로 조기 종료했거나 negative curvature 로 중단된 것이다.
+        """
+        if self.budget <= 0:
+            return 0.0
+        return self.iterations / self.budget
 
 
 # ---------------------------------------------------------------------------

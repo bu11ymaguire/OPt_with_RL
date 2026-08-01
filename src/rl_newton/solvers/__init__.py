@@ -1,19 +1,19 @@
 """선형계 solver — truncated Conjugate Gradient.
 
-구현 예정 (Stage 1)
+구현 완료 (Stage 1)
 -------------------
 ``conjugate_gradient.py``
     ``(H + lambda*I) p = -g`` 를 근사적으로 푼다. ``types.CGResult`` 를 반환한다.
 
-    필수 기능:
+    구현된 기능:
       - residual 기반 early stopping (``||r_k|| <= tol * ||r_0||``)
       - maximum iteration budget (RL action이 지정)
-      - negative curvature 탐지 (``p^T A p <= pap_eps``)
-      - NaN/Inf 탐지
-      - HVP 횟수, 초기/최종 residual 반환
+      - negative curvature 탐지 (``p^T A p <= pap_eps * ||p||^2``, **상대 기준**)
+      - NaN/Inf 탐지 및 마지막 유효 반복해 보존
+      - HVP 횟수, 초기/최종 residual, 예산 반환
       - optional preconditioner 인터페이스
 
-    residual 누적은 FP32로 한다 (README §15).
+    residual 누적은 FP32 이상만 허용한다 (README §15). FP16/BF16은 거부한다.
 
 구현 예정 (Stage 3)
 -------------------
@@ -25,5 +25,15 @@
 구현 예정 (Stage 5, 선택)
 -------------------------
 ``preconditioners.py``
-    identity / diagonal Adam state / Hessian diagonal / low-rank Lanczos.
+    Adam second moment / Hutchinson Hessian diagonal / low-rank Lanczos.
+    identity 와 diagonal 은 ``curvature.operators`` 에 이미 있다.
+
+    주의: ``tasks.quadratics`` 는 랜덤 직교기저로 ``A`` 를 만들기 때문에 대각이
+    거의 상수다. 따라서 quadratic 벤치마크에서 diagonal preconditioner 의
+    이득이 없게 나오는 것은 정상이다. 대각이 퍼진 계에서 평가해야 한다
+    (``tests/test_cg.py::test_jacobi_helps_when_diagonal_is_spread`` 참조).
 """
+
+from rl_newton.solvers.conjugate_gradient import conjugate_gradient
+
+__all__ = ["conjugate_gradient"]

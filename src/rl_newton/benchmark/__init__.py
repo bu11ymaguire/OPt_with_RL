@@ -10,11 +10,13 @@ MNIST MLP 규모(약 10만 파라미터)에서는 GPU 시간이 FLOP이 아니�
     대상 하드웨어에서 grad / HVP / forward 비용을 실측해 GE 환산계수를 산출한다.
     이론값(c_hvp ~ 2.5, c_fwd ~ 0.3)을 쓰지 않고 측정값을 쓴다.
 
-구현 예정 (Stage 1)
+구현 완료 (Stage 1)
 -------------------
 ``paired.py``
     ``seed -> (task_instance, batch_order, init)`` 결정론적 매핑.
     모든 optimizer가 동일 조건을 보게 해 분산을 줄인다 (프로토콜 D7).
+    task 생성 스트림을 optimizer 실행 스트림과 분리하므로, optimizer가
+    난수를 얼마나 소비하든 문제 인스턴스는 동일하다.
 
 구현 예정 (Stage 2)
 -------------------
@@ -46,5 +48,18 @@ MNIST MLP 규모(약 10만 파라미터)에서는 GPU 시간이 FLOP이 아니�
 """
 
 from rl_newton.benchmark.cost_model import CostModel, measure_cost_model
+from rl_newton.benchmark.paired import (
+    PairedTaskFactory,
+    make_task,
+    quadratic_meta_test_specs,
+    quadratic_meta_train_specs,
+)
 
-__all__ = ["CostModel", "measure_cost_model"]
+__all__ = [
+    "CostModel",
+    "measure_cost_model",
+    "PairedTaskFactory",
+    "make_task",
+    "quadratic_meta_test_specs",
+    "quadratic_meta_train_specs",
+]

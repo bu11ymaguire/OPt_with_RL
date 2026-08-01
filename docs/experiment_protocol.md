@@ -260,25 +260,57 @@ step 단위 JSONL(README §13 스키마)에 다음을 추가한다.
 double-backward HVP 상대오차 < `1e-5`. **통과** (71 tests, ruff clean,
 GPU HVP 상대오차 `5.8e-8`)
 
-### Stage 1 — 수치 커널  (2~3일)
+### Stage 1 — 수치 커널  (완료)
 
 비용 모델(`benchmark/cost_model.py`)과 실측은 Stage 0에서 완료했다.
 `configs/cost_model.mnist_mlp.yaml`, `configs/cost_model.small_cnn.yaml` 참조.
 
-1. `curvature/hvp.py` — double-backward HVP, unused parameter 정책 명시
-2. `curvature/operators.py` — `(H + λI)v` 연산자, GGN 확장 지점
-3. `solvers/conjugate_gradient.py` — `CGResult` 반환, residual early stop,
-   negative curvature 탐지, NaN/Inf 탐지, HVP 카운트
+1. `curvature/hvp.py` — `HvpGraph`. 그래프를 한 번만 만들고 k회 재사용한다.
+   그 결과 "한 CG solve 안에서 동일한 curvature batch"(README §15)가
+   규율이 아니라 **구조로** 보장된다. 다른 배치를 쓰려면 새 그래프가 필요하다.
+2. `curvature/operators.py` — `DampedHessianOperator`, preconditioner 2종.
+   damping은 그래프 재사용 중에도 바꿀 수 있다 (step 거절 후 재풀이 시 절약).
+3. `solvers/conjugate_gradient.py` — truncated PCG, `CGResult` 반환
 4. `tasks/quadratics.py`, `tasks/rosenbrock.py`
 5. `benchmark/paired.py` — 결정론적 `seed → task instance` 매핑
+6. `scripts/verify_numerics.py` — 게이트를 수치로 보고
 
-게이트:
+게이트: **전체 통과** (CPU / CUDA 양쪽, 183 tests, ruff clean)
 
-- `uv run pytest tests/test_hvp.py tests/test_cg.py -q` 전부 통과
-- explicit Hessian 대조 상대오차 < `1e-5` (FP32 ill-conditioned는 `1e-4`)
-- SPD quadratic에서 Newton-CG 해의 상대오차 < `1e-3`
-- damping 증가 시 ill-conditioned 문제의 CG 실패 감소 확인
-- indefinite 문제에서 negative curvature 탐지 정상 동작
+| 항목 | 임계값 | 실측 (FP32) |
+|---|---|---|
+| HVP vs explicit Hessian (κ ≤ 1e3) | < 1e-5 | 4.1e-8 ~ 9.4e-8 |
+| HVP, ill-conditioned κ=1e5 | < 1e-4 | 6.1e-8 |
+| Newton-CG 방향 vs explicit solve, κ=1e1 | < 1e-3 | 3.7e-7 (27 iters) |
+| Newton-CG 방향, κ=1e4 | < 1e-3 | 1.3e-4 (307 iters) |
+| damping 증가 → CG 수렴률 | 단조 비감소 | 단조, 최대 damping에서 1.00 |
+| indefinite negative curvature 탐지 | 탐지 + damping으로 복구 | 양쪽 확인 |
+
+#### Stage 1에서 발견한 것
+
+세 가지가 초기 가정과 달랐고, 모두 이후 단계에 영향이 있다.
+
+**1. negative curvature 판정은 상대 기준이어야 한다.** `p^T A p <= eps` 처럼
+절대 임계값을 쓰면 `p^T A p ∝ ||p||²` 이므로 수렴이 진행되어 `p` 가 작아질 때
+양정 행렬에서도 조건이 성립해 **오탐**이 난다. 곡률이 아니라 스케일을 재는 셈이다.
+`p^T A p <= eps * ||p||²` 로 바꿨다. RL 상태 특징에 `negative_curvature` 가
+들어가므로, 이 오탐은 정책 학습을 직접 오염시킬 수 있었다.
+
+**2. Rosenbrock 표준 시작점은 Hessian이 양정이다.** `det H = 8s²(x² − y) + 4s`
+이므로 negative curvature는 `y > x² + 1/(2s)`, 즉 골짜기 **위쪽**에서만 발생한다.
+표준 시작점 `(-1.2, 1.0)` 은 `y = 1.0 < x² = 1.44` 로 아래쪽이고 고유값이
+23.6, 1506이다. "비볼록 문제이니 시작부터 음의 곡률"이라는 가정은 틀렸다.
+
+**3. `tasks/quadratics` 에서는 Jacobi preconditioner가 원리적으로 무력하다.**
+`A = Q diag(λ) Qᵀ` 를 랜덤 직교기저로 만들면 `A` 의 대각이 거의 상수가 된다
+(실측 분산 < 10배). Stage 5에서 diagonal preconditioner의 이득이 없다고 나오면
+구현 결함이 아니라 문제 구조 때문이다. 대각이 퍼진 계에서 별도로 평가해야 한다.
+
+**4. `κ=1e6` 문제는 damping을 `1e6` 수준까지 올려야 예산 20회 안에 풀린다.**
+`1e2` 정도로는 damped 조건수가 여전히 ~1e4다. Stage 2 헤드룸 측정에서
+action space의 damping 배수 `{0.3, 1.0, 3.0}` 만으로는 극단적 ill-conditioned
+구간에 도달하는 데 여러 step이 걸린다는 뜻이다. 이 점이 헤드룸의 크기에
+영향을 줄 수 있으므로, 초기 damping 설정과 배수 범위를 Stage 2에서 함께 본다.
 
 ### Stage 2 — 헤드룸 측정  (2~3일)  ← 이 프로젝트의 분기점
 
@@ -460,3 +492,5 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-01 | 초판. D1~D8 확정, Stage 0~5 정의, target 사전 등록 | — |
 | 2026-08-01 | D1 예산 계산을 실측값으로 교정 (26 GE → 17 GE, 24 step → 35 step) | 이론 계수 대신 RTX 3060 Ti 실측 사용. MNIST MLP 오버헤드 지배 확인 |
 | 2026-08-01 | 비용 모델 실측을 Stage 1 → Stage 0 으로 이동 | Stage 0에서 이미 완료했고, 이후 모든 지표가 여기에 의존 |
+| 2026-08-01 | Stage 1 완료. negative curvature 판정을 상대 기준으로 변경 | 절대 임계값은 수렴 구간에서 오탐. RL 상태 특징을 오염시킬 수 있었다 |
+| 2026-08-01 | indefinite quadratic을 진단 전용으로 명시 | 아래로 유계가 아니므로 cost-to-target 과 log 보상이 정의되지 않는다 |
