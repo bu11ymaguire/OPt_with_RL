@@ -29,6 +29,7 @@ from rl_newton.optimizers.controllers import (
     LAGRANGIAN_BETA_GRID,
     AverageRateEfficiencyPlanner,
     BudgetedMPCController,
+    CommittedPlanController,
     FixedController,
     HeuristicController,
     LagrangianPlannerController,
@@ -36,6 +37,7 @@ from rl_newton.optimizers.controllers import (
     OpenLoopController,
     PlanCandidate,
     ScheduleSegment,
+    ShrinkingQuotaMPCController,
     average_rate_utility,
     bucket_prune,
     efficiency_score,
@@ -513,11 +515,10 @@ class TestBudgetedSelectionRule:
         from rl_newton.optimizers.controllers import _PlanNode
 
         return _PlanNode(
-            first_action=NARROW_F.action_from_flat(0),
+            actions=tuple(NARROW_F.action_from_flat(i % len(NARROW_F)) for i in range(depth)),
             used_ge=cost,
             terminal_loss=loss,
             snapshot=(None, 0.0),
-            depth=depth,
             reached_target=reached,
         )
 
@@ -679,11 +680,10 @@ class TestDelayedRewardToyProblem:
         from rl_newton.optimizers.controllers import _PlanNode
 
         return _PlanNode(
-            first_action=NARROW_F.action_from_flat(depth),
+            actions=tuple(NARROW_F.action_from_flat(depth) for _ in range(depth)),
             used_ge=cost,
             terminal_loss=loss,
             snapshot=(None, 0.0),
-            depth=depth,
         )
 
     def test_investment_plan_wins_under_fixed_quota(self):
@@ -725,3 +725,162 @@ class TestDelayedRewardToyProblem:
         c = self._node(5.0, 0.70, 1)
         frontier = pareto_frontier([a, b, c])
         assert b in frontier
+
+
+# ---------------------------------------------------------------------------
+# 실행 방식 3종 (프로토콜 D12)
+# ---------------------------------------------------------------------------
+
+
+class TestPlanPredictionMatchesExecution:
+    """**가장 먼저 확인할 불변조건.** 이게 깨지면 이후 비교는 의미가 없다.
+
+    synthetic task 는 결정적이므로 planner 가 예측한 terminal loss 와 그 계획을
+    끝까지 실행한 결과가 같아야 한다. 다르면 상태 복원이나 실행 회계에 버그가
+    있는 것이다.
+    """
+
+    def test_committed_execution_reproduces_predicted_loss(self):
+        planner = CommittedPlanController(NARROW_F, quota_ge=60.0, beam_width=4, max_depth=12)
+        task = make_task()
+        # 예산을 쿼터와 같게 두어 window 가 하나만 열리게 한다.
+        config = NewtonCGConfig(total_steps=200, cost_budget_ge=60.0, initial_damping=1.0e-2)
+        trace = NewtonCGOptimizer(task, planner, config, run_id="c", seed=0).run()
+
+        assert planner.predictions, "계획이 하나는 수립돼야 한다"
+        _step, predicted_loss, predicted_cost = planner.predictions[0]
+
+        # 계획 비용만큼 실행된 지점의 loss 를 찾는다.
+        spent = 0.0
+        realized = trace.initial_loss
+        for record in trace.records:
+            spent += record.cost_ge
+            realized = record.train_loss_after
+            if spent >= predicted_cost - 1.0e-9:
+                break
+        assert spent == pytest.approx(predicted_cost, rel=1.0e-9)
+        assert realized == pytest.approx(predicted_loss, rel=1.0e-9)
+
+    def test_committed_replans_only_when_the_plan_is_exhausted(self):
+        """계획 도중에는 재계획하지 않는다. 이것이 fresh-quota 와의 차이다."""
+        planner = CommittedPlanController(NARROW_F, quota_ge=60.0, beam_width=4, max_depth=12)
+        config = NewtonCGConfig(total_steps=200, cost_budget_ge=200.0, initial_damping=1.0e-2)
+        trace = NewtonCGOptimizer(make_task(), planner, config, run_id="c", seed=0).run()
+        # 계획 수립 횟수 < step 수. fresh-quota 는 매 step 계획하므로 같아진다.
+        assert len(planner.predictions) < trace.n_steps
+        # 각 계획은 여러 step 을 덮는다.
+        depths = [c.chosen_depth for c in planner.choices]
+        assert max(depths) >= 2
+
+    def test_fresh_quota_replans_every_step(self):
+        """대조군. 실행 방식만 다르고 탐색은 동일하다는 것을 확인한다."""
+        planner = BudgetedMPCController(NARROW_F, quota_ge=60.0, beam_width=4, max_depth=12)
+        config = NewtonCGConfig(total_steps=200, cost_budget_ge=200.0, initial_damping=1.0e-2)
+        trace = NewtonCGOptimizer(make_task(), planner, config, run_id="f", seed=0).run()
+        assert len(planner.choices) == trace.n_steps
+
+    def test_plan_returns_full_sequence(self):
+        planner = BudgetedMPCController(NARROW_F, quota_ge=60.0, beam_width=4, max_depth=12)
+        optimizer = make_optimizer(planner, budget=1.0e9, steps=1)
+        context = StepContext(
+            step=0,
+            total_steps=1,
+            loss=float(optimizer.task.loss().detach()),
+            grad_norm=1.0,
+            damping=1.0e-2,
+        )
+        plan = planner.plan(context, optimizer)
+        assert plan is not None
+        assert plan.depth == len(plan.actions) >= 1
+        assert plan.first_action is plan.actions[0]
+        assert plan.suffix == plan.actions[1:]
+
+
+class TestShrinkingQuota:
+    def test_quota_shrinks_as_cost_is_spent(self):
+        """쿼터가 차감되므로 window 안에서 quota_ge 기록이 감소해야 한다."""
+        planner = ShrinkingQuotaMPCController(NARROW_F, quota_ge=90.0, beam_width=2, max_depth=12)
+        NewtonCGOptimizer(
+            make_task(),
+            planner,
+            NewtonCGConfig(total_steps=6, cost_budget_ge=1.0e9, initial_damping=1.0e-2),
+            run_id="s",
+            seed=0,
+        ).run()
+        quotas = [c.quota_ge for c in planner.choices]
+        assert quotas[0] == pytest.approx(90.0)
+        # 첫 window 안에서는 단조 감소한다.
+        first_window = [q for q in quotas if q <= 90.0 + 1e-9]
+        assert any(b < a for a, b in zip(first_window, first_window[1:], strict=False))
+
+    def test_new_window_opens_when_quota_is_exhausted(self):
+        planner = ShrinkingQuotaMPCController(NARROW_F, quota_ge=30.0, beam_width=2, max_depth=12)
+        NewtonCGOptimizer(
+            make_task(),
+            planner,
+            NewtonCGConfig(total_steps=12, cost_budget_ge=1.0e9, initial_damping=1.0e-2),
+            run_id="s",
+            seed=0,
+        ).run()
+        assert planner.windows >= 2
+
+    def test_fresh_quota_does_not_shrink(self):
+        """대조군. fresh-quota 는 매 step 같은 쿼터를 다시 받는다."""
+        planner = BudgetedMPCController(NARROW_F, quota_ge=90.0, beam_width=2, max_depth=12)
+        NewtonCGOptimizer(
+            make_task(),
+            planner,
+            NewtonCGConfig(total_steps=5, cost_budget_ge=1.0e9, initial_damping=1.0e-2),
+            run_id="f",
+            seed=0,
+        ).run()
+        assert all(c.quota_ge == pytest.approx(90.0) for c in planner.choices)
+
+
+class TestSeedPlanIncumbent:
+    """이전 계획의 suffix 가 후보에 보존되는가.
+
+    결정적 환경에서 재계획이 더 나은 것을 못 찾아도 이전 suffix 는 유지할 수
+    있어야 한다. 그렇지 않으면 beam 근사 때문에 재계획 자체가 성능을 떨어뜨리고,
+    그것이 "피드백이 해롭다"로 오해된다.
+    """
+
+    def _plan_once(self, *, seed_plan=(), beam=1):
+        planner = BudgetedMPCController(NARROW_F, quota_ge=60.0, beam_width=beam, max_depth=12)
+        optimizer = make_optimizer(planner, budget=1.0e9, steps=1)
+        context = StepContext(
+            step=0,
+            total_steps=1,
+            loss=float(optimizer.task.loss().detach()),
+            grad_norm=1.0,
+            damping=1.0e-2,
+        )
+        return planner.plan(context, optimizer, seed_plan=seed_plan)
+
+    def test_seed_plan_can_only_improve_the_result(self):
+        """seed 를 주면 결과가 나빠질 수 없다. 후보 집합이 커지기만 하므로."""
+        without = self._plan_once(beam=1)
+        assert without is not None
+        # 넓은 탐색으로 좋은 계획을 찾아 seed 로 넣는다.
+        rich = self._plan_once(beam=8)
+        assert rich is not None
+        seeded = self._plan_once(seed_plan=rich.actions, beam=1)
+        assert seeded is not None
+        assert seeded.terminal_loss <= without.terminal_loss + 1.0e-12
+
+    def test_seed_plan_survives_pruning(self):
+        """좁은 beam 에서도 seed 계획이 채택될 수 있어야 한다."""
+        rich = self._plan_once(beam=8)
+        assert rich is not None
+        seeded = self._plan_once(seed_plan=rich.actions, beam=1)
+        assert seeded is not None
+        assert seeded.terminal_loss <= rich.terminal_loss + 1.0e-12
+
+    def test_seed_plan_over_quota_is_truncated_not_rejected(self):
+        """쿼터를 넘는 seed 는 들어가는 prefix 까지만 후보가 된다."""
+        rich = self._plan_once(beam=4)
+        assert rich is not None
+        long_seed = rich.actions * 5
+        seeded = self._plan_once(seed_plan=long_seed, beam=1)
+        assert seeded is not None
+        assert seeded.used_ge <= 60.0 * (1.0 + 1.0e-9)

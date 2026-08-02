@@ -527,6 +527,78 @@ Track T 지표(`cost_to_target_ge`, `reached`)는 목표 도달 시점으로 정
 `B ≤ A` 였다. **고정 예산 비교에서는 "예산"과 "실제 소모량"을 항상 함께
 확인한다.**
 
+### D12. 계획의 가치와 실행 방식을 분리한다
+
+D10 쿼터 사다리에서 "쿼터를 키우면 성능이 나빠진다"가 관측됐다. 그런데 planner가
+찾은 **계획 자체**는 동일 비용의 greedy 궤적보다 좋았다. 따라서 문제는 목적함수도
+탐색도 아니라 **실행 방식**이었다.
+
+세 방식을 동일 planner, 동일 쿼터, 동일 GE 예산에서 비교한다. 실행 방식만 다르므로
+차이가 탐색 품질 차이와 섞이지 않는다.
+
+```text
+committed        계획을 끝까지 실행. 재계획 없음. 소진되면 새 window
+fresh-quota      매 step 미래 예산 Q 를 새로 지급 (D10 초판 방식)
+shrinking-quota  쓴 비용을 차감. horizon 을 새로 연장하지 않음
+```
+
+#### 먼저 확인할 불변조건
+
+```text
+J_predicted_plan  ≈  J_committed_execution
+```
+
+synthetic task는 결정적이므로 planner가 예측한 terminal loss와 그 계획을 끝까지
+실행한 결과가 같아야 한다. **이게 맞지 않으면 이후 비교는 의미가 없다.** 12개
+조건 전부에서 상대오차 `< 1e-9` 로 일치했다.
+
+#### shrinking은 이전 계획의 suffix를 보장 후보로 포함한다
+
+결정적 환경에서 재계획이 더 나은 것을 못 찾아도 이전 suffix는 유지할 수 있어야
+한다. 그렇지 않으면 beam 근사 때문에 재계획 자체가 성능을 떨어뜨리고, 그것이
+"피드백이 해롭다"로 오해된다.
+
+단, **탐색에서 살아남는 것은 보장되지만 채택이 보장되는 것은 아니다.** 목적함수가
+남은 쿼터 안에서 더 낮은 terminal loss를 찾으면 계획을 버린다. 그 이탈이
+국소적으로는 개선이어도 episode 전체로는 손해일 수 있다.
+
+#### 쿼터 차감은 직전 step의 실제 비용으로 한다
+
+예측 비용을 쓰면 CG가 조기 수렴한 만큼 쿼터가 과도하게 줄어들어 window가 일찍
+닫힌다. 실측에서 이 차이가 컸다.
+
+```text
+예측 비용 차감:  SPD beam8 Q=4  shrinking 48.90   (셋 중 최악)
+실제 비용 차감:  SPD beam8 Q=4  shrinking 56.73   (committed 와 동일)
+```
+
+`context.previous.cost_ge` 를 쓴다.
+
+#### 실측 결과 (quadratic, seed 0, narrow, 150 GE, max_depth 24)
+
+```text
+SPD κ=1e2   C0 = 52.137 nat
+  beam 8, Q=4×c_max   committed +4.59   shrinking +4.59   fresh +3.67
+  beam 4, Q=4×c_max   committed −3.38   shrinking −4.21   fresh −13.26
+  beam 4, Q=2×c_max   committed −2.03   shrinking −1.91   fresh −4.82
+
+ill κ=1e5   C0 = 9.558 nat
+  beam 8, Q=4×c_max   committed +0.91   shrinking +0.89   fresh −0.23
+  beam 4, Q=4×c_max   committed +0.35   shrinking +0.87   fresh −0.16
+  beam 4, Q=2×c_max   committed +0.57   shrinking +0.65   fresh +0.33
+```
+
+해석: **`committed > C0`, `shrinking ≈ committed`, `fresh < committed`.**
+원인은 쿼터 초기화에 의한 시간 불일치다. fresh-quota는 매 step 미래 예산을 새로
+지급하므로 "나중에 이득을 얻을 준비 행동"을 계속 고르면서 payoff를 뒤로 미룬다.
+horizon을 연장하지 않으면(shrinking) 피드백 재계획은 committed 대비 손실이 없다.
+
+`beam 4 → 8` 에서 `Q=4` 결과가 SPD에서 8 nat 이상 움직인다. **`Q=4` 조건은 아직
+탐색 한계에 걸려 있으므로, 그 수치를 planning 가치의 하한으로만 읽는다.**
+
+탐색 비용은 실제 최적화 비용의 500~2,600배다 (committed 80,311 GE vs fresh
+389,245 GE, 본문 150 GE). 이들은 오라클이며 실용 optimizer가 아니다.
+
 ---
 
 ## 3. 로깅과 provenance
@@ -1106,6 +1178,9 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-01 | Beam pruning을 비율 스칼라 → `(used_GE, terminal_loss)` Pareto + GE cost bucket으로 교체 | 비율로 정렬하면 mediant 문제가 가지치기 안에서 재발한다. 비싼 장기 계획이 싼 단기 계획과 섞여 조기 탈락한다 |
 | 2026-08-01 | Track T planner 선택 규칙을 cost-to-go 추정 → lexicographic(도달 여부 → 누적 GE)으로 교체 | 임의의 실패 벌점이나 비율 없이 "도달이 우선, 비용이 그다음"을 순서로 표현한다 |
 | 2026-08-02 | **D11 신설: Track E를 예산 초과 step 절단 후 평가** | `spent >= budget` 종료 규칙 때문에 마지막 step이 예산을 넘고, 초과량이 action 크기에 비례한다. 150 GE 예산에서 C0는 171 GE, Q=4는 154 GE를 썼다. 큰 step을 고르는 컨트롤러가 공짜로 11% 예산을 더 쓰는 편향이 게이트 C 결론과 같은 방향으로 섞여 있었다 |
+| 2026-08-02 | **D12 신설: 계획의 가치와 실행 방식을 분리. committed / fresh-quota / shrinking-quota 3종 비교** | D10 쿼터 사다리의 음성 결과가 목적함수나 탐색 때문이 아니라 **fresh-quota 실행 방식의 시간 불일치** 때문임이 확인됐다. `committed > C0`, `shrinking ≈ committed`, `fresh < committed`. 최선 조건에서 planning이 C0를 SPD +4.59 nat, ill +0.91 nat 앞선다 |
+| 2026-08-02 | shrinking 쿼터 차감을 예측 비용 → `context.previous.cost_ge` 실제 비용으로 교체 | 예측 비용은 CG 조기 수렴을 반영하지 못해 window가 일찍 닫힌다. SPD beam8 Q=4에서 shrinking이 48.90 → 56.73으로 바뀌었다 |
+| 2026-08-02 | 게이트 C 통계는 **아직 변경하지 않음**. 위 진단은 pilot 기록으로만 보존 | 사전 등록된 `C3 − C1` 을 결과를 본 뒤 바꾸면 사후 선택이 된다. protocol freeze 전에 공식 재정의한다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |

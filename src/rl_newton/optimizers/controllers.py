@@ -115,6 +115,8 @@ __all__ = [
     "OneStepEfficiencyController",
     "AverageRateEfficiencyPlanner",
     "BudgetedMPCController",
+    "CommittedPlanController",
+    "ShrinkingQuotaMPCController",
     "LagrangianPlannerController",
     "PlannerTrack",
     "ScheduleSegment",
@@ -952,14 +954,30 @@ class PlanCandidate:
 
 @dataclass(slots=True)
 class _PlanNode:
-    """쿼터 기반 탐색의 한 노드. ``used_ge`` 와 ``terminal_loss`` 로 비교된다."""
+    """쿼터 기반 탐색의 한 노드. ``used_ge`` 와 ``terminal_loss`` 로 비교된다.
 
-    first_action: ControllerAction
+    **시퀀스 전체를 들고 다닌다.** 첫 action 만 들면 committed 실행과
+    shrinking 재계획에서 남은 suffix 를 쓸 수 없다 (프로토콜 D12).
+    """
+
+    actions: tuple[ControllerAction, ...]
     used_ge: float
     terminal_loss: float
     snapshot: tuple[object, float]
-    depth: int = 1
     reached_target: bool = False
+
+    @property
+    def first_action(self) -> ControllerAction:
+        return self.actions[0]
+
+    @property
+    def depth(self) -> int:
+        return len(self.actions)
+
+    @property
+    def suffix(self) -> tuple[ControllerAction, ...]:
+        """첫 action 을 실행한 뒤 남는 계획."""
+        return self.actions[1:]
 
 
 class BudgetedMPCController:
@@ -1082,6 +1100,7 @@ class BudgetedMPCController:
         self._trajectory: list[tuple[StepContext, ControllerAction]] = []
         self._resolved_quota = float("nan")
         self._resolved_bucket = float("nan")
+        self._last_plan: _PlanNode | None = None
 
     @property
     def name(self) -> str:
@@ -1141,15 +1160,47 @@ class BudgetedMPCController:
         return min(nodes, key=lambda n: (n.terminal_loss, n.used_ge, n.depth))
 
     def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
+        plan = self.plan(context, optimizer)
+        if plan is None:
+            return self._fallback_action(context, optimizer)
+        return plan.first_action
+
+    def plan(
+        self,
+        context: StepContext,
+        optimizer: NewtonCGOptimizer,
+        *,
+        quota: float | None = None,
+        seed_plan: Sequence[ControllerAction] = (),
+    ) -> _PlanNode | None:
+        """쿼터 ``quota`` 안에서 최선의 action 시퀀스를 찾는다.
+
+        ``select`` 는 첫 action 만 쓰지만, committed / shrinking 실행 방식은
+        시퀀스 전체가 필요하다 (프로토콜 D12). 그래서 탐색과 실행을 분리했다.
+
+        Args:
+            context: 현재 step 정보.
+            optimizer: 시뮬레이션에 쓸 optimizer. 호출 후 상태는 복원된다.
+            quota: 쓸 쿼터. ``None`` 이면 해석된 전체 쿼터.
+            seed_plan: **반드시 후보에 포함할 계획.** shrinking 재계획에서
+                이전 계획의 남은 suffix 를 넣는다. 결정적 환경에서는 재계획이
+                더 나은 것을 못 찾아도 이전 suffix 를 유지할 수 있어야 한다.
+                이것이 없으면 beam 근사 때문에 재계획 자체가 성능을 떨어뜨린다.
+
+        Returns:
+            최선 노드. 유한한 결과를 내는 action 이 하나도 없으면 ``None``.
+        """
         root = optimizer.snapshot()
         actions = list(self._space.iter_actions())
         self._resolve(optimizer, actions)
-        quota = self._resolved_quota
+        budget = self._resolved_quota if quota is None else quota
         # 부동소수 비교 여유. 쿼터 경계에서 확장이 임의로 갈리지 않게 한다.
-        slack = quota * 1.0e-9
+        slack = abs(budget) * 1.0e-9
         n_sims = 0
 
         # --- depth 1: 쿼터와 무관하게 전부 생성 ---
+        # 쿼터가 작아도 비싼 action 을 배제하지 않는다. 그러면 행동 공간이
+        # 쿼터에 따라 달라져 게이트 B 와 혼동된다. planner 는 반드시 행동해야 한다.
         frontier: list[_PlanNode] = []
         for action in actions:
             optimizer.restore(root)
@@ -1159,25 +1210,24 @@ class BudgetedMPCController:
                 continue
             frontier.append(
                 _PlanNode(
-                    first_action=action,
+                    actions=(action,),
                     used_ge=cost_ge,
                     terminal_loss=loss_after,
                     snapshot=optimizer.snapshot(),
-                    depth=1,
                     reached_target=self._reached(loss_after),
                 )
             )
         optimizer.restore(root)
 
         if not frontier:
-            return self._fallback(context, optimizer, root, actions)
+            return None
 
-        open_nodes = [
-            n
-            for n in self._prune(frontier)
-            if n.used_ge < quota - slack
-            and not (self._track == "cost_to_target" and n.reached_target)
-        ][: self._max_open]
+        # --- seed_plan 을 보장 후보로 넣는다 (incumbent) ---
+        seed_nodes, seed_sims = self._rollout(optimizer, root, seed_plan, budget, slack)
+        n_sims += seed_sims
+        frontier.extend(seed_nodes)
+
+        open_nodes = self._open(frontier, budget, slack)
 
         # --- depth 2..: 쿼터를 넘지 않는 확장만 ---
         depth = 1
@@ -1196,16 +1246,15 @@ class BudgetedMPCController:
                     if not math.isfinite(loss_after):
                         continue
                     total = node.used_ge + cost_ge
-                    if total > quota + slack:
+                    if total > budget + slack:
                         # 쿼터 초과 계획은 이 사다리 단계에서 유효하지 않다.
                         continue
                     expanded.append(
                         _PlanNode(
-                            first_action=node.first_action,
+                            actions=(*node.actions, action),
                             used_ge=total,
                             terminal_loss=loss_after,
                             snapshot=optimizer.snapshot(),
-                            depth=depth,
                             reached_target=self._reached(loss_after),
                         )
                     )
@@ -1213,14 +1262,9 @@ class BudgetedMPCController:
             if not expanded:
                 break
             # 모든 depth 를 한 frontier 에 모아 가지치기한다. Pareto 는 terminal
-            # loss 최소 후보를 지우지 않으므로 depth 1 최선이 보존된다.
+            # loss 최소 후보를 지우지 않으므로 depth 1 최선과 seed 가 보존된다.
             frontier = self._prune(frontier + expanded)
-            open_nodes = [
-                n
-                for n in self._prune(expanded)
-                if n.used_ge < quota - slack
-                and not (self._track == "cost_to_target" and n.reached_target)
-            ][: self._max_open]
+            open_nodes = self._open(expanded, budget, slack)
 
         optimizer.restore(root)
         best = self._best(frontier)
@@ -1238,14 +1282,70 @@ class BudgetedMPCController:
                 damping_before=context.damping,
                 chosen_depth=best.depth,
                 plan_used_ge=best.used_ge,
-                quota_ge=quota,
+                quota_ge=budget,
                 n_simulations=n_sims,
                 depth_cap_hit=depth_cap_hit,
                 reached_target=best.reached_target,
             )
         )
         self._trajectory.append((context, best.first_action))
-        return best.first_action
+        self._last_plan = best
+        return best
+
+    def _open(self, nodes: Sequence[_PlanNode], budget: float, slack: float) -> list[_PlanNode]:
+        """더 확장할 노드. Track T 에서 이미 도달한 계획은 확장하지 않는다."""
+        return [
+            n
+            for n in self._prune(nodes)
+            if n.used_ge < budget - slack
+            and not (self._track == "cost_to_target" and n.reached_target)
+        ][: self._max_open]
+
+    def _rollout(
+        self,
+        optimizer: NewtonCGOptimizer,
+        root: tuple[object, float],
+        plan: Sequence[ControllerAction],
+        budget: float,
+        slack: float,
+    ) -> tuple[list[_PlanNode], int]:
+        """``plan`` 을 root 에서 그대로 굴려 prefix 노드들을 만든다.
+
+        쿼터를 넘는 지점에서 멈춘다. 결정적 환경이므로 이전 계획의 suffix 를
+        여기에 넣으면 정확히 같은 궤적이 재현된다.
+        """
+        nodes: list[_PlanNode] = []
+        if not plan:
+            return nodes, 0
+        optimizer.restore(root)
+        used = 0.0
+        seq: list[ControllerAction] = []
+        n_sims = 0
+        for action in plan:
+            loss_after, cost_ge, _ = optimizer.simulate_step(action)
+            n_sims += 1
+            if not math.isfinite(loss_after) or used + cost_ge > budget + slack:
+                break
+            used += cost_ge
+            seq.append(action)
+            nodes.append(
+                _PlanNode(
+                    actions=tuple(seq),
+                    used_ge=used,
+                    terminal_loss=loss_after,
+                    snapshot=optimizer.snapshot(),
+                    reached_target=self._reached(loss_after),
+                )
+            )
+        optimizer.restore(root)
+        return nodes, n_sims
+
+    def _fallback_action(
+        self, context: StepContext, optimizer: NewtonCGOptimizer
+    ) -> ControllerAction:
+        return self._fallback(
+            context, optimizer, optimizer.snapshot(), list(self._space.iter_actions())
+        )
 
     def _fallback(
         self,
@@ -1280,14 +1380,157 @@ class BudgetedMPCController:
         self._trajectory.append((context, best_action))
         return best_action
 
+    @property
+    def last_plan(self) -> _PlanNode | None:
+        """직전 ``plan`` 이 고른 노드. 예측값 검증용이다."""
+        return self._last_plan
+
     def reset(self) -> None:
         self._choices = []
         self._trajectory = []
+        self._last_plan = None
 
     def __repr__(self) -> str:
         return (
             f"BudgetedMPCController(space={self._space.name}, quota={self._resolved_quota:g}, "
             f"beam={self._beam_width}, track={self._track})"
+        )
+
+
+class CommittedPlanController(BudgetedMPCController):
+    """계획을 찾으면 **끝까지 그대로 실행**한다. 재계획하지 않는다.
+
+    프로토콜 D12 의 세 실행 방식 중 하나다. ``BudgetedMPCController`` 와 탐색은
+    완전히 동일하고 **실행 방식만** 다르므로, 차이가 탐색 품질 차이와 섞이지
+    않는다.
+
+    ```text
+    계획: [a1, a2, a3]
+    실행: a1 -> a2 -> a3   (중간에 다시 계획하지 않음)
+    ```
+
+    시퀀스를 다 쓰면 그 지점에서 새 쿼터로 다시 계획한다 (committed window 반복).
+    episode 예산이 쿼터보다 크면 여러 window 가 생긴다.
+
+    **가장 먼저 확인할 불변조건** (프로토콜 D12):
+
+    ```text
+    J_predicted_plan  ~=  J_committed_execution
+    ```
+
+    synthetic task 는 결정적이므로 planner 가 예측한 terminal loss 와 실제
+    실행 결과가 거의 같아야 한다. 다르면 상태 복원이나 실행 회계에 버그가
+    있는 것이고, 그러면 이후 비교는 의미가 없다.
+    """
+
+    def __init__(self, space: ActionSpace, **kwargs: object) -> None:
+        name = kwargs.pop("name", None)
+        super().__init__(space, **kwargs)  # type: ignore[arg-type]
+        self._name = name or self._name.replace("budgeted_", "committed_")  # type: ignore[assignment]
+        self._pending: list[ControllerAction] = []
+        self._predictions: list[tuple[int, float, float]] = []
+        """``(계획 수립 step, 예측 terminal loss, 계획 비용)``. 검증용이다."""
+
+    @property
+    def predictions(self) -> list[tuple[int, float, float]]:
+        return self._predictions
+
+    def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
+        if not self._pending:
+            plan = self.plan(context, optimizer)
+            if plan is None:
+                return self._fallback_action(context, optimizer)
+            self._pending = list(plan.actions)
+            self._predictions.append((context.step, plan.terminal_loss, plan.used_ge))
+        return self._pending.pop(0)
+
+    def reset(self) -> None:
+        super().reset()
+        self._pending = []
+        self._predictions = []
+
+    def __repr__(self) -> str:
+        return (
+            f"CommittedPlanController(space={self._space.name}, "
+            f"quota={self._resolved_quota:g}, beam={self._beam_width})"
+        )
+
+
+class ShrinkingQuotaMPCController(BudgetedMPCController):
+    """쿼터에서 **쓴 비용을 차감**하며 재계획한다. horizon 을 새로 연장하지 않는다.
+
+    프로토콜 D12 의 세 실행 방식 중 하나다. fresh-quota 방식(기본
+    ``BudgetedMPCController``)은 매 step 마다 미래 예산 ``Q`` 를 새로 지급하므로,
+    "나중에 이득을 얻을 준비 행동"을 계속 고르면서 실제 payoff 를 무한히 뒤로
+    미룰 수 있다. 시간 불일치다.
+
+    ```text
+    fresh:      step1 Q=90, step2 Q=90, step3 Q=90 ...
+    shrinking:  step1 Q=90, 20 사용 -> step2 Q=70, 10 사용 -> step3 Q=60 ...
+    ```
+
+    쿼터가 소진되면 새 window 를 열고 다시 ``Q`` 를 지급한다.
+
+    **이전 계획의 남은 suffix 를 반드시 후보로 보존한다.** 결정적 환경에서
+    재계획이 더 나은 것을 못 찾아도 이전 suffix 는 유지할 수 있어야 한다.
+    그렇지 않으면 beam 근사 때문에 재계획 자체가 성능을 떨어뜨리고, 그것이
+    "피드백이 해롭다"로 오해된다.
+    """
+
+    def __init__(self, space: ActionSpace, **kwargs: object) -> None:
+        name = kwargs.pop("name", None)
+        super().__init__(space, **kwargs)  # type: ignore[arg-type]
+        self._name = name or self._name.replace("budgeted_", "shrinking_")  # type: ignore[assignment]
+        self._remaining = float("nan")
+        self._suffix: tuple[ControllerAction, ...] = ()
+        self._last_loss = float("nan")
+        self._windows = 0
+
+    @property
+    def windows(self) -> int:
+        """열린 window 수. 쿼터 소진 횟수다."""
+        return self._windows
+
+    def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
+        actions = list(self._space.iter_actions())
+        self._resolve(optimizer, actions)
+        cheapest = self._resolved_bucket
+
+        # **직전 step 의 실제 비용**을 차감한다. 예측 비용을 쓰면 CG 가 조기
+        # 수렴한 만큼 쿼터가 과도하게 줄어들어 window 가 일찍 닫히고, 그것이
+        # "shrinking 이 나쁘다"로 오해된다.
+        if context.previous is not None and math.isfinite(self._remaining):
+            spent = context.previous.cost_ge
+            if math.isfinite(spent):
+                self._remaining -= spent
+
+        # 첫 step 이거나 쿼터가 가장 싼 action 보다 적게 남으면 새 window 를 연다.
+        if not math.isfinite(self._remaining) or self._remaining < cheapest:
+            self._remaining = self._resolved_quota
+            self._suffix = ()
+            self._windows += 1
+
+        plan = self.plan(context, optimizer, quota=self._remaining, seed_plan=self._suffix)
+        if plan is None:
+            return self._fallback_action(context, optimizer)
+
+        # 남은 suffix 를 다음 재계획의 보장 후보로 넘긴다. **탐색에서 살아남는
+        # 것은 보장되지만 채택이 보장되는 것은 아니다.** 목적함수가 남은 쿼터
+        # 안에서 더 낮은 terminal loss 를 찾으면 계획을 버린다. 그 이탈이
+        # 국소적으로는 개선이어도 episode 전체로는 손해일 수 있다.
+        self._suffix = plan.suffix
+        return plan.first_action
+
+    def reset(self) -> None:
+        super().reset()
+        self._remaining = float("nan")
+        self._suffix = ()
+        self._windows = 0
+
+    def __repr__(self) -> str:
+        return (
+            f"ShrinkingQuotaMPCController(space={self._space.name}, "
+            f"quota={self._resolved_quota:g}, beam={self._beam_width})"
         )
 
 
