@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
@@ -52,6 +53,7 @@ from rl_newton.benchmark.metrics import (
     summarize_run,
 )
 from rl_newton.benchmark.paired import SyntheticTask, TaskSpec, make_task
+from rl_newton.benchmark.store import ResultStore, RunKey
 from rl_newton.optimizers.action_space import ActionSpace
 from rl_newton.optimizers.controllers import (
     FixedController,
@@ -64,6 +66,7 @@ from rl_newton.optimizers.newton_cg import (
     Controller,
     NewtonCGConfig,
     NewtonCGOptimizer,
+    OptimizationTrace,
 )
 from rl_newton.types import ControllerAction
 
@@ -118,6 +121,14 @@ class HeadroomConfig:
     phase: Phase = "pilot"
     primary_difficulty: str = "medium"
     """게이트 D의 주 target 난이도."""
+    device: str = "cpu"
+    """텐서 디바이스.
+
+    **Stage 2 는 CPU 가 기본이며 그것이 옳다.** 대상은 quadratic(d=32~100)과
+    Rosenbrock(d=2~10)뿐이다. Stage 0 실측에서 10만 파라미터 MNIST MLP 조차
+    GPU 런치 오버헤드 지배(0.68 ms/gradient)였으므로, d=100 matvec 을 GPU 로
+    보내면 순손실이다. GPU 는 Stage 3 이후에만 쓴다.
+    """
 
     def __post_init__(self) -> None:
         if not self.specs:
@@ -164,40 +175,115 @@ def absolute_target_loss(task: SyntheticTask, target: TargetSpec) -> float:
     return target.value * task.initial_loss
 
 
+def _action_counts(trace: OptimizationTrace) -> dict[str, int]:
+    """선택한 action 의 빈도. 정책 분석용 (README §8 action heatmap)."""
+    counts: dict[str, int] = {}
+    for record in trace.records:
+        key = f"m={record.extra.get('damping_multiplier')},k={record.cg_budget},a={record.step_size:g}"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _chosen_depths(controller: Controller) -> dict[str, int] | None:
+    """planner 가 채택한 계획 길이의 빈도.
+
+    거의 항상 1이면 horizon 을 늘려도 실질적 가치가 없다는 직접적 증거다
+    (프로토콜 게이트 C).
+    """
+    choices = getattr(controller, "choices", None)
+    if not choices:
+        return None
+    counts: dict[str, int] = {}
+    for choice in choices:
+        depth = getattr(choice, "chosen_depth", 1)
+        counts[str(depth)] = counts.get(str(depth), 0) + 1
+    return counts
+
+
 def run_controller(
     config: HeadroomConfig,
     factory: ControllerFactory,
     *,
     label: str,
     difficulty: str | None = None,
+    store: ResultStore | None = None,
+    verbose: bool = False,
 ) -> list[RunSummary]:
     """모든 ``(spec, seed)`` 인스턴스에서 컨트롤러를 실행하고 집계한다.
 
     paired design 이므로 인스턴스는 ``make_task(spec, seed)`` 로 결정론적으로
     만들어진다. 컨트롤러가 난수를 얼마나 쓰든 문제는 동일하다.
 
+    ``store`` 가 주어지면 **재개 가능**하다. 이미 완료된
+    ``(controller, task_instance, seed, target)`` 조합은 건너뛰고 저장된 결과를
+    쓴다. 각 run 이 끝나는 즉시 기록하므로 프로세스가 끊겨도 손실이 없다.
+
+    예외는 삼키지 않고 ``failed`` 로 기록한 뒤 다음 run 으로 넘어간다. 하나의
+    task 가 깨져도 전체 실험이 멈추지 않아야 하고, 실패 사실은 남아야 한다.
+
     Args:
         difficulty: target 난이도. ``None`` 이면 ``primary_difficulty``.
+        store: 재개 가능한 결과 저장소.
+        verbose: 건너뛴 run 수를 보고한다.
     """
     opt_config = config.optimizer_config()
     level = difficulty or config.primary_difficulty
     summaries: list[RunSummary] = []
+    n_skipped = 0
+
     for spec in config.specs:
         target = config.target_for(spec, level)
         for seed in config.seeds:
-            task = make_task(spec, seed)
+            task = make_task(spec, seed, device=config.device)
             if not _is_eligible(task):
                 continue
-            optimizer = NewtonCGOptimizer(
-                task,
-                factory(task, target),
-                opt_config,
-                run_id=f"{label}|{task.instance_id}",
+
+            key = RunKey(
+                controller=label,
+                task_instance_id=task.instance_id,
                 seed=seed,
+                target=target.label,
             )
-            trace = optimizer.run()
+            if store is not None and store.is_completed(key):
+                cached = store.get(key)
+                if cached is not None and cached.summary is not None:
+                    summaries.append(cached.summary)
+                    n_skipped += 1
+                    continue
+
+            controller = factory(task, target)
+            started = time.perf_counter()
+            try:
+                optimizer = NewtonCGOptimizer(
+                    task,
+                    controller,
+                    opt_config,
+                    run_id=f"{label}|{task.instance_id}",
+                    seed=seed,
+                )
+                trace = optimizer.run()
+            except Exception as exc:  # noqa: BLE001 - 실패를 기록하고 계속한다
+                elapsed = time.perf_counter() - started
+                message = f"{type(exc).__name__}: {exc}"
+                if store is not None:
+                    store.record_failure(key, message, wall_clock_sec=elapsed)
+                print(f"  실패 {key.as_str()}: {message}", flush=True)
+                continue
+
+            elapsed = time.perf_counter() - started
             trace.controller = label
-            summaries.append(summarize_run(trace, target))
+            summary = summarize_run(trace, target)
+            summaries.append(summary)
+            if store is not None:
+                store.record_success(
+                    summary,
+                    wall_clock_sec=elapsed,
+                    action_counts=_action_counts(trace),
+                    chosen_depths=_chosen_depths(controller),
+                )
+
+    if verbose and n_skipped:
+        print(f"  {label}: 캐시에서 {n_skipped}개 재사용", flush=True)
     return summaries
 
 
@@ -216,7 +302,11 @@ def _rank_key_track_e(group: GroupSummary) -> float:
 
 
 def search_best_static(
-    config: HeadroomConfig, space: ActionSpace, *, n_tune: int
+    config: HeadroomConfig,
+    space: ActionSpace,
+    *,
+    n_tune: int,
+    store: ResultStore | None = None,
 ) -> tuple[ControllerAction, GroupSummary]:
     """행동 공간 조합을 고정으로 돌려 Track E 기준 최고를 고른다.
 
@@ -236,7 +326,12 @@ def search_best_static(
     for flat in indices:
         action = space.action_from_flat(flat)
         label = f"static[{flat}]"
-        runs = run_controller(config, lambda _t, _g, a=action: FixedController(a), label=label)
+        runs = run_controller(
+            config,
+            lambda _t, _g, a=action: FixedController(a),
+            label=label,
+            store=store,
+        )
         group = summarize_group(runs, controller=label)
         if best_group is None or _rank_key_track_e(group) < _rank_key_track_e(best_group):
             best_group = group
@@ -247,7 +342,11 @@ def search_best_static(
 
 
 def search_best_open_loop(
-    config: HeadroomConfig, space: ActionSpace, *, n_tune: int
+    config: HeadroomConfig,
+    space: ActionSpace,
+    *,
+    n_tune: int,
+    store: ResultStore | None = None,
 ) -> GroupSummary:
     """progress 만 보는 스케줄을 랜덤 서치한다 (프로토콜 D4).
 
@@ -268,6 +367,7 @@ def search_best_open_loop(
             config,
             lambda _t, _g, f=flats, b=breakpoints: make_open_loop_controller(space, f, b),
             label=label,
+            store=store,
         )
         group = summarize_group(runs, controller=label)
         if best_group is None or _rank_key_track_e(group) < _rank_key_track_e(best_group):
@@ -347,12 +447,162 @@ class HeadroomReport:
         return "\n".join(lines)
 
 
+@dataclass(slots=True)
+class BeamCalibration:
+    """beam width 민감도 측정 결과 (프로토콜 F).
+
+    beam 은 추측으로 정하지 않고 pilot subset 에서 측정해 고른다. beam search 는
+    정확한 planner 가 아니므로 폭을 줄이면 계획 품질이 떨어질 수 있고, 그것이
+    게이트 C의 결론을 바꿀 수 있다.
+
+    Attributes:
+        rows: ``(space, horizon, beam)`` -> 측정값.
+        selected_beam: 선택 규칙을 적용한 결과.
+        reference_beam: 비교 기준이 된 최대 beam.
+        tolerance: 상대 허용 오차.
+    """
+
+    rows: dict[tuple[str, int, int], dict[str, float]] = field(default_factory=dict)
+    selected_beam: int = 0
+    reference_beam: int = 0
+    tolerance: float = 0.02
+    rationale: str = ""
+
+    def table(self) -> str:
+        header = (
+            f"{'space':<8} {'H':>3} {'beam':>5} {'logΔ(nat)':>11} "
+            f"{'rel.diff':>9} {'depth>1':>8} {'wall(s)':>9}"
+        )
+        lines = [header, "-" * len(header)]
+        for (space, horizon, beam), row in sorted(self.rows.items()):
+            lines.append(
+                f"{space:<8} {horizon:>3} {beam:>5} {row['log_improvement']:>11.4f} "
+                f"{row['relative_diff']:>9.4f} {row['deep_fraction']:>8.2f} "
+                f"{row['wall_clock_sec']:>9.2f}"
+            )
+        return "\n".join(lines)
+
+
+def calibrate_beam_width(
+    config: HeadroomConfig,
+    *,
+    narrow: ActionSpace,
+    wide: ActionSpace,
+    beams: Sequence[int] = (1, 2, 4),
+    horizons: Sequence[int] = (3, 5),
+    tolerance: float = 0.02,
+    store: ResultStore | None = None,
+    verbose: bool = True,
+) -> BeamCalibration:
+    """beam width 를 pilot subset 에서 측정해 고른다 (프로토콜 F).
+
+    선택 규칙은 **사전 정의된 것**이며 결과를 본 뒤 바꾸지 않는다.
+
+    ```text
+    1. 최대 beam 을 기준으로 삼는다.
+    2. 모든 (space, horizon) 조합에서
+         |J_b - J_max| / (|J_max| + eps) < tolerance
+       를 만족하는 beam 중 가장 작은 것을 고른다.
+    3. 동률이면 wall-clock 이 짧은 것, 그래도 같으면 beam 2.
+    ```
+
+    ``deep_fraction`` (``chosen_depth > 1`` 비율)도 함께 본다. beam 을 줄여
+    깊은 계획이 사라지면 게이트 C의 해석이 달라지므로, 지표가 비슷해도
+    이 값이 크게 변하면 선택에서 배제한다.
+
+    Args:
+        beams: 시험할 beam 폭.
+        horizons: 시험할 horizon.
+        tolerance: 상대 허용 오차.
+        store: 재개 가능한 저장소.
+
+    Returns:
+        ``BeamCalibration``.
+    """
+    calibration = BeamCalibration(tolerance=tolerance)
+    reference = max(beams)
+    calibration.reference_beam = reference
+    spaces = {"narrow": narrow, "wide": wide}
+
+    measured: dict[tuple[str, int, int], dict[str, float]] = {}
+    for space_label, space in spaces.items():
+        for horizon in horizons:
+            for beam in beams:
+                label = f"cal_mpc_H{horizon}_{space_label}_b{beam}"
+                if verbose:
+                    print(f"  {label}", flush=True)
+                started = time.perf_counter()
+                runs = run_controller(
+                    config,
+                    lambda _t, _g, s=space, h=horizon, b=beam: HorizonPlannerController(
+                        s, horizon=h, beam_width=b, track="fixed_budget"
+                    ),
+                    label=label,
+                    store=store,
+                )
+                elapsed = time.perf_counter() - started
+                group = summarize_group(runs, controller=label)
+                deep = float("nan")
+                if store is not None:
+                    depth_totals: dict[str, int] = {}
+                    for record in store:
+                        if record.key.controller != label or not record.chosen_depths:
+                            continue
+                        for depth, count in record.chosen_depths.items():
+                            depth_totals[depth] = depth_totals.get(depth, 0) + count
+                    total = sum(depth_totals.values())
+                    if total:
+                        deep = 1.0 - depth_totals.get("1", 0) / total
+                measured[space_label, horizon, beam] = {
+                    "log_improvement": group.median_log_improvement,
+                    "relative_diff": float("nan"),
+                    "deep_fraction": deep,
+                    "wall_clock_sec": elapsed,
+                }
+
+    # 상대 차이를 채운다.
+    eps = 1.0e-12
+    for (space_label, horizon, _beam), row in measured.items():
+        ref = measured[space_label, horizon, reference]["log_improvement"]
+        if math.isfinite(ref) and math.isfinite(row["log_improvement"]):
+            row["relative_diff"] = abs(row["log_improvement"] - ref) / (abs(ref) + eps)
+    calibration.rows = measured
+
+    # 선택 규칙 적용
+    candidates: list[int] = []
+    for beam in sorted(beams):
+        ok = True
+        for space_label in spaces:
+            for horizon in horizons:
+                row = measured[space_label, horizon, beam]
+                if not math.isfinite(row["relative_diff"]) or row["relative_diff"] >= tolerance:
+                    ok = False
+        if ok:
+            candidates.append(beam)
+
+    if candidates:
+        smallest = min(candidates)
+        calibration.selected_beam = smallest
+        calibration.rationale = (
+            f"beam {smallest}: 모든 (space, horizon) 에서 기준 beam {reference} 대비 "
+            f"상대 차이 < {tolerance:g}"
+        )
+    else:
+        calibration.selected_beam = reference
+        calibration.rationale = (
+            f"어떤 축소 beam 도 허용 오차 {tolerance:g} 를 만족하지 못했다. "
+            f"기준 beam {reference} 를 유지한다."
+        )
+    return calibration
+
+
 def run_headroom(
     config: HeadroomConfig,
     *,
     narrow: ActionSpace,
     wide: ActionSpace,
     absolute: ActionSpace,
+    store: ResultStore | None = None,
     verbose: bool = True,
 ) -> HeadroomReport:
     """게이트 A~D를 측정한다.
@@ -386,7 +636,9 @@ def run_headroom(
 
     # --- baseline ---
     log(f"best_static (탐색 {n_tune}회)")
-    best_action, static_group = search_best_static(config, narrow, n_tune=n_tune)
+    best_action, static_group = search_best_static(
+        config, narrow, n_tune=n_tune, store=store
+    )
     static_group = _relabel(static_group, "best_static")
     static_runs = static_group.runs
     report.best_static_action = best_action
@@ -395,14 +647,18 @@ def run_headroom(
 
     log(f"best_open_loop (탐색 {n_tune}회)")
     open_group = _relabel(
-        search_best_open_loop(config, narrow, n_tune=n_tune), "best_open_loop"
+        search_best_open_loop(config, narrow, n_tune=n_tune, store=store),
+        "best_open_loop",
     )
     report.groups["best_open_loop"] = open_group
     report.tuning_runs["best_open_loop"] = n_tune
 
     log("heuristic")
     heuristic_runs = run_controller(
-        config, lambda _t, _g: HeuristicController(narrow), label="heuristic"
+        config,
+        lambda _t, _g: HeuristicController(narrow),
+        label="heuristic",
+        store=store,
     )
     report.groups["heuristic"] = summarize_group(heuristic_runs, controller="heuristic")
     report.tuning_runs["heuristic"] = 1
@@ -425,6 +681,7 @@ def run_headroom(
             config,
             lambda _t, _g, s=space: OneStepEfficiencyController(s),
             label=label,
+            store=store,
         )
         onestep_runs[label] = runs
         report.groups[label] = summarize_group(runs, controller=label)
@@ -450,6 +707,7 @@ def run_headroom(
                     track="fixed_budget",
                 ),
                 label=label,
+                store=store,
             )
             planner_runs[label] = runs
             report.groups[label] = summarize_group(runs, controller=label)
@@ -487,6 +745,7 @@ def run_headroom(
             lambda _t, _g, a=best_action: FixedController(a),
             label=f"best_static@{level}",
             difficulty=level,
+            store=store,
         )
         # planner 는 task 별 **절대** target loss 를 받아야 한다. 상대 target
         # v 의 절대값은 v * L_0 이므로 인스턴스마다 다르다. 고정값을 넘기면
@@ -502,6 +761,7 @@ def run_headroom(
             ),
             label=f"mpc_H{max_h}@{level}",
             difficulty=level,
+            store=store,
         )
         report.groups[f"best_static@{level}"] = summarize_group(
             static_t, controller=f"best_static@{level}"

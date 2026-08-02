@@ -248,14 +248,47 @@ Rosenbrock은 `L* = 0` 이므로 절대값으로 `{1e-1, 1e-2, 1e-4}` 를 쓴다
 | **pilot** | dev seed `{0, 1, 2}`, 초기 condition number 집합 | GE 예산과 target 난이도 **선정**. 프로토콜 결정에만 사용 |
 | **confirmatory** | held-out seed `{100..109}`, 새 condition number와 초기점 | 최종 결론. 선정된 예산/target을 그대로 적용 |
 
-pilot 절차:
+실행 순서는 세 국면으로 나눈다.
+
+```text
+C1  pilot            budget / target / timeout / beam / horizon / N_tune 결정
+C2  protocol freeze  config 고정 + 태그. 이후 변경 금지
+C3  confirmatory     held-out seed 에서 게이트 판정
+```
+
+**C1 pilot 절차:**
 
 1. 여러 GE 예산을 시험한다
 2. 방법 대부분이 너무 쉽게 성공하지도, 전부 실패하지도 않는 예산을 고른다
    (도달률이 20~80% 구간에 오도록)
 3. easy / medium / hard target을 pilot 분포를 보고 확정한다
-4. 예산과 target을 §9 변경 이력에 **고정**하고 이후 바꾸지 않는다
-5. confirmatory에서 held-out seed로 재평가한다
+4. beam width를 위 calibration 규칙으로 확정한다
+5. pilot 결과는 **최종 효과 크기 계산에 섞지 않는다**
+
+**C2 protocol freeze:**
+
+config를 고정하고 태그를 남긴다.
+
+```text
+git tag protocol-freeze-stage2-v1
+```
+
+함께 저장할 것: 최종 config 파일, pilot 결과 요약, 각 파라미터를 그 값으로
+선택한 이유, 이후 변경 금지 항목, 예외적으로 변경 가능한 오류 조건.
+
+**confirmatory 중 버그를 발견하면 조용히 고치고 계속하지 않는다.**
+
+```text
+중단 → 버그 범위 기록 → 영향받은 결과 폐기 → 버전 증가(v2) → 전체 재실행
+```
+
+**C3 confirmatory:** held-out seed `{100..109}` 에서 게이트 A1·A2·B·C·D를 평가한다.
+Track E와 Track T를 분리해 보고한다.
+
+| 트랙 | 보고 항목 |
+|---|---|
+| Track E | 고정 GE에서 terminal log-loss improvement, paired difference, CI, 행동공간별 헤드룸 |
+| Track T | target별 도달률, cost-to-target, restricted mean, 절단 run 수, success-conditioned cost와 전체 성과를 구분 |
 
 **2026-08-01 시점의 파일럿 결과는 예산 300 GE, seed {0,1}에서 도달률 67% 였다.
 이 결과는 pilot으로만 분류하며 어떤 결론에도 쓰지 않는다.**
@@ -490,15 +523,77 @@ mpc_H1 / H3 / H5      H-step beam search, terminal objective 기준
 `-(α/λ)g` 로 근사되어 `(λ, α)` 와 `(10λ, 10α)` 가 aliasing되므로, 먼저
 `damping × CG budget` 만 분리해 본다. 헤드룸이 확인되면 step_size 축을 추가한다.
 
-#### 게이트
+#### 계산 자원
 
-**Gate A — Fixed-budget adaptive headroom (Track E)**
+**Stage 2는 GPU를 쓰지 않는다.** 대상이 quadratic(d=32~100)과 Rosenbrock(d=2~10)
+뿐이므로 CPU가 더 빠르다. Stage 0 실측에서 10만 파라미터 MNIST MLP조차 GPU
+런치 오버헤드 지배(0.68 ms/gradient)였으므로 d=100 matvec을 GPU로 보내면 순손실이다.
 
-동일 GE 예산에서 `absolute` MPC planner가 `best_static` 대비 terminal loss를
-얼마나 더 낮추는가.
+| 단계 | 디바이스 | VRAM |
+|---|---|---|
+| Stage 1~2 | CPU | 0 |
+| Stage 2.5 micro-neural | CPU 가능 | ~0 |
+| Stage 3 MNIST MLP (102k, B=512) | GPU 권장 | < 100 MB |
+| Stage 4 PPO (DummyVecEnv) | GPU | 수백 MB |
+| Stage 5 small CNN (2.19M, B=128) | GPU | ~1 GB |
+
+#### 실행은 재개 가능해야 한다
+
+Stage 2는 컨트롤러 × 행동공간 × horizon × task × seed × target 조합이라 수백~수천
+run이 된다. 프로세스가 끊겨도(셸 중단, timeout) 계산한 결과를 잃지 않아야 한다.
+
+- run 하나가 끝나는 즉시 `results/raw/headroom_<tag>.jsonl` 에 append
+- 재실행 시 완료된 `(controller, task_instance, seed, target)` 조합은 건너뜀
+- 상태를 `completed` / `failed` 로 구분. 미완료는 파일에 없으므로 자동 재시도
+- 각 run에 GE, HVP, wall-clock, action 빈도, `chosen_depth` 분포, git commit,
+  config hash를 함께 기록
+- **raw와 집계를 분리한다.** 집계 로직을 바꿔도 실험을 다시 돌리지 않는다
+
+#### Beam width는 추측이 아니라 측정으로 정한다
+
+beam search는 정확한 planner가 아니므로 폭을 줄이면 계획 품질이 떨어질 수 있고,
+그것이 게이트 C의 결론을 바꿀 수 있다. 따라서 **pilot calibration parameter**로
+취급한다.
+
+측정 범위:
 
 ```text
-H_E = J_E(mpc_absolute) − J_E(best_static)      [nat]
+beam    ∈ {1, 2, 4}
+horizon ∈ {3, 5}
+space   ∈ {narrow, wide}
+seed    dev seed 만 (held-out 100~109 사용 금지)
+```
+
+**선택 규칙 (사전 정의. 결과를 본 뒤 바꾸지 않는다):**
+
+1. 최대 beam(4)을 기준으로 삼는다
+2. 모든 `(space, horizon)` 조합에서 다음을 만족하는 beam 중 **가장 작은 것**을 고른다
+
+   ```text
+   |J_b − J_4| / (|J_4| + ε) < 0.02
+   ```
+
+3. 수치 기준을 통과해도 다음이 기준 beam과 달라지면 배제한다
+   - `H=3`과 `H=5`의 우열
+   - planning headroom의 존재 여부 (게이트 C의 판정)
+   - narrow와 wide의 관계
+   - 선택 action 분포
+   - `chosen_depth` 분포 (특히 `depth > 1` 비율)
+4. tie-break: 가장 작은 beam → wall-clock이 짧은 것 → 그래도 같으면 beam 2
+
+`chosen_depth`를 반드시 본다. `H=5`인데 거의 항상 1이면 장기 planning의 실질적
+가치가 낮다는 직접적 증거이고, 이는 PPO 착수 판단에 직결된다.
+
+#### 게이트
+
+**Gate A1 — Instantaneous absolute-action headroom (Track E)**
+
+> 현재 상태에서 좋은 damping이 존재하는가?
+
+도달성 제약을 완전히 없앤 `absolute` 행동 공간에서 **H=1**로 측정한다.
+
+```text
+H_E(A1) = J_E(absolute, H=1) − J_E(best_static)      [nat]
 ```
 
 | H_E | 판단 |
@@ -507,26 +602,85 @@ H_E = J_E(mpc_absolute) − J_E(best_static)      [nat]
 | 0.3 ~ 1.0 nat | 조건부. 주 주장을 강건성으로 이동 |
 | < 0.3 nat | 적응 제어 연구를 중단하거나 음성 결과로 정리 |
 
+**"순간적" 헤드룸이다.** 전역 상한이나 장기 헤드룸이라고 부르지 않는다.
+`absolute`는 H=3, 5 planning에 쓰지 않는다. 현재 damping과 무관하게 순간
+이동하므로 damping ramp-up과 temporal credit assignment 자체를 제거하고,
+따라서 장기 계획의 필요성을 묻는 게이트 C의 질문과 무관하다. 비용도 감당할
+수 없다 (33 damping × 4 budget = 132 action이면 H=3 beam=4에서 실제 step당
+약 1,200회 시뮬레이션).
+
+**Gate A2 — Reachable sequential headroom (Track E)**
+
+> 현실적인 multiplier action으로 그 이득에 접근할 수 있는가?
+
+```text
+H_E(A2) = max over {narrow, wide} of J_E(space, H=5) − J_E(best_static)
+```
+
+A1 대비 크게 낮으면 행동 공간 도달성이 병목이다. GO 기준 0.7 nat, 재설계 0.2 nat.
+
 **Gate B — Action-space restriction**
 
 ```text
-absolute  vs  wide multiplier  vs  narrow multiplier
+absolute  vs  wide multiplier  vs  narrow multiplier      (모두 H=1)
 ```
 
-세 공간의 로그 해상도와 나머지 축을 맞춘 상태에서 비교한다. 격차가 크면
-`narrow` 를 고쳐야 한다. 격차가 작으면 원안 행동 공간이 충분하다.
+세 공간이 **같은 `3^e` 격자** 위에 있어야 이 비교가 성립한다. 해상도가 다르면
+도달성 손실과 해상도 손실이 섞인다. 실제로 초기 구성(2 decade 간격)에서
+`absolute`가 범위가 4배 넓은데도 `narrow`보다 나쁜 결과를 냈다.
+
+```text
+NARROW    {3^-1 .. 3^1}      3점
+WIDE      {3^-3 .. 3^3}      7점
+ABSOLUTE  {3^-16 .. 3^16}   33점
+```
+
+`ABSOLUTE` 범위 `[2.3e-8, 4.3e7]`은 optimizer 경계 `[1e-8, 1e8]` 안에 있다.
+경계에서 클립되면 서로 다른 action이 같은 damping으로 붕괴한다.
+
+**CG budget `{3, 5, 10, 20}`은 축소하지 않는다.** 부차적 하이퍼파라미터가 아니라
+이 프로젝트의 핵심인 inexactness control 축이다. 특히 파일럿 발견이 "국소 효율
+목적이 `k=3`을 과도하게 선호한다"는 것이므로, `k=3`을 삭제하면 문제를 해결하는
+게 아니라 관찰된 현상을 action space 밖으로 숨기는 것이 된다.
+
+계산량이 문제라면 순서는 이렇다.
+
+```text
+1. absolute 를 H=1 로 제한                    (적용됨)
+2. planner 는 narrow / wide 만                 (적용됨)
+3. beam width 민감도 측정 후 축소               (calibration)
+4. 마지막 수단으로 CG budget 축 축소            (하지 않음)
+```
 
 **Gate C — Temporal planning value**
 
-같은 terminal objective, 같은 행동 공간에서 `H = 1, 3, 5` 를 비교한다.
+같은 terminal objective, 같은 행동 공간(`narrow` / `wide`)에서 `H = 1, 3, 5` 를
+비교한다. `absolute` 는 제외한다 (위 A1 참조).
 
 | 결과 | 판단 |
 |---|---|
-| H 증가에 따라 단조 개선, H5/H1 ≥ 1.15 | 순차적 의사결정에 가치가 있다. RL 진행 근거 |
-| 개선이 미미 | contextual bandit이나 heuristic이 적절하다. **PPO를 시작하지 않는다** |
+| `H_E(H=5) − H_E(H=1) ≥ 0.3 nat` | 순차적 의사결정에 가치가 있다. RL 진행 근거 |
+| < 0.05 nat | contextual bandit이나 heuristic이 적절하다. **PPO를 시작하지 않는다** |
 
 **이 게이트가 Stage 4 착수 여부를 직접 결정한다.** 가장 비싼 단계를 시작하기
 전에 그것이 필요한지 먼저 확인한다.
+
+**실현 성능의 단조성을 가정하지 않는다.** beam search는 정확한 planner가 아니고
+MPC는 매 step 재계획하므로, `H=5`가 `H=3`보다 항상 좋다는 보장이 없다. 구현은
+**incumbent carry-over**를 하므로(depth를 늘려도 이전 depth의 최선을 버리지 않음)
+planner가 선택한 계획의 **효용**은 `H`에 대해 비감소다. 그 성질만 테스트로
+검증하고, 실현 성능은 측정 대상으로 둔다.
+
+```text
+내부 planner utility의 비감소   ≠   실제 episode 성능의 비감소
+```
+
+보조 지표로 `chosen_depth` 분포를 본다.
+
+```text
+H=5 인데 chosen_depth 가 거의 항상 1  ->  장기 planning 의 실질적 가치가 낮다
+H=5 에서 depth 3~5 가 자주 선택됨      ->  temporal planning 이 실제로 활용된다
+```
 
 **Gate D — Cost-to-target headroom (Track T)**
 
