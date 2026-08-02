@@ -124,6 +124,8 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         specs = pilot_specs()
         seeds = list(DEV_SEEDS)[: args.seeds]
         phase = "pilot"
+    if args.max_tasks is not None:
+        specs = specs[: args.max_tasks]
 
     if args.control_step_size:
         narrow, wide, absolute = NARROW, WIDE, ABSOLUTE
@@ -156,6 +158,8 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         "beam": args.beam,
         "horizons": list(args.horizons),
         "difficulty": args.difficulty,
+        "n_specs": len(specs),
+        "narrow_only": bool(args.narrow_only),
     }
     return config, meta | {"spaces": (narrow, wide, absolute)}
 
@@ -175,6 +179,31 @@ def main() -> int:
     parser.add_argument("--max-steps", type=int, default=200)
     parser.add_argument("--beam", type=int, default=2)
     parser.add_argument("--horizons", type=int, nargs="+", default=[1, 3, 5])
+    parser.add_argument(
+        "--beams",
+        type=int,
+        nargs="+",
+        default=[1, 2, 4],
+        help="calibrate-beam 에서 시험할 beam 폭",
+    )
+    parser.add_argument(
+        "--cal-horizons",
+        type=int,
+        nargs="+",
+        default=[3, 5],
+        help="calibrate-beam 에서 시험할 horizon",
+    )
+    parser.add_argument(
+        "--max-tasks",
+        type=int,
+        default=None,
+        help="사용할 task spec 수 상한. dry run 용",
+    )
+    parser.add_argument(
+        "--narrow-only",
+        action="store_true",
+        help="calibrate-beam 에서 narrow 만 사용. dry run 용",
+    )
     parser.add_argument("--tuning-budget", type=int, default=None, help="N_tune")
     parser.add_argument("--difficulty", default="medium", choices=["easy", "medium", "hard"])
     parser.add_argument(
@@ -241,9 +270,9 @@ def main() -> int:
         calibration = calibrate_beam_width(
             config,
             narrow=narrow,
-            wide=wide,
-            beams=(1, 2, 4),
-            horizons=(3, 5),
+            wide=narrow if args.narrow_only else wide,
+            beams=tuple(args.beams),
+            horizons=tuple(args.cal_horizons),
             store=store,
             code_dirty=dirty,
         )

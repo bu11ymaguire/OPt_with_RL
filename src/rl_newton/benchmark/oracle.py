@@ -664,6 +664,7 @@ def calibrate_beam_width(
                     label=label,
                     exp_id=exp_id,
                     store=store,
+                    verbose=verbose,
                 )
                 elapsed = time.perf_counter() - started
                 group = summarize_group(runs, controller=label)
