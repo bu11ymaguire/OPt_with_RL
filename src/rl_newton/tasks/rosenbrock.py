@@ -156,9 +156,7 @@ class RosenbrockTask:
     @property
     def minimizer(self) -> Tensor:
         """전역 최소점 ``(1, ..., 1)``."""
-        return torch.ones(
-            self._spec.dimension, device=self._device, dtype=self._dtype
-        )
+        return torch.ones(self._spec.dimension, device=self._device, dtype=self._dtype)
 
     def negative_curvature_point(self, x0: float = 0.0) -> Tensor:
         """Hessian이 indefinite인 지점을 반환한다.
@@ -199,9 +197,7 @@ class RosenbrockTask:
         x = self._x
         head = x[:-1]
         tail = x[1:]
-        return (
-            self._spec.scale * (tail - head**2) ** 2 + (1.0 - head) ** 2
-        ).sum()
+        return (self._spec.scale * (tail - head**2) ** 2 + (1.0 - head) ** 2).sum()
 
     def curvature_loss(self) -> Tensor:
         """minibatch가 없으므로 ``loss`` 와 동일하다."""

@@ -24,7 +24,9 @@ from torch import Tensor
 __all__ = ["flatten_tensors", "unflatten_like", "ParameterFlattener"]
 
 
-def flatten_tensors(tensors: Iterable[Tensor | None], reference: Sequence[Tensor] | None = None) -> Tensor:
+def flatten_tensors(
+    tensors: Iterable[Tensor | None], reference: Sequence[Tensor] | None = None
+) -> Tensor:
     """텐서 리스트를 하나의 1차원 텐서로 이어붙인다.
 
     Args:
@@ -41,9 +43,7 @@ def flatten_tensors(tensors: Iterable[Tensor | None], reference: Sequence[Tensor
     """
     items = list(tensors)
     if reference is not None and len(reference) != len(items):
-        raise ValueError(
-            f"reference length {len(reference)} != tensors length {len(items)}"
-        )
+        raise ValueError(f"reference length {len(reference)} != tensors length {len(items)}")
 
     pieces: list[Tensor] = []
     for i, t in enumerate(items):

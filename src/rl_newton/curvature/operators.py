@@ -94,9 +94,7 @@ class DampedHessianOperator:
     ) -> DampedHessianOperator:
         """loss 클로저로부터 그래프를 만들어 연산자를 생성한다."""
         graph = HvpGraph(loss_closure, params, flattener=flattener)
-        return cls(
-            graph, damping=damping, min_damping=min_damping, max_damping=max_damping
-        )
+        return cls(graph, damping=damping, min_damping=min_damping, max_damping=max_damping)
 
     # --- CurvatureOperator 프로토콜 ---------------------------------------
 

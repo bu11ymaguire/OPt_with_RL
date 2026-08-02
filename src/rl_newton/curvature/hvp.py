@@ -147,9 +147,7 @@ class HvpGraph:
         if self._released:
             raise RuntimeError("HvpGraph has been released; construct a new one")
         if v.shape != (self._flat.numel,):
-            raise ValueError(
-                f"v must have shape ({self._flat.numel},), got {tuple(v.shape)}"
-            )
+            raise ValueError(f"v must have shape ({self._flat.numel},), got {tuple(v.shape)}")
 
         if self._zero_curvature:
             self._hvp_count += 1

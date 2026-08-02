@@ -287,6 +287,5 @@ class StepRecord:
     def __post_init__(self) -> None:
         if self.failure_tag is not None and self.failure_tag not in VALID_FAILURE_TAGS:
             raise ValueError(
-                f"unknown failure_tag {self.failure_tag!r}; "
-                f"allowed: {sorted(VALID_FAILURE_TAGS)}"
+                f"unknown failure_tag {self.failure_tag!r}; allowed: {sorted(VALID_FAILURE_TAGS)}"
             )

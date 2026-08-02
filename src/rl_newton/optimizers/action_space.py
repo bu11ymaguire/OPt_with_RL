@@ -222,9 +222,7 @@ class ActionSpace:
                 f"step_size {step_size} not in {self.step_sizes}; "
                 "고정값은 원래 공간의 부분집합이어야 비교가 공정하다"
             )
-        return replace(
-            self, name=f"{self.name}+fixed_a{step_size:g}", step_sizes=(step_size,)
-        )
+        return replace(self, name=f"{self.name}+fixed_a{step_size:g}", step_sizes=(step_size,))
 
     def with_budgets(self, budgets: Sequence[int]) -> ActionSpace:
         """CG budget 축을 교체한 변형. look-ahead 오라클 비용 절감에 쓴다."""

@@ -66,13 +66,9 @@ def main() -> int:
     print(f"  (기준: log10(3) = {math.log10(3.0):.3f})")
 
     spec_spd = QuadraticSpec(dimension=64, condition_number=1.0e3)
-    spec_ill = QuadraticSpec(
-        kind="ill_conditioned", dimension=100, condition_number=1.0e6
-    )
+    spec_ill = QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e6)
     # GE 예산으로 끊는다. step 수를 맞추면 비용이 다른 것을 비교하게 된다.
-    config = NewtonCGConfig(
-        total_steps=200, cost_budget_ge=400.0, initial_damping=1.0e-2
-    )
+    config = NewtonCGConfig(total_steps=200, cost_budget_ge=400.0, initial_damping=1.0e-2)
 
     n_fixed = NARROW.with_fixed_step_size(1.0)
     w_fixed = WIDE.with_fixed_step_size(1.0)
@@ -91,9 +87,7 @@ def main() -> int:
             config,
             "fixed(m=3,k=20)",
         )
-        run_one(
-            QuadraticTask(spec, seed=0), HeuristicController(n_fixed), config, "heuristic"
-        )
+        run_one(QuadraticTask(spec, seed=0), HeuristicController(n_fixed), config, "heuristic")
         run_one(
             QuadraticTask(spec, seed=0),
             OneStepEfficiencyController(n_fixed),
@@ -111,17 +105,13 @@ def main() -> int:
             )
         run_one(
             QuadraticTask(spec, seed=0),
-            HorizonPlannerController(
-                a_fixed, horizon=3, beam_width=3, track="fixed_budget"
-            ),
+            HorizonPlannerController(a_fixed, horizon=3, beam_width=3, track="fixed_budget"),
             config,
             "mpc_H3(absolute)",
         )
         run_one(
             QuadraticTask(spec, seed=0),
-            HorizonPlannerController(
-                w_fixed, horizon=3, beam_width=3, track="fixed_budget"
-            ),
+            HorizonPlannerController(w_fixed, horizon=3, beam_width=3, track="fixed_budget"),
             config,
             "mpc_H3(wide)",
         )
@@ -142,20 +132,13 @@ def main() -> int:
     for case_name, spec in cases:
         for damping in (1e-2, 1e2, 1e6):
             task = QuadraticTask(spec, seed=0)
-            cfg = NewtonCGConfig(
-                total_steps=200, cost_budget_ge=400.0, initial_damping=damping
-            )
-            trace = NewtonCGOptimizer(
-                task, FixedController(action), cfg, run_id="d", seed=0
-            ).run()
+            cfg = NewtonCGConfig(total_steps=200, cost_budget_ge=400.0, initial_damping=damping)
+            trace = NewtonCGOptimizer(task, FixedController(action), cfg, run_id="d", seed=0).run()
             residuals = [
-                float(r.extra.get("cg_residual_ratio", float("nan")))
-                for r in trace.records
+                float(r.extra.get("cg_residual_ratio", float("nan"))) for r in trace.records
             ]
             finite = [r for r in residuals if math.isfinite(r)]
-            log_delta = math.log(trace.initial_loss) - math.log(
-                max(trace.final_loss, 1e-300)
-            )
+            log_delta = math.log(trace.initial_loss) - math.log(max(trace.final_loss, 1e-300))
             conv = trace.n_cg_converged / max(trace.n_steps, 1)
             print(
                 f"  {case_name:<28} {damping:>9.0e} {log_delta:>8.3f} "

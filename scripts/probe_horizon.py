@@ -50,14 +50,10 @@ def run(space, horizon, track, target_loss, spec, budget=150.0):
         track=track,
         target_loss=target_loss,
     )
-    config = NewtonCGConfig(
-        total_steps=200, cost_budget_ge=budget, initial_damping=1.0e-2
-    )
+    config = NewtonCGConfig(total_steps=200, cost_budget_ge=budget, initial_damping=1.0e-2)
     trace = NewtonCGOptimizer(task, planner, config, run_id="p", seed=0).run()
     log_delta = math.log(trace.initial_loss) - math.log(max(trace.final_loss, 1e-300))
-    actions = [
-        (r.extra["damping_multiplier"], r.cg_budget) for r in trace.records[:6]
-    ]
+    actions = [(r.extra["damping_multiplier"], r.cg_budget) for r in trace.records[:6]]
     return {
         "log_delta": log_delta,
         "n_steps": trace.n_steps,
@@ -73,9 +69,7 @@ def main() -> int:
         ("SPD k=1e2 d=64", QuadraticSpec(dimension=64, condition_number=1.0e2)),
         (
             "ill k=1e5 d=100",
-            QuadraticSpec(
-                kind="ill_conditioned", dimension=100, condition_number=1.0e5
-            ),
+            QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e5),
         ),
     ]
     space = NARROW.with_fixed_step_size(1.0)

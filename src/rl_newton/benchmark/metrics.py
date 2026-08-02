@@ -154,9 +154,7 @@ def summarize_run(trace: OptimizationTrace, target: TargetSpec) -> RunSummary:
             break
 
     n = max(len(trace.records), 1)
-    residuals = [
-        float(r.extra.get("cg_residual_ratio", float("nan"))) for r in trace.records
-    ]
+    residuals = [float(r.extra.get("cg_residual_ratio", float("nan"))) for r in trace.records]
     return RunSummary(
         run_id=trace.run_id,
         controller=trace.controller,
@@ -225,9 +223,7 @@ class GroupSummary:
         )
 
 
-def summarize_group(
-    runs: Sequence[RunSummary], *, controller: str | None = None
-) -> GroupSummary:
+def summarize_group(runs: Sequence[RunSummary], *, controller: str | None = None) -> GroupSummary:
     """여러 run 을 컨트롤러 단위로 집계한다."""
     if not runs:
         raise ValueError("runs must not be empty")
@@ -512,8 +508,7 @@ def _bootstrap_median_ci(
     rng = random.Random(seed)
     n = len(clean)
     samples = [
-        statistics.median([clean[rng.randrange(n)] for _ in range(n)])
-        for _ in range(n_boot)
+        statistics.median([clean[rng.randrange(n)] for _ in range(n)]) for _ in range(n_boot)
     ]
     samples.sort()
     alpha = (1.0 - confidence) / 2.0
@@ -583,9 +578,7 @@ def compare_paired_delta(
     )
 
 
-def recovery_ratio(
-    static: float, learned: float, oracle: float
-) -> float:
+def recovery_ratio(static: float, learned: float, oracle: float) -> float:
     """학습된 컨트롤러가 도달 가능한 헤드룸의 몇 %를 회수했는가 (프로토콜 게이트 E).
 
     ```text

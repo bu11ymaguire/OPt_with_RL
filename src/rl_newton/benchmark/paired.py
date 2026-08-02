@@ -181,9 +181,7 @@ def quadratic_meta_train_specs(
     for d in dimensions:
         for kappa in condition_numbers:
             kind = "ill_conditioned" if kappa >= 1.0e4 else "spd"
-            specs.append(
-                QuadraticSpec(kind=kind, dimension=d, condition_number=kappa)
-            )
+            specs.append(QuadraticSpec(kind=kind, dimension=d, condition_number=kappa))
     if include_indefinite:
         for d in dimensions:
             specs.append(

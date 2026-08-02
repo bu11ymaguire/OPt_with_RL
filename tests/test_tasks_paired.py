@@ -139,9 +139,7 @@ class TestRosenbrockConstruction:
 
     def test_negative_curvature_point_is_indefinite(self):
         for d in (2, 5):
-            task = RosenbrockTask(
-                RosenbrockSpec(dimension=d), seed=0, dtype=torch.float64
-            )
+            task = RosenbrockTask(RosenbrockSpec(dimension=d), seed=0, dtype=torch.float64)
             task.move_to(task.negative_curvature_point(x0=0.3))
             assert float(torch.linalg.eigvalsh(task.hessian_matrix()).min()) < 0.0
 
@@ -221,9 +219,7 @@ class TestPairedDeterminism:
         after_consumption = make_task(spec, 5)
 
         assert torch.equal(baseline.matrix, after_consumption.matrix)
-        assert torch.equal(
-            baseline.params[0].detach(), after_consumption.params[0].detach()
-        )
+        assert torch.equal(baseline.params[0].detach(), after_consumption.params[0].detach())
 
     def test_determinism_across_processes(self):
         """별도 프로세스에서도 같은 인스턴스가 나와야 한다.

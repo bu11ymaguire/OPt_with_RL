@@ -130,9 +130,7 @@ class TestRosenbrock:
     @pytest.mark.parametrize("dimension", [2, 10])
     def test_matches_autograd_hessian(self, dimension: int):
         """``autograd.functional.hessian`` 은 우리 구현과 독립적인 대조군이다."""
-        task = RosenbrockTask(
-            RosenbrockSpec(dimension=dimension), seed=0, dtype=torch.float64
-        )
+        task = RosenbrockTask(RosenbrockSpec(dimension=dimension), seed=0, dtype=torch.float64)
         graph = HvpGraph(task.loss, task.params)
 
         v = torch.randn(graph.numel, dtype=torch.float64)
@@ -270,9 +268,7 @@ class TestGraphReuse:
 class TestMultiTensorModels:
     def test_preserves_dimension_across_parameter_tensors(self):
         seed_everything(0)
-        model = torch.nn.Sequential(
-            torch.nn.Linear(8, 5), torch.nn.Tanh(), torch.nn.Linear(5, 3)
-        )
+        model = torch.nn.Sequential(torch.nn.Linear(8, 5), torch.nn.Tanh(), torch.nn.Linear(5, 3))
         flat = ParameterFlattener(model.parameters())
         inputs = torch.randn(16, 8)
         targets = torch.randint(0, 3, (16,))
@@ -290,8 +286,9 @@ class TestMultiTensorModels:
     def test_matches_explicit_hessian_for_small_mlp(self):
         """작은 MLP의 explicit Hessian을 열 단위로 만들어 대조한다."""
         seed_everything(0)
-        model = torch.nn.Sequential(torch.nn.Linear(3, 2), torch.nn.Tanh(),
-                                    torch.nn.Linear(2, 2)).double()
+        model = torch.nn.Sequential(
+            torch.nn.Linear(3, 2), torch.nn.Tanh(), torch.nn.Linear(2, 2)
+        ).double()
         flat = ParameterFlattener(model.parameters())
         inputs = torch.randn(8, 3, dtype=torch.float64)
         targets = torch.randint(0, 2, (8,))

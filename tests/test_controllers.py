@@ -50,16 +50,12 @@ WIDE_F = WIDE.with_fixed_step_size(1.0)
 
 
 def make_task(kappa: float = 1.0e3, d: int = 32, seed: int = 0) -> QuadraticTask:
-    return QuadraticTask(
-        QuadraticSpec(dimension=d, condition_number=kappa), seed=seed
-    )
+    return QuadraticTask(QuadraticSpec(dimension=d, condition_number=kappa), seed=seed)
 
 
 def make_optimizer(controller, *, budget: float = 200.0, steps: int = 50):
     task = make_task()
-    config = NewtonCGConfig(
-        total_steps=steps, cost_budget_ge=budget, initial_damping=1.0e-2
-    )
+    config = NewtonCGConfig(total_steps=steps, cost_budget_ge=budget, initial_damping=1.0e-2)
     return NewtonCGOptimizer(task, controller, config, run_id="t", seed=0)
 
 
@@ -83,16 +79,10 @@ class TestActionSpaceResolution:
         """올렸다 되돌리기를 반복해도 damping 이 제자리로 와야 한다."""
         log_damping = -2.0
         up = ControllerAction(damping_multiplier=3.0, cg_budget=5, step_size=1.0)
-        down = ControllerAction(
-            damping_multiplier=1.0 / 3.0, cg_budget=5, step_size=1.0
-        )
+        down = ControllerAction(damping_multiplier=1.0 / 3.0, cg_budget=5, step_size=1.0)
         for _ in range(20):
-            log_damping = apply_damping_action(
-                log_damping, up, min_log10=-8, max_log10=8
-            )
-            log_damping = apply_damping_action(
-                log_damping, down, min_log10=-8, max_log10=8
-            )
+            log_damping = apply_damping_action(log_damping, up, min_log10=-8, max_log10=8)
+            log_damping = apply_damping_action(log_damping, down, min_log10=-8, max_log10=8)
         assert log_damping == pytest.approx(-2.0, abs=1e-9)
 
     def test_all_spaces_share_log_resolution(self):
@@ -168,9 +158,7 @@ class TestHorizonUtility:
           per-step ratio 합 = ln2/1 + ln2/1 = 1.386
           누적 효용        = ln4/2            = 0.693
         """
-        per_step_sum = (
-            efficiency_score(1.0, 0.5, 1.0) + efficiency_score(0.5, 0.25, 1.0)
-        )
+        per_step_sum = efficiency_score(1.0, 0.5, 1.0) + efficiency_score(0.5, 0.25, 1.0)
         cumulative = horizon_utility(1.0, 0.25, 2.0, track="fixed_budget")
 
         assert per_step_sum == pytest.approx(2.0 * math.log(2.0))
@@ -197,17 +185,13 @@ class TestHorizonUtility:
         assert cheap_low_rate < costly_high_rate
 
     def test_cost_to_target_returns_negative_total_cost_when_reached(self):
-        u = horizon_utility(
-            1.0, 1.0e-7, 42.0, track="cost_to_target", target_loss=1.0e-6
-        )
+        u = horizon_utility(1.0, 1.0e-7, 42.0, track="cost_to_target", target_loss=1.0e-6)
         assert u == pytest.approx(-42.0)
 
     def test_cost_to_target_estimates_remaining_cost(self):
         """미도달이면 남은 거리를 관측 진행률로 나눠 예상 총비용을 만든다."""
         # 10 GE 로 loss 를 1 -> 0.1 (ln10 nat). 목표는 0.01 (추가로 ln10 필요).
-        u = horizon_utility(
-            1.0, 0.1, 10.0, track="cost_to_target", target_loss=0.01
-        )
+        u = horizon_utility(1.0, 0.1, 10.0, track="cost_to_target", target_loss=0.01)
         assert u == pytest.approx(-20.0, rel=1e-9)
 
     def test_cost_to_target_prefers_lower_total_cost(self):
@@ -275,9 +259,7 @@ class TestIncumbentCarryOver:
     def _utility_at_first_step(self, space: ActionSpace, horizon: int) -> float:
         planner = HorizonPlannerController(space, horizon=horizon, beam_width=2)
         task = make_task()
-        config = NewtonCGConfig(
-            total_steps=1, cost_budget_ge=1.0e9, initial_damping=1.0e-2
-        )
+        config = NewtonCGConfig(total_steps=1, cost_budget_ge=1.0e9, initial_damping=1.0e-2)
         optimizer = NewtonCGOptimizer(task, planner, config, run_id="u", seed=0)
         optimizer.run()
         return planner.last_utility
@@ -346,17 +328,13 @@ class TestBaselineControllers:
     def test_fixed_controller_always_returns_same_action(self):
         action = NARROW_F.action_from_flat(3)
         controller = FixedController(action)
-        context = StepContext(
-            step=0, total_steps=10, loss=1.0, grad_norm=1.0, damping=1e-2
-        )
+        context = StepContext(step=0, total_steps=10, loss=1.0, grad_norm=1.0, damping=1e-2)
         assert controller.select(context, None) is action  # type: ignore[arg-type]
 
     def test_open_loop_switches_on_progress_only(self):
         early = NARROW_F.action_from_flat(0)
         late = NARROW_F.action_from_flat(11)
-        controller = OpenLoopController(
-            [ScheduleSegment(0.5, early), ScheduleSegment(1.0, late)]
-        )
+        controller = OpenLoopController([ScheduleSegment(0.5, early), ScheduleSegment(1.0, late)])
         assert controller.action_at(0.0) is early
         assert controller.action_at(0.5) is early
         assert controller.action_at(0.51) is late
@@ -434,11 +412,7 @@ class TestCostBudgetTermination:
         cheap = next(a for a in NARROW_F.iter_actions() if a.cg_budget == 3)
         costly = next(a for a in NARROW_F.iter_actions() if a.cg_budget == 20)
 
-        cheap_trace = make_optimizer(
-            FixedController(cheap), budget=200.0, steps=1000
-        ).run()
-        costly_trace = make_optimizer(
-            FixedController(costly), budget=200.0, steps=1000
-        ).run()
+        cheap_trace = make_optimizer(FixedController(cheap), budget=200.0, steps=1000).run()
+        costly_trace = make_optimizer(FixedController(costly), budget=200.0, steps=1000).run()
 
         assert cheap_trace.n_steps > costly_trace.n_steps

@@ -74,9 +74,7 @@ def gate_hvp(device: str, dtype: torch.dtype) -> bool:
         rows.append((f"quadratic kappa={kappa:.0e}", err, threshold))
 
     for d in (2, 10):
-        task = RosenbrockTask(
-            RosenbrockSpec(dimension=d), seed=0, device=device, dtype=dtype
-        )
+        task = RosenbrockTask(RosenbrockSpec(dimension=d), seed=0, device=device, dtype=dtype)
         with HvpGraph(task.loss, task.params) as graph:
             v = torch.randn(graph.numel, device=device, dtype=dtype)
             err = relative_error(graph.matvec(v), task.hessian_matrix() @ v)
@@ -131,9 +129,7 @@ def gate_damping_helps(device: str, dtype: torch.dtype) -> bool:
     print("\n[게이트 3] damping이 CG 실패를 줄인다 (kappa=1e6, d=100, 8 seeds)")
     print(f"  {'damping':>9} {'예산=5':>9} {'예산=10':>9} {'예산=20':>9} {'중앙 resid':>12}")
 
-    spec = QuadraticSpec(
-        kind="ill_conditioned", dimension=100, condition_number=1.0e6
-    )
+    spec = QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e6)
     budgets = (5, 10, 20)
     dampings = (1e-8, 1e2, 1e4, 1e6, 1e8)
     table: dict[float, tuple[list[float], float]] = {}
@@ -146,9 +142,7 @@ def gate_damping_helps(device: str, dtype: torch.dtype) -> bool:
             for seed in range(8):
                 task = QuadraticTask(spec, seed=seed, device=device, dtype=dtype)
                 op = _operator(task, damping)
-                result = conjugate_gradient(
-                    op, -op.grad, max_iters=budget, tolerance=1e-3
-                )
+                result = conjugate_gradient(op, -op.grad, max_iters=budget, tolerance=1e-3)
                 op.release()
                 converged += int(result.converged)
                 if budget == 10:

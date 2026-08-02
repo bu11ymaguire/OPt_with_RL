@@ -178,7 +178,9 @@ def main() -> int:
         help="지정하면 이 배치만 측정한다. 생략하면 진단용 배치 grid 를 훑는다.",
     )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--curvature-batch-ratio", type=float, default=1.0, help="B_c / B_g (프로토콜 D2)")
+    parser.add_argument(
+        "--curvature-batch-ratio", type=float, default=1.0, help="B_c / B_g (프로토콜 D2)"
+    )
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--repeat", type=int, default=60)
     parser.add_argument("--seed", type=int, default=0)

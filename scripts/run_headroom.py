@@ -225,9 +225,7 @@ def main() -> int:
     )
     parser.add_argument("--raw-dir", type=Path, default=Path("results/raw"))
     parser.add_argument("--out-dir", type=Path, default=Path("results/summaries"))
-    parser.add_argument(
-        "--fresh", action="store_true", help="캐시를 무시하고 새 파일에 기록"
-    )
+    parser.add_argument("--fresh", action="store_true", help="캐시를 무시하고 새 파일에 기록")
     args = parser.parse_args()
 
     config, meta = build_config(args)
@@ -290,8 +288,7 @@ def main() -> int:
                         "tolerance": calibration.tolerance,
                         "rationale": calibration.rationale,
                         "rows": {
-                            f"{s}|H{h}|b{b}": row
-                            for (s, h, b), row in calibration.rows.items()
+                            f"{s}|H{h}|b{b}": row for (s, h, b), row in calibration.rows.items()
                         },
                     }
                 ),
@@ -340,9 +337,7 @@ def main() -> int:
     print("\n" + "-" * 96)
     print("  " + "  ".join(f"{name}={v}" for name, v in verdicts.items()))
     if args.mode == "pilot":
-        print(
-            "\n  주의: pilot 결과다. 예산/target/beam 선정에만 쓰고 결론에 쓰지 않는다."
-        )
+        print("\n  주의: pilot 결과다. 예산/target/beam 선정에만 쓰고 결론에 쓰지 않는다.")
 
     print(f"\n  {store.describe()}")
     failures = store.failures()
@@ -385,9 +380,7 @@ def main() -> int:
         "raw_path": str(raw_path),
         "provenance": collect_provenance(_clean(meta), include_diff=False).to_dict(),
     }
-    path.write_text(
-        json.dumps(_clean(payload), indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    path.write_text(json.dumps(_clean(payload), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"저장: {path}")
     return 0
 

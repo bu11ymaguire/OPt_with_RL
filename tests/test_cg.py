@@ -176,9 +176,7 @@ class TestDampingReducesFailure:
         ``sqrt(kappa)/2 * ln(2/tol)`` 이므로 damping 을 조금 올린 정도로는
         예산 5회 안에 수렴하지 않는다. 이 점을 감안해 damping 사다리를 잡는다.
         """
-        spec = QuadraticSpec(
-            kind="ill_conditioned", dimension=100, condition_number=1.0e6
-        )
+        spec = QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e6)
 
         def convergence_rate(damping: float) -> float:
             converged = 0
@@ -203,9 +201,7 @@ class TestDampingReducesFailure:
         위 테스트가 예산 기준이라면 이건 비용 기준이다. 프로토콜 D1의
         cost-to-target 이 damping 선택에 어떻게 반응하는지의 축소판이다.
         """
-        spec = QuadraticSpec(
-            kind="ill_conditioned", dimension=100, condition_number=1.0e6
-        )
+        spec = QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e6)
         counts = []
         for damping in (1e0, 1e2, 1e4, 1e6):
             task = QuadraticTask(spec, seed=0, dtype=torch.float64)
@@ -219,16 +215,12 @@ class TestDampingReducesFailure:
 
     def test_residual_ratio_improves_with_damping(self):
         """수렴 여부가 아니라 residual 감소량으로도 확인한다."""
-        task_spec = QuadraticSpec(
-            kind="ill_conditioned", dimension=100, condition_number=1.0e6
-        )
+        task_spec = QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e6)
 
         ratios = []
         for damping in (1e-8, 1e-2, 1e0, 1e2):
             task = QuadraticTask(task_spec, seed=0)
-            result, _ = solve_newton_direction(
-                task, damping=damping, max_iters=5, tolerance=1e-8
-            )
+            result, _ = solve_newton_direction(task, damping=damping, max_iters=5, tolerance=1e-8)
             ratios.append(result.residual_ratio)
 
         # damping이 커질수록 같은 반복 수에서 residual이 더 많이 줄어든다
@@ -277,9 +269,7 @@ class TestNegativeCurvature:
             dtype=torch.float64,
         )
         damping = -task.min_eigenvalue * 2.0
-        result, _ = solve_newton_direction(
-            task, damping=damping, max_iters=200, tolerance=1e-10
-        )
+        result, _ = solve_newton_direction(task, damping=damping, max_iters=200, tolerance=1e-10)
 
         assert not result.negative_curvature
         assert result.converged
@@ -330,9 +320,7 @@ class TestNegativeCurvature:
     def test_rosenbrock_standard_start_solves_normally(self):
         """양정 구간에서는 정상 수렴해야 한다."""
         task = RosenbrockTask(RosenbrockSpec(dimension=2), seed=0, dtype=torch.float64)
-        result, _ = solve_newton_direction(
-            task, damping=0.0, max_iters=50, tolerance=1e-12
-        )
+        result, _ = solve_newton_direction(task, damping=0.0, max_iters=50, tolerance=1e-12)
 
         assert not result.negative_curvature
         assert result.converged
@@ -360,9 +348,7 @@ class TestCostAccounting:
             seed=0,
         )
         for budget in (1, 3, 5, 10, 20):
-            result, _ = solve_newton_direction(
-                task, max_iters=budget, tolerance=1e-14
-            )
+            result, _ = solve_newton_direction(task, max_iters=budget, tolerance=1e-14)
             assert result.hvp_count <= budget
             assert result.iterations <= budget
             assert result.budget == budget
@@ -460,9 +446,7 @@ class TestTerminationAndPreconditioning:
         point = torch.randn(d, generator=gen, dtype=torch.float64)
 
         plain_op = _operator_from_matrix(a, point)
-        plain = conjugate_gradient(
-            plain_op, -plain_op.grad, max_iters=5000, tolerance=1e-8
-        )
+        plain = conjugate_gradient(plain_op, -plain_op.grad, max_iters=5000, tolerance=1e-8)
 
         jacobi_op = _operator_from_matrix(a, point)
         jacobi = conjugate_gradient(
@@ -514,9 +498,7 @@ class TestTerminationAndPreconditioning:
         op = DampedHessianOperator.from_closure(task.loss, task.params)
         exact = task.exact_newton_step()
 
-        result = conjugate_gradient(
-            op, -op.grad, max_iters=5, tolerance=1e-6, x0=exact.clone()
-        )
+        result = conjugate_gradient(op, -op.grad, max_iters=5, tolerance=1e-6, x0=exact.clone())
 
         # 이미 정확해에서 출발했으므로 residual이 작고 즉시 종료한다
         assert result.hvp_count >= 1
@@ -568,9 +550,7 @@ class TestValidation:
 class TestDampedOperator:
     def test_matvec_adds_damping(self):
         x = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
-        op = DampedHessianOperator.from_closure(
-            lambda: (x**2).sum(), [x], damping=1.0
-        )  # H = 2I
+        op = DampedHessianOperator.from_closure(lambda: (x**2).sum(), [x], damping=1.0)  # H = 2I
         assert torch.allclose(op.matvec(torch.tensor([1.0, 0.0])), torch.tensor([3.0, 0.0]))
 
     def test_scale_damping_clips_to_bounds(self):

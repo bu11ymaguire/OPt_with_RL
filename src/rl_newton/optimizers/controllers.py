@@ -210,9 +210,7 @@ class FixedController:
     def action(self) -> ControllerAction:
         return self._action
 
-    def select(
-        self, context: StepContext, optimizer: NewtonCGOptimizer
-    ) -> ControllerAction:
+    def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
         return self._action
 
     def reset(self) -> None:
@@ -254,9 +252,7 @@ class OpenLoopController:
         True
     """
 
-    def __init__(
-        self, segments: Sequence[ScheduleSegment], *, name: str = "open_loop"
-    ) -> None:
+    def __init__(self, segments: Sequence[ScheduleSegment], *, name: str = "open_loop") -> None:
         if not segments:
             raise ValueError("segments must not be empty")
         uppers = [s.until for s in segments]
@@ -281,9 +277,7 @@ class OpenLoopController:
                 return segment.action
         return self._segments[-1].action
 
-    def select(
-        self, context: StepContext, optimizer: NewtonCGOptimizer
-    ) -> ControllerAction:
+    def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
         return self.action_at(context.progress)
 
     def reset(self) -> None:
@@ -339,9 +333,7 @@ class HeuristicController:
     def name(self) -> str:
         return self._name
 
-    def select(
-        self, context: StepContext, optimizer: NewtonCGOptimizer
-    ) -> ControllerAction:
+    def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
         previous = context.previous
         if previous is not None:
             rho = previous.trust_ratio
@@ -463,9 +455,7 @@ class OneStepEfficiencyController:
             loss_floor=self._loss_floor,
         )
 
-    def select(
-        self, context: StepContext, optimizer: NewtonCGOptimizer
-    ) -> ControllerAction:
+    def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
         candidates = optimizer.evaluate_candidates(self._space.iter_solve_groups())
 
         best_index = 0
@@ -502,8 +492,7 @@ class OneStepEfficiencyController:
 
     def __repr__(self) -> str:
         return (
-            f"OneStepEfficiencyController(space={self._space.name}, "
-            f"n_steps={len(self._choices)})"
+            f"OneStepEfficiencyController(space={self._space.name}, n_steps={len(self._choices)})"
         )
 
 
@@ -657,9 +646,7 @@ class HorizonPlannerController:
             loss_floor=self._loss_floor,
         )
 
-    def select(
-        self, context: StepContext, optimizer: NewtonCGOptimizer
-    ) -> ControllerAction:
+    def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
         root = optimizer.snapshot()
         actions = list(self._space.iter_actions())
         loss_start = context.loss
@@ -720,9 +707,7 @@ class HorizonPlannerController:
             #
             # 효용은 길이로 정규화되어 있으므로(fixed_budget: gain/cost) 서로 다른
             # 길이의 시퀀스를 비교하는 것이 타당하다.
-            if self._utility(loss_start, expanded[0]) > self._utility(
-                loss_start, incumbent
-            ):
+            if self._utility(loss_start, expanded[0]) > self._utility(loss_start, incumbent):
                 incumbent = expanded[0]
             beam = expanded[: self._beam_width]
 
@@ -803,8 +788,7 @@ def make_open_loop_controller(
     """
     if len(flats) != len(breakpoints):
         raise ValueError(
-            f"flats and breakpoints must have equal length, "
-            f"got {len(flats)} and {len(breakpoints)}"
+            f"flats and breakpoints must have equal length, got {len(flats)} and {len(breakpoints)}"
         )
     segments = [
         ScheduleSegment(until=float(b), action=space.action_from_flat(int(f)))

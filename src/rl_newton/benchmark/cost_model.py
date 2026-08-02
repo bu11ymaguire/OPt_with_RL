@@ -209,7 +209,9 @@ def _sync(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
-def _time_median_ms(fn: Callable[[], Any], device: torch.device, n_warmup: int, n_repeat: int) -> float:
+def _time_median_ms(
+    fn: Callable[[], Any], device: torch.device, n_warmup: int, n_repeat: int
+) -> float:
     """``fn`` 실행 시간의 중앙값(ms)을 측정한다.
 
     warm-up 후 측정하며, 각 반복의 앞뒤로 CUDA 동기화를 수행한다.
@@ -323,9 +325,7 @@ def measure_cost_model(
     if t_grad <= 0.0:
         raise RuntimeError("measured gradient time is non-positive; timer resolution too coarse")
 
-    peak_vram = (
-        torch.cuda.max_memory_allocated(device) / 1024**2 if device.type == "cuda" else None
-    )
+    peak_vram = torch.cuda.max_memory_allocated(device) / 1024**2 if device.type == "cuda" else None
     gpu_name = torch.cuda.get_device_name(device) if device.type == "cuda" else None
 
     return CostModel(

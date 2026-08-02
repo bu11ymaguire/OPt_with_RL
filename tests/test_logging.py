@@ -63,7 +63,9 @@ class TestJsonlStepLogger:
 
     def test_nan_round_trips_as_none(self, tmp_path):
         with JsonlStepLogger(tmp_path, "run_nan", flush_every=1) as log:
-            log.write(make_record(grad_norm=float("nan"), numerical_failure=True, failure_tag="nan"))
+            log.write(
+                make_record(grad_norm=float("nan"), numerical_failure=True, failure_tag="nan")
+            )
 
         line = (tmp_path / "run_nan.jsonl").read_text(encoding="utf-8").strip()
         parsed = json.loads(line)  # allow_nan 없이 파싱 가능해야 한다

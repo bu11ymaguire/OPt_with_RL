@@ -165,9 +165,7 @@ class JsonlStepLogger:
         meta["summary"] = sanitize_for_json(summary)
         meta["finished_at"] = datetime.now(UTC).isoformat()
         meta["n_steps_logged"] = self._n_written
-        self.meta_path.write_text(
-            json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        self.meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def __repr__(self) -> str:
         return f"JsonlStepLogger(run_id={self.run_id!r}, n_written={self._n_written})"

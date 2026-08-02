@@ -215,17 +215,12 @@ class NewtonCGConfig:
         if self.total_steps < 1:
             raise ValueError(f"total_steps must be >= 1, got {self.total_steps}")
         if self.cost_budget_ge is not None and self.cost_budget_ge <= 0.0:
-            raise ValueError(
-                f"cost_budget_ge must be > 0 when given, got {self.cost_budget_ge}"
-            )
+            raise ValueError(f"cost_budget_ge must be > 0 when given, got {self.cost_budget_ge}")
         if self.min_damping <= 0.0:
-            raise ValueError(
-                f"min_damping must be > 0 for log-space state, got {self.min_damping}"
-            )
+            raise ValueError(f"min_damping must be > 0 for log-space state, got {self.min_damping}")
         if self.min_damping > self.max_damping:
             raise ValueError(
-                f"require min_damping <= max_damping, "
-                f"got {self.min_damping}, {self.max_damping}"
+                f"require min_damping <= max_damping, got {self.min_damping}, {self.max_damping}"
             )
         if not self.min_damping <= self.initial_damping <= self.max_damping:
             raise ValueError(
@@ -315,9 +310,7 @@ class OptimizationTrace:
         최적화를 느리게 할 수 있다 (모듈 docstring 참조).
         """
         return sum(
-            1
-            for r in self.records
-            if float(r.extra.get("cg_residual_ratio", 1.0)) <= 1.0e-3
+            1 for r in self.records if float(r.extra.get("cg_residual_ratio", 1.0)) <= 1.0e-3
         )
 
     def loss_curve(self) -> list[float]:
@@ -464,9 +457,7 @@ class NewtonCGOptimizer:
     def set_damping_log10(self, value: float) -> float:
         """damping 상태를 직접 설정한다. look-ahead 시뮬레이션 복원용이다."""
         cfg = self.config
-        self._damping_log10 = min(
-            max(value, cfg.min_damping_log10), cfg.max_damping_log10
-        )
+        self._damping_log10 = min(max(value, cfg.min_damping_log10), cfg.max_damping_log10)
         return self._damping_log10
 
     # --- 비용 회계 --------------------------------------------------------
@@ -666,9 +657,7 @@ class NewtonCGOptimizer:
         trace.final_loss = (
             trace.records[-1].train_loss_after if trace.records else trace.initial_loss
         )
-        trace.total_cost_ge = sum(
-            r.cost_ge for r in trace.records if math.isfinite(r.cost_ge)
-        )
+        trace.total_cost_ge = sum(r.cost_ge for r in trace.records if math.isfinite(r.cost_ge))
         trace.total_hvp = sum(r.hvp_count for r in trace.records)
         trace.search_hvp = self._search_hvp
         # 탐색이 소모한 그래프 비용도 포함한다. cost_model 이 없으면 그래프 1개는
@@ -677,8 +666,7 @@ class NewtonCGOptimizer:
             1.0 if self.cost_model is None else self.cost_model.c_grad_graph
         )
         trace.search_cost_ge = (
-            self.step_cost_ge(self._search_hvp, self._search_forward, with_graph=False)
-            + graph_cost
+            self.step_cost_ge(self._search_hvp, self._search_forward, with_graph=False) + graph_cost
         )
         return trace
 
@@ -786,8 +774,7 @@ class NewtonCGOptimizer:
                     torch.dot(direction, direction)
                 )
                 predicted = -(
-                    action.step_size * directional
-                    + 0.5 * action.step_size**2 * curvature
+                    action.step_size * directional + 0.5 * action.step_size**2 * curvature
                 )
 
             # --- candidate 평가와 수락 판정 ---
@@ -808,9 +795,7 @@ class NewtonCGOptimizer:
             if not record:
                 self._search_hvp += hvp_used
                 self._search_forward += forward_count
-                return _Outcome(
-                    loss_after=loss_after, cost_ge=cost_ge, accepted=accepted
-                )
+                return _Outcome(loss_after=loss_after, cost_ge=cost_ge, accepted=accepted)
 
             actual = loss_before - loss_after
             trust_ratio = (
@@ -898,9 +883,7 @@ class NewtonCGOptimizer:
         """
         cfg = self.config
         multiplier = (
-            cfg.nan_damping_multiplier
-            if failure_tag == "nan"
-            else cfg.reject_damping_multiplier
+            cfg.nan_damping_multiplier if failure_tag == "nan" else cfg.reject_damping_multiplier
         )
         self._damping_log10 = min(
             max(

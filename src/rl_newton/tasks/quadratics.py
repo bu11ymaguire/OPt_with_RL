@@ -65,13 +65,9 @@ class QuadraticSpec:
         if self.dimension < 1:
             raise ValueError(f"dimension must be >= 1, got {self.dimension}")
         if self.condition_number < 1.0:
-            raise ValueError(
-                f"condition_number must be >= 1, got {self.condition_number}"
-            )
+            raise ValueError(f"condition_number must be >= 1, got {self.condition_number}")
         if self.kind == "indefinite" and not 0.0 < self.negative_fraction < 1.0:
-            raise ValueError(
-                f"negative_fraction must be in (0, 1), got {self.negative_fraction}"
-            )
+            raise ValueError(f"negative_fraction must be in (0, 1), got {self.negative_fraction}")
         if self.initial_scale <= 0.0:
             raise ValueError(f"initial_scale must be > 0, got {self.initial_scale}")
 
@@ -156,7 +152,9 @@ class QuadraticTask:
             magnitudes = torch.tensor([kappa], dtype=torch.float64)
         else:
             magnitudes = torch.logspace(
-                0.0, float(torch.log10(torch.tensor(kappa, dtype=torch.float64))), d,
+                0.0,
+                float(torch.log10(torch.tensor(kappa, dtype=torch.float64))),
+                d,
                 dtype=torch.float64,
             )
 

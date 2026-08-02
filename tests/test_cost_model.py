@@ -70,12 +70,26 @@ class TestNewtonStepGE:
 
     def test_launch_bound_flag_follows_measured_gradient_time(self):
         fast = CostModel(
-            model_id="fast", c_grad_graph=1.0, c_hvp=1.0, c_fwd=0.3,
-            t_grad_ms=0.2, t_grad_graph_ms=0.3, t_hvp_ms=0.2, t_fwd_ms=0.05, n_params=10,
+            model_id="fast",
+            c_grad_graph=1.0,
+            c_hvp=1.0,
+            c_fwd=0.3,
+            t_grad_ms=0.2,
+            t_grad_graph_ms=0.3,
+            t_hvp_ms=0.2,
+            t_fwd_ms=0.05,
+            n_params=10,
         )
         slow = CostModel(
-            model_id="slow", c_grad_graph=1.4, c_hvp=2.0, c_fwd=0.3,
-            t_grad_ms=25.0, t_grad_graph_ms=35.0, t_hvp_ms=50.0, t_fwd_ms=8.0, n_params=10**7,
+            model_id="slow",
+            c_grad_graph=1.4,
+            c_hvp=2.0,
+            c_fwd=0.3,
+            t_grad_ms=25.0,
+            t_grad_graph_ms=35.0,
+            t_hvp_ms=50.0,
+            t_fwd_ms=8.0,
+            n_params=10**7,
         )
         assert fast.is_launch_bound is True
         assert slow.is_launch_bound is False
@@ -84,9 +98,7 @@ class TestNewtonStepGE:
 class TestMeasurement:
     def test_measures_positive_coefficients_on_cpu(self, quadratic_problem):
         params, loss_fn = quadratic_problem
-        cm = measure_cost_model(
-            params, loss_fn, model_id="test_quadratic", n_warmup=2, n_repeat=5
-        )
+        cm = measure_cost_model(params, loss_fn, model_id="test_quadratic", n_warmup=2, n_repeat=5)
 
         assert cm.model_id == "test_quadratic"
         assert cm.n_params == 128
@@ -101,9 +113,7 @@ class TestMeasurement:
     def test_forward_only_is_cheaper_than_gradient(self, quadratic_problem):
         """forward < forward+backward. 이게 깨지면 측정이 노이즈에 묻힌 것이다."""
         params, loss_fn = quadratic_problem
-        cm = measure_cost_model(
-            params, loss_fn, model_id="ordering", n_warmup=5, n_repeat=25
-        )
+        cm = measure_cost_model(params, loss_fn, model_id="ordering", n_warmup=5, n_repeat=25)
         assert cm.c_fwd < 1.0
 
     def test_rejects_empty_params(self, quadratic_problem):
@@ -133,9 +143,13 @@ class TestSerialization:
     def test_save_load_round_trip(self, tmp_path, quadratic_problem):
         params, loss_fn = quadratic_problem
         cm = measure_cost_model(
-            params, loss_fn, model_id="roundtrip",
-            grad_batch_size=512, curvature_batch_size=256,
-            n_warmup=1, n_repeat=3,
+            params,
+            loss_fn,
+            model_id="roundtrip",
+            grad_batch_size=512,
+            curvature_batch_size=256,
+            n_warmup=1,
+            n_repeat=3,
         )
 
         path = cm.save(tmp_path / "sub" / "cost_model.yaml")
@@ -151,8 +165,15 @@ class TestSerialization:
 
     def test_load_ignores_derived_fields(self, tmp_path):
         cm = CostModel(
-            model_id="derived", c_grad_graph=1.0, c_hvp=2.0, c_fwd=0.3,
-            t_grad_ms=1.0, t_grad_graph_ms=1.0, t_hvp_ms=2.0, t_fwd_ms=0.3, n_params=5,
+            model_id="derived",
+            c_grad_graph=1.0,
+            c_hvp=2.0,
+            c_fwd=0.3,
+            t_grad_ms=1.0,
+            t_grad_graph_ms=1.0,
+            t_hvp_ms=2.0,
+            t_fwd_ms=0.3,
+            n_params=5,
         )
         path = cm.save(tmp_path / "cm.yaml")
         assert "is_launch_bound" in path.read_text(encoding="utf-8")

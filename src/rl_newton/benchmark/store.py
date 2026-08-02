@@ -200,9 +200,7 @@ def _restore_summary(raw: dict[str, Any]) -> RunSummary:
     """
     optional_fields = {
         name
-        for name, annotation in (
-            (f.name, str(f.type)) for f in fields(RunSummary)
-        )
+        for name, annotation in ((f.name, str(f.type)) for f in fields(RunSummary))
         if "None" in annotation
     }
     kwargs: dict[str, Any] = {}

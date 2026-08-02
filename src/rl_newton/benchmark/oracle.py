@@ -492,8 +492,7 @@ class GateVerdict:
             f"[{self.name}] ({self.track}) {self.question}\n"
             f"    {self.statistic:+.3f} {self.unit}  "
             f"(GO >= {self.go_threshold:g}, 재설계 < {self.pivot_threshold:g})  "
-            f"-> {self.verdict}"
-            + (f"\n    {self.detail}" if self.detail else "")
+            f"-> {self.verdict}" + (f"\n    {self.detail}" if self.detail else "")
         )
 
 
@@ -731,11 +730,7 @@ def calibrate_beam_width(
             candidates,
             key=lambda b: (
                 b,
-                sum(
-                    measured[s, h, b]["wall_clock_sec"]
-                    for s in spaces
-                    for h in horizons
-                ),
+                sum(measured[s, h, b]["wall_clock_sec"] for s in spaces for h in horizons),
                 0 if b == 2 else 1,
             ),
         )
@@ -778,10 +773,7 @@ def run_headroom(
     """
     report = HeadroomReport(phase=config.phase)
     report.n_instances = sum(
-        1
-        for spec in config.specs
-        for seed in config.seeds
-        if _is_eligible(make_task(spec, seed))
+        1 for spec in config.specs for seed in config.seeds if _is_eligible(make_task(spec, seed))
     )
     n_tune = config.tuning_budget or len(narrow)
     report.tuning_budget = n_tune
@@ -979,9 +971,11 @@ def run_headroom(
 
     gate_a2_narrow = e_delta("best_static", f"mpc_H{max_h}_narrow")
     gate_a2_wide = e_delta("best_static", f"mpc_H{max_h}_wide")
-    gate_a2 = max(
-        v for v in (gate_a2_narrow, gate_a2_wide) if math.isfinite(v)
-    ) if any(math.isfinite(v) for v in (gate_a2_narrow, gate_a2_wide)) else float("nan")
+    gate_a2 = (
+        max(v for v in (gate_a2_narrow, gate_a2_wide) if math.isfinite(v))
+        if any(math.isfinite(v) for v in (gate_a2_narrow, gate_a2_wide))
+        else float("nan")
+    )
     report.gates.append(
         GateVerdict(
             name="A2",
@@ -1018,9 +1012,11 @@ def run_headroom(
 
     gate_c_narrow = e_delta(f"mpc_H{min_h}_narrow", f"mpc_H{max_h}_narrow")
     gate_c_wide = e_delta(f"mpc_H{min_h}_wide", f"mpc_H{max_h}_wide")
-    gate_c = max(
-        v for v in (gate_c_narrow, gate_c_wide) if math.isfinite(v)
-    ) if any(math.isfinite(v) for v in (gate_c_narrow, gate_c_wide)) else float("nan")
+    gate_c = (
+        max(v for v in (gate_c_narrow, gate_c_wide) if math.isfinite(v))
+        if any(math.isfinite(v) for v in (gate_c_narrow, gate_c_wide))
+        else float("nan")
+    )
     curves = []
     for label in ("narrow", "wide"):
         points = " → ".join(
