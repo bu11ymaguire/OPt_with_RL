@@ -400,7 +400,9 @@ def run_controller(
 
             elapsed = time.perf_counter() - started
             trace.controller = label
-            summary = summarize_run(trace, target)
+            # 예산 초과 step 을 잘라 평가한다. 이것 없이는 큰 step 을 고르는
+            # 컨트롤러가 최대 한 step 만큼 예산을 공짜로 더 쓴다 (프로토콜 D11).
+            summary = summarize_run(trace, target, budget_ge=config.cost_budget_ge)
             summaries.append(summary)
             if store is not None:
                 store.record_success(

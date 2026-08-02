@@ -131,11 +131,70 @@ def _median(values: Sequence[float]) -> float:
     return statistics.median(finite) if finite else float("nan")
 
 
-def summarize_run(trace: OptimizationTrace, target: TargetSpec) -> RunSummary:
+def budget_respecting_prefix(
+    trace: OptimizationTrace, budget: float | None
+) -> tuple[float, float, int]:
+    """누적비용이 ``budget`` 을 넘지 않는 마지막 지점. ``(loss, 누적비용, step 수)``.
+
+    **Track E 공정성 수정 (프로토콜 D11).** optimizer 루프는
+    ``spent >= budget`` 에서 종료하므로 **마지막 step 이 예산을 초과한다.**
+    초과량은 컨트롤러가 고른 action 에 비례하므로 비교가 불공정해진다.
+
+    ```text
+    C0 (평균 k=17.9)  150 GE 예산에 실제 소모 171 GE   <- 공짜로 큰 step 하나
+    Q=4 (평균 k=3.3)  150 GE 예산에 실제 소모 154 GE
+    ```
+
+    큰 step 을 고르는 컨트롤러가 최대 한 step 만큼 예산을 더 쓴다. 고정 예산
+    비교에서 이것은 그대로 이득이 된다. 그래서 집계 시 **예산을 넘지 않는
+    마지막 prefix** 에서 잘라 평가한다. 모든 컨트롤러의 ``total_cost_ge`` 가
+    예산 이하가 되므로 planner 의 쿼터 회계와도 의미가 일치한다.
+
+    optimizer 의 동역학은 바꾸지 않는다. 절단된 step 들은 raw trace 에 남아
+    있으므로 필요하면 다시 볼 수 있다.
+
+    Args:
+        trace: 실행 기록.
+        budget: GE 예산. ``None`` 이면 절단하지 않는다.
+
+    Returns:
+        ``(prefix 최종 loss, prefix 누적비용, prefix step 수)``.
+        어떤 step 도 예산에 들어가지 않으면 ``(초기 loss, 0.0, 0)``.
+    """
+    if budget is None:
+        return trace.final_loss, trace.total_cost_ge, trace.n_steps
+    spent = 0.0
+    loss = trace.initial_loss
+    steps = 0
+    for record in trace.records:
+        if not math.isfinite(record.cost_ge):
+            break
+        if spent + record.cost_ge > budget:
+            break
+        spent += record.cost_ge
+        loss = record.train_loss_after
+        steps += 1
+        if not math.isfinite(loss):
+            # NaN 이 난 step 은 그 자체가 결과다. 여기서 멈춘다.
+            break
+    return loss, spent, steps
+
+
+def summarize_run(
+    trace: OptimizationTrace, target: TargetSpec, *, budget_ge: float | None = None
+) -> RunSummary:
     """``OptimizationTrace`` 를 집계한다.
 
     cost-to-target 은 목표에 처음 도달한 step 까지의 **누적** GE 다. 도달하지
     못하면 ``None`` 이며, 이를 큰 값으로 대체하지 않는다 (프로토콜 D6).
+
+    Args:
+        trace: 실행 기록.
+        target: 목표 규격 (Track T).
+        budget_ge: 주면 Track E 지표(``final_loss``, ``total_cost_ge``,
+            ``n_steps``)를 예산을 넘지 않는 prefix 에서 평가한다
+            (``budget_respecting_prefix`` 참조). Track T 지표는 목표 도달
+            시점으로 정의되므로 영향받지 않는다.
     """
     cumulative = trace.cumulative_cost_ge()
     reached = False
@@ -155,6 +214,7 @@ def summarize_run(trace: OptimizationTrace, target: TargetSpec) -> RunSummary:
 
     n = max(len(trace.records), 1)
     residuals = [float(r.extra.get("cg_residual_ratio", float("nan"))) for r in trace.records]
+    final_loss, total_cost, n_steps = budget_respecting_prefix(trace, budget_ge)
     return RunSummary(
         run_id=trace.run_id,
         controller=trace.controller,
@@ -166,11 +226,11 @@ def summarize_run(trace: OptimizationTrace, target: TargetSpec) -> RunSummary:
         steps_to_target=steps_to_target,
         hvp_to_target=hvp_to_target,
         initial_loss=trace.initial_loss,
-        final_loss=trace.final_loss,
-        total_cost_ge=trace.total_cost_ge,
+        final_loss=final_loss,
+        total_cost_ge=total_cost,
         total_hvp=trace.total_hvp,
         search_cost_ge=trace.search_cost_ge,
-        n_steps=trace.n_steps,
+        n_steps=n_steps,
         stop_reason=trace.stop_reason,
         rejection_rate=trace.n_rejected / n,
         failure_rate=trace.n_failures / n,

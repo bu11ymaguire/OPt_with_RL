@@ -25,6 +25,7 @@ from __future__ import annotations
 import math
 import time
 
+from rl_newton.benchmark.metrics import budget_respecting_prefix
 from rl_newton.optimizers.action_space import NARROW
 from rl_newton.optimizers.controllers import BudgetedMPCController, OneStepEfficiencyController
 from rl_newton.optimizers.newton_cg import NewtonCGConfig, NewtonCGOptimizer
@@ -47,7 +48,10 @@ def _run(controller, spec):
     started = time.perf_counter()
     trace = NewtonCGOptimizer(task, controller, config, run_id="p", seed=0).run()
     elapsed = time.perf_counter() - started
-    log_delta = math.log(trace.initial_loss) - math.log(max(trace.final_loss, 1e-300))
+    # 예산 초과 step 을 잘라야 공정하다 (프로토콜 D11). 이것 없이는 큰 step 을
+    # 고르는 컨트롤러가 최대 한 step 만큼 예산을 공짜로 더 쓴다.
+    final_loss, spent, n_steps = budget_respecting_prefix(trace, BUDGET)
+    log_delta = math.log(trace.initial_loss) - math.log(max(final_loss, 1e-300))
     depths: dict[int, int] = {}
     for choice in controller.choices:
         depths[choice.chosen_depth] = depths.get(choice.chosen_depth, 0) + 1
@@ -58,10 +62,11 @@ def _run(controller, spec):
         if math.isfinite(getattr(c, "plan_used_ge", float("nan"))) and c.quota_ge > 0
     ]
     sims = [float(getattr(c, "n_simulations", 0)) for c in controller.choices]
-    budgets = [r.cg_budget for r in trace.records]
+    budgets = [r.cg_budget for r in trace.records[:n_steps]]
     return {
         "log_delta": log_delta,
-        "steps": trace.n_steps,
+        "steps": n_steps,
+        "spent": spent,
         "search": trace.search_cost_ge,
         "depths": dict(sorted(depths.items())),
         "cap": (sum(caps) / len(caps)) if caps else float("nan"),
@@ -77,12 +82,12 @@ def main() -> int:
         print(f"\n=== {name} | narrow, beam 2, {BUDGET:g} GE ===")
         base = _run(OneStepEfficiencyController(SPACE), spec)
         print(
-            f"  {'controller':<26} {'logΔ(nat)':>10} {'steps':>6} {'d>1':>5} "
+            f"  {'controller':<26} {'logΔ(nat)':>10} {'steps':>6} {'소모GE':>7} {'d>1':>5} "
             f"{'cap':>5} {'Q사용':>6} {'sims':>6} {'평균k':>6} {'search':>9} {'wall(s)':>8}"
         )
         print(
             f"  {'C0 one_step_efficiency':<26} {base['log_delta']:>10.4f} "
-            f"{base['steps']:>6} {'-':>5} {'-':>5} {'-':>6} {'-':>6} "
+            f"{base['steps']:>6} {base['spent']:>7.1f} {'-':>5} {'-':>5} {'-':>6} {'-':>6} "
             f"{base['mean_k']:>6.1f} {base['search']:>9.0f} {base['wall']:>8.1f}"
         )
         for quota, max_depth in ((1.0, 6), (2.0, 6), (4.0, 6), (1.0, 24), (2.0, 24), (4.0, 24)):
@@ -93,8 +98,8 @@ def main() -> int:
             deep = 1.0 - r["depths"].get(1, 0) / max(sum(r["depths"].values()), 1)
             label = f"Q={quota:g} maxdepth={max_depth}"
             print(
-                f"  {label:<26} {r['log_delta']:>10.4f} {r['steps']:>6} {deep:>5.2f} "
-                f"{r['cap']:>5.2f} {r['used']:>6.2f} {r['sims']:>6.0f} "
+                f"  {label:<26} {r['log_delta']:>10.4f} {r['steps']:>6} {r['spent']:>7.1f} "
+                f"{deep:>5.2f} {r['cap']:>5.2f} {r['used']:>6.2f} {r['sims']:>6.0f} "
                 f"{r['mean_k']:>6.1f} {r['search']:>9.0f} {r['wall']:>8.1f}"
             )
             print(f"    depths={r['depths']}  quota={planner.quota_ge:.1f} GE")

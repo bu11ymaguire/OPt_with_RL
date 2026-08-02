@@ -497,6 +497,36 @@ carry-over를 대체한다. depth 1 최선은 더 나은 계획에 의해서만 
 3. 동률이면 더 적은 GE, 그다음 더 짧은 sequence
 ```
 
+### D11. Track E는 예산을 넘지 않는 prefix에서 평가한다
+
+optimizer 루프는 `spent >= budget` 에서 종료한다. 즉 **마지막 step이 예산을
+초과한다.** 초과량은 컨트롤러가 고른 action 크기에 비례하므로, 고정 예산
+비교에서 큰 step을 고르는 컨트롤러가 공짜로 이득을 본다.
+
+```text
+C0  (평균 k=17.9)   150 GE 예산에 실제 171 GE 소모     <- 큰 step 하나가 공짜
+Q=4 (평균 k=3.3)    150 GE 예산에 실제 154 GE 소모
+```
+
+약 11% 예산 차이다. 그런데 게이트 C의 쿼터 사다리는 정확히 "쿼터를 키우면
+planner가 싼 action을 고른다"는 현상을 다루므로, 이 편향이 결론과 **같은 방향**
+으로 섞인다. 즉 편향을 제거하지 않으면 "planning이 나쁘다"는 결론의 일부가
+회계 인공물이 된다.
+
+따라서 집계 시 **누적비용이 예산을 넘지 않는 마지막 prefix** 에서 평가한다
+(`budget_respecting_prefix`). optimizer의 동역학은 바꾸지 않고, 절단된 step은
+raw trace에 남는다. 이렇게 하면 모든 컨트롤러의 `total_cost_ge ≤ budget` 이므로
+planner의 쿼터 회계와 의미가 일치한다.
+
+Track T 지표(`cost_to_target_ge`, `reached`)는 목표 도달 시점으로 정의되므로
+영향받지 않는다. Track E를 공정하게 만드는 수정이 Track T의 정의를 바꾸면 안 된다.
+
+동일한 버그가 진단 스크립트에도 있었다. `cost_budget_ge=Q` 로 돌린 one-step
+참조가 Q=30에서 실제 49.9 GE를 썼고(1.66배), 그 상태로 beam search를 비교해
+"탐색 손실"이라고 잘못 판정했다. 동일 비용으로 고치니 18개 조건 중 17개가
+`B ≤ A` 였다. **고정 예산 비교에서는 "예산"과 "실제 소모량"을 항상 함께
+확인한다.**
+
 ---
 
 ## 3. 로깅과 provenance
@@ -1075,6 +1105,7 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-01 | `HorizonPlannerController` → `AverageRateEfficiencyPlanner` 로 개명, 진단 baseline으로 보존 | 버그가 아니라 푸는 문제가 달랐다. "RL 보상을 ratio로 설계하면 생기는 함정"의 증거로 별도 보고 |
 | 2026-08-01 | Beam pruning을 비율 스칼라 → `(used_GE, terminal_loss)` Pareto + GE cost bucket으로 교체 | 비율로 정렬하면 mediant 문제가 가지치기 안에서 재발한다. 비싼 장기 계획이 싼 단기 계획과 섞여 조기 탈락한다 |
 | 2026-08-01 | Track T planner 선택 규칙을 cost-to-go 추정 → lexicographic(도달 여부 → 누적 GE)으로 교체 | 임의의 실패 벌점이나 비율 없이 "도달이 우선, 비용이 그다음"을 순서로 표현한다 |
+| 2026-08-02 | **D11 신설: Track E를 예산 초과 step 절단 후 평가** | `spent >= budget` 종료 규칙 때문에 마지막 step이 예산을 넘고, 초과량이 action 크기에 비례한다. 150 GE 예산에서 C0는 171 GE, Q=4는 154 GE를 썼다. 큰 step을 고르는 컨트롤러가 공짜로 11% 예산을 더 쓰는 편향이 게이트 C 결론과 같은 방향으로 섞여 있었다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |
