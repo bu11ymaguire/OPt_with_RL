@@ -37,7 +37,7 @@ from __future__ import annotations
 import math
 import random
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -53,7 +53,7 @@ from rl_newton.benchmark.metrics import (
     summarize_run,
 )
 from rl_newton.benchmark.paired import SyntheticTask, TaskSpec, make_task
-from rl_newton.benchmark.store import ResultStore, RunKey
+from rl_newton.benchmark.store import ResultStore, RunKey, experiment_id
 from rl_newton.optimizers.action_space import ActionSpace
 from rl_newton.optimizers.controllers import (
     FixedController,
@@ -81,6 +81,30 @@ __all__ = [
     "run_headroom",
     "spec_kind_label",
 ]
+
+UTILITY_TOLERANCE = 0.02
+"""beam 선택의 상대 효용 허용 오차 (프로토콜 F). **실행 전에 고정된 값이다.**"""
+
+UTILITY_EPSILON = 1.0e-6
+"""상대 오차 분모의 하한. ``|J_b - J_4| / max(|J_4|, eps)``.
+
+``J_4`` 가 0 근처면 상대 오차가 폭발한다. 그래서 분모를 ``+ eps`` 가 아니라
+``max(|J_4|, eps)`` 로 둔다. 값도 config 에 고정해 사후 조정을 막는다.
+"""
+
+DEEP_FRACTION_TOLERANCE = 0.05
+"""``chosen_depth > 1`` 비율의 허용 차이 (프로토콜 F).
+
+효용이 비슷해도 깊은 계획을 쓰는 빈도가 달라지면 게이트 C의 해석이 바뀐다.
+"크게 다르면 제외"를 사후에 판단하지 않기 위해 수치로 고정한다.
+"""
+
+PROTOCOL_VERSION = "stage2-v1"
+"""프로토콜 버전. 실험 정체성에 포함된다.
+
+C2 protocol freeze 시 태그와 함께 올린다. confirmatory 중 버그를 발견해
+결과를 폐기해야 하면 이 값을 증가시켜 이전 결과와 섞이지 않게 한다.
+"""
 
 ControllerFactory = Callable[["SyntheticTask", TargetSpec], Controller]
 """컨트롤러 생성자. task 와 target 을 받는다.
@@ -145,6 +169,62 @@ class HeadroomConfig:
             initial_damping=self.initial_damping,
         )
 
+    def identity_payload(
+        self,
+        spaces: Mapping[str, ActionSpace],
+        *,
+        code_dirty: bool = False,
+        extra: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        """실험 정체성 payload (``store.experiment_id`` 입력).
+
+        **여기에 빠진 항목은 재개 시 낡은 결과를 재사용하게 만든다.**
+        beam, horizon, GE 예산, action space 정의(damping 값, CG budget,
+        step size), damping 경계, target 정의, protocol 버전을 모두 넣는다.
+
+        ``code_dirty`` 를 포함하는 이유: git commit 만으로는 커밋되지 않은
+        변경을 구분할 수 없다.
+        """
+        optimizer = self.optimizer_config()
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "phase": self.phase,
+            "device": self.device,
+            "cost_budget_ge": self.cost_budget_ge,
+            "max_steps": self.max_steps,
+            "initial_damping": self.initial_damping,
+            "min_damping": optimizer.min_damping,
+            "max_damping": optimizer.max_damping,
+            "cg_tolerance": optimizer.cg_tolerance,
+            "pap_eps": optimizer.pap_eps,
+            "max_loss_increase_ratio": optimizer.max_loss_increase_ratio,
+            "safe_fallback": optimizer.safe_fallback,
+            "compute_trust_ratio": optimizer.compute_trust_ratio,
+            "horizons": list(self.horizons),
+            "beam_width": self.beam_width,
+            "tuning_budget": self.tuning_budget,
+            "n_schedule_segments": self.n_schedule_segments,
+            "tuning_seed": self.tuning_seed,
+            "primary_difficulty": self.primary_difficulty,
+            "specs": [str(s) for s in self.specs],
+            "seeds": list(self.seeds),
+            "targets": {
+                kind: {level: spec.label for level, spec in levels.items()}
+                for kind, levels in self.targets.items()
+            },
+            "spaces": {
+                name: {
+                    "mode": space.damping_mode,
+                    "damping_values": [float(v) for v in space.damping_values],
+                    "cg_budgets": list(space.cg_budgets),
+                    "step_sizes": [float(s) for s in space.step_sizes],
+                }
+                for name, space in spaces.items()
+            },
+            "code_dirty": code_dirty,
+            **dict(extra or {}),
+        }
+
     def target_for(self, spec: TaskSpec, difficulty: str) -> TargetSpec:
         return self.targets[spec_kind_label(spec)][difficulty]
 
@@ -205,6 +285,7 @@ def run_controller(
     factory: ControllerFactory,
     *,
     label: str,
+    exp_id: str,
     difficulty: str | None = None,
     store: ResultStore | None = None,
     verbose: bool = False,
@@ -239,6 +320,7 @@ def run_controller(
                 continue
 
             key = RunKey(
+                experiment_id=exp_id,
                 controller=label,
                 task_instance_id=task.instance_id,
                 seed=seed,
@@ -277,6 +359,7 @@ def run_controller(
             if store is not None:
                 store.record_success(
                     summary,
+                    exp_id,
                     wall_clock_sec=elapsed,
                     action_counts=_action_counts(trace),
                     chosen_depths=_chosen_depths(controller),
@@ -306,6 +389,7 @@ def search_best_static(
     space: ActionSpace,
     *,
     n_tune: int,
+    exp_id: str,
     store: ResultStore | None = None,
 ) -> tuple[ControllerAction, GroupSummary]:
     """행동 공간 조합을 고정으로 돌려 Track E 기준 최고를 고른다.
@@ -330,6 +414,7 @@ def search_best_static(
             config,
             lambda _t, _g, a=action: FixedController(a),
             label=label,
+            exp_id=exp_id,
             store=store,
         )
         group = summarize_group(runs, controller=label)
@@ -346,6 +431,7 @@ def search_best_open_loop(
     space: ActionSpace,
     *,
     n_tune: int,
+    exp_id: str,
     store: ResultStore | None = None,
 ) -> GroupSummary:
     """progress 만 보는 스케줄을 랜덤 서치한다 (프로토콜 D4).
@@ -367,6 +453,7 @@ def search_best_open_loop(
             config,
             lambda _t, _g, f=flats, b=breakpoints: make_open_loop_controller(space, f, b),
             label=label,
+            exp_id=exp_id,
             store=store,
         )
         group = summarize_group(runs, controller=label)
@@ -425,6 +512,9 @@ class HeadroomReport:
     n_instances: int = 0
     tuning_runs: dict[str, int] = field(default_factory=dict)
     """컨트롤러별 실제 사용한 탐색 run 수 (프로토콜 D5 회계)."""
+    experiment_id: str = ""
+    identity: dict[str, object] = field(default_factory=dict)
+    """실험 정체성 payload. 재개 판단과 결과 추적의 기준이다."""
 
     def summary_table(self) -> str:
         header = (
@@ -465,19 +555,24 @@ class BeamCalibration:
     rows: dict[tuple[str, int, int], dict[str, float]] = field(default_factory=dict)
     selected_beam: int = 0
     reference_beam: int = 0
-    tolerance: float = 0.02
+    tolerance: float = UTILITY_TOLERANCE
+    utility_epsilon: float = UTILITY_EPSILON
+    deep_fraction_tolerance: float = DEEP_FRACTION_TOLERANCE
     rationale: str = ""
+    rejections: dict[int, str] = field(default_factory=dict)
+    """beam 별 배제 사유. 사후 해석이 아니라 사전 규칙의 적용 결과다."""
 
     def table(self) -> str:
         header = (
             f"{'space':<8} {'H':>3} {'beam':>5} {'logΔ(nat)':>11} "
-            f"{'rel.diff':>9} {'depth>1':>8} {'wall(s)':>9}"
+            f"{'rel.diff':>9} {'depth>1':>8} {'Δdepth':>8} {'wall(s)':>9}"
         )
         lines = [header, "-" * len(header)]
         for (space, horizon, beam), row in sorted(self.rows.items()):
             lines.append(
                 f"{space:<8} {horizon:>3} {beam:>5} {row['log_improvement']:>11.4f} "
                 f"{row['relative_diff']:>9.4f} {row['deep_fraction']:>8.2f} "
+                f"{row.get('deep_diff', float('nan')):>8.3f} "
                 f"{row['wall_clock_sec']:>9.2f}"
             )
         return "\n".join(lines)
@@ -490,8 +585,11 @@ def calibrate_beam_width(
     wide: ActionSpace,
     beams: Sequence[int] = (1, 2, 4),
     horizons: Sequence[int] = (3, 5),
-    tolerance: float = 0.02,
+    tolerance: float = UTILITY_TOLERANCE,
+    utility_epsilon: float = UTILITY_EPSILON,
+    deep_fraction_tolerance: float = DEEP_FRACTION_TOLERANCE,
     store: ResultStore | None = None,
+    code_dirty: bool = False,
     verbose: bool = True,
 ) -> BeamCalibration:
     """beam width 를 pilot subset 에서 측정해 고른다 (프로토콜 F).
@@ -500,26 +598,39 @@ def calibrate_beam_width(
 
     ```text
     1. 최대 beam 을 기준으로 삼는다.
-    2. 모든 (space, horizon) 조합에서
-         |J_b - J_max| / (|J_max| + eps) < tolerance
-       를 만족하는 beam 중 가장 작은 것을 고른다.
+    2. 모든 (space, horizon) 조합에서 다음 둘을 모두 만족하는 beam 중
+       가장 작은 것을 고른다.
+         |J_b - J_ref| / max(|J_ref|, eps) < tolerance          (기본 0.02)
+         |d_b - d_ref| <= deep_fraction_tolerance               (기본 0.05)
+       여기서 d 는 chosen_depth > 1 비율이다.
     3. 동률이면 wall-clock 이 짧은 것, 그래도 같으면 beam 2.
     ```
 
-    ``deep_fraction`` (``chosen_depth > 1`` 비율)도 함께 본다. beam 을 줄여
-    깊은 계획이 사라지면 게이트 C의 해석이 달라지므로, 지표가 비슷해도
-    이 값이 크게 변하면 선택에서 배제한다.
+    분모가 ``|J_ref| + eps`` 가 아니라 ``max(|J_ref|, eps)`` 인 이유는 ``J_ref``
+    가 0 근처일 때 상대 오차가 폭발하기 때문이다. ``eps`` 값도 상수로 고정해
+    사후 조정을 막는다.
+
+    ``deep_fraction`` 을 함께 보는 이유: beam 을 줄여 깊은 계획이 사라지면
+    효용이 비슷해도 게이트 C의 해석이 달라진다. "크게 다르면 제외"를 결과를
+    본 뒤 판단하지 않기 위해 수치로 고정한다.
 
     Args:
         beams: 시험할 beam 폭.
         horizons: 시험할 horizon.
-        tolerance: 상대 허용 오차.
+        tolerance: 효용 상대 허용 오차.
+        utility_epsilon: 상대 오차 분모의 하한.
+        deep_fraction_tolerance: ``depth > 1`` 비율의 허용 차이.
         store: 재개 가능한 저장소.
+        code_dirty: 커밋되지 않은 변경이 있는지. 실험 정체성에 포함된다.
 
     Returns:
         ``BeamCalibration``.
     """
-    calibration = BeamCalibration(tolerance=tolerance)
+    calibration = BeamCalibration(
+        tolerance=tolerance,
+        utility_epsilon=utility_epsilon,
+        deep_fraction_tolerance=deep_fraction_tolerance,
+    )
     reference = max(beams)
     calibration.reference_beam = reference
     spaces = {"narrow": narrow, "wide": wide}
@@ -531,6 +642,19 @@ def calibrate_beam_width(
                 label = f"cal_mpc_H{horizon}_{space_label}_b{beam}"
                 if verbose:
                     print(f"  {label}", flush=True)
+                # beam 과 horizon 이 실험 정체성에 들어가야 재개가 안전하다.
+                exp_id = experiment_id(
+                    config.identity_payload(
+                        {space_label: space},
+                        code_dirty=code_dirty,
+                        extra={
+                            "mode": "beam_calibration",
+                            "cal_beam": beam,
+                            "cal_horizon": horizon,
+                            "cal_space": space_label,
+                        },
+                    )
+                )
                 started = time.perf_counter()
                 runs = run_controller(
                     config,
@@ -538,6 +662,7 @@ def calibrate_beam_width(
                         s, horizon=h, beam_width=b, track="fixed_budget"
                     ),
                     label=label,
+                    exp_id=exp_id,
                     store=store,
                 )
                 elapsed = time.perf_counter() - started
@@ -560,38 +685,72 @@ def calibrate_beam_width(
                     "wall_clock_sec": elapsed,
                 }
 
-    # 상대 차이를 채운다.
-    eps = 1.0e-12
+    # 상대 차이와 depth 차이를 채운다.
+    # 분모는 ``|J_ref| + eps`` 가 아니라 ``max(|J_ref|, eps)`` 다. J_ref 가 0
+    # 근처일 때 상대 오차가 폭발하는 것을 막는다.
     for (space_label, horizon, _beam), row in measured.items():
-        ref = measured[space_label, horizon, reference]["log_improvement"]
+        ref_row = measured[space_label, horizon, reference]
+        ref = ref_row["log_improvement"]
         if math.isfinite(ref) and math.isfinite(row["log_improvement"]):
-            row["relative_diff"] = abs(row["log_improvement"] - ref) / (abs(ref) + eps)
+            row["relative_diff"] = abs(row["log_improvement"] - ref) / max(
+                abs(ref), utility_epsilon
+            )
+        ref_deep = ref_row["deep_fraction"]
+        if math.isfinite(ref_deep) and math.isfinite(row["deep_fraction"]):
+            row["deep_diff"] = abs(row["deep_fraction"] - ref_deep)
+        else:
+            row["deep_diff"] = float("nan")
     calibration.rows = measured
 
-    # 선택 규칙 적용
+    # 선택 규칙 (사전 정의. 결과를 본 뒤 바꾸지 않는다)
     candidates: list[int] = []
+    rejections: dict[int, str] = {}
     for beam in sorted(beams):
-        ok = True
+        reasons: list[str] = []
         for space_label in spaces:
             for horizon in horizons:
                 row = measured[space_label, horizon, beam]
-                if not math.isfinite(row["relative_diff"]) or row["relative_diff"] >= tolerance:
-                    ok = False
-        if ok:
+                tag = f"{space_label}/H{horizon}"
+                if not math.isfinite(row["relative_diff"]):
+                    reasons.append(f"{tag}: 효용 비교 불가")
+                elif row["relative_diff"] >= tolerance:
+                    reasons.append(f"{tag}: 효용 상대차 {row['relative_diff']:.4f}")
+                deep_diff = row.get("deep_diff", float("nan"))
+                if math.isfinite(deep_diff) and deep_diff > deep_fraction_tolerance:
+                    reasons.append(f"{tag}: depth>1 비율 차이 {deep_diff:.3f}")
+        if reasons:
+            rejections[beam] = "; ".join(reasons[:3])
+        else:
             candidates.append(beam)
 
+    calibration.rejections = rejections
     if candidates:
-        smallest = min(candidates)
-        calibration.selected_beam = smallest
+        # tie-break: 최소 beam -> wall-clock 짧은 것 -> beam 2
+        selected = min(
+            candidates,
+            key=lambda b: (
+                b,
+                sum(
+                    measured[s, h, b]["wall_clock_sec"]
+                    for s in spaces
+                    for h in horizons
+                ),
+                0 if b == 2 else 1,
+            ),
+        )
+        calibration.selected_beam = selected
         calibration.rationale = (
-            f"beam {smallest}: 모든 (space, horizon) 에서 기준 beam {reference} 대비 "
-            f"상대 차이 < {tolerance:g}"
+            f"beam {selected}: 모든 (space, horizon) 에서 기준 beam {reference} 대비 "
+            f"효용 상대차 < {tolerance:g} 이고 depth>1 비율 차이 "
+            f"<= {deep_fraction_tolerance:g}"
         )
     else:
         calibration.selected_beam = reference
         calibration.rationale = (
-            f"어떤 축소 beam 도 허용 오차 {tolerance:g} 를 만족하지 못했다. "
-            f"기준 beam {reference} 를 유지한다."
+            f"어떤 축소 beam 도 기준을 만족하지 못했다 "
+            f"(효용 {tolerance:g}, depth {deep_fraction_tolerance:g}). "
+            f"기준 beam {reference} 를 유지한다. "
+            + " | ".join(f"beam {b}: {why}" for b, why in rejections.items())
         )
     return calibration
 
@@ -603,6 +762,7 @@ def run_headroom(
     wide: ActionSpace,
     absolute: ActionSpace,
     store: ResultStore | None = None,
+    code_dirty: bool = False,
     verbose: bool = True,
 ) -> HeadroomReport:
     """게이트 A~D를 측정한다.
@@ -625,6 +785,16 @@ def run_headroom(
     n_tune = config.tuning_budget or len(narrow)
     report.tuning_budget = n_tune
 
+    # 실험 정체성. 설정이 하나라도 다르면 재개 시 별개 run 으로 취급된다.
+    identity = config.identity_payload(
+        {"narrow": narrow, "wide": wide, "absolute": absolute},
+        code_dirty=code_dirty,
+        extra={"n_tune": n_tune, "mode": "headroom"},
+    )
+    exp_id = experiment_id(identity)
+    report.experiment_id = exp_id
+    report.identity = identity
+
     def log(message: str) -> None:
         if verbose:
             print(message, flush=True)
@@ -637,7 +807,7 @@ def run_headroom(
     # --- baseline ---
     log(f"best_static (탐색 {n_tune}회)")
     best_action, static_group = search_best_static(
-        config, narrow, n_tune=n_tune, store=store
+        config, narrow, n_tune=n_tune, exp_id=exp_id, store=store
     )
     static_group = _relabel(static_group, "best_static")
     static_runs = static_group.runs
@@ -647,7 +817,7 @@ def run_headroom(
 
     log(f"best_open_loop (탐색 {n_tune}회)")
     open_group = _relabel(
-        search_best_open_loop(config, narrow, n_tune=n_tune, store=store),
+        search_best_open_loop(config, narrow, n_tune=n_tune, exp_id=exp_id, store=store),
         "best_open_loop",
     )
     report.groups["best_open_loop"] = open_group
@@ -658,6 +828,7 @@ def run_headroom(
         config,
         lambda _t, _g: HeuristicController(narrow),
         label="heuristic",
+        exp_id=exp_id,
         store=store,
     )
     report.groups["heuristic"] = summarize_group(heuristic_runs, controller="heuristic")
@@ -681,6 +852,7 @@ def run_headroom(
             config,
             lambda _t, _g, s=space: OneStepEfficiencyController(s),
             label=label,
+            exp_id=exp_id,
             store=store,
         )
         onestep_runs[label] = runs
@@ -707,6 +879,7 @@ def run_headroom(
                     track="fixed_budget",
                 ),
                 label=label,
+                exp_id=exp_id,
                 store=store,
             )
             planner_runs[label] = runs
@@ -745,6 +918,7 @@ def run_headroom(
             lambda _t, _g, a=best_action: FixedController(a),
             label=f"best_static@{level}",
             difficulty=level,
+            exp_id=exp_id,
             store=store,
         )
         # planner 는 task 별 **절대** target loss 를 받아야 한다. 상대 target
@@ -761,6 +935,7 @@ def run_headroom(
             ),
             label=f"mpc_H{max_h}@{level}",
             difficulty=level,
+            exp_id=exp_id,
             store=store,
         )
         report.groups[f"best_static@{level}"] = summarize_group(

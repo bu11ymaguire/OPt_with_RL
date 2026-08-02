@@ -32,7 +32,7 @@ interrupted  기록 전에 프로세스가 끊긴 경우. 파일에 남지 않�
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,27 +40,69 @@ from typing import Any, Literal
 
 from rl_newton.benchmark.metrics import RunSummary
 from rl_newton.utils.logging import sanitize_for_json
+from rl_newton.utils.provenance import config_hash
 
-__all__ = ["RunKey", "RunRecord", "ResultStore", "RunStatus"]
+__all__ = [
+    "RunKey",
+    "RunRecord",
+    "ResultStore",
+    "RunStatus",
+    "experiment_id",
+    "environment_fingerprint",
+]
 
 RunStatus = Literal["completed", "failed"]
 
 
+def experiment_id(payload: Mapping[str, Any]) -> str:
+    """실험 정체성 해시. 재개 판단의 **필수** 구성요소다.
+
+    ``(controller, task, seed, target)`` 만으로 완료를 판단하면 위험하다.
+    beam, horizon, GE 예산, action space, CG budget, damping 격자 중 어느
+    하나가 바뀌어도 같은 조합으로 보고 **낡은 결과를 새 결과로 착각**한다.
+    재개 기능이 오히려 실험을 오염시키는 셈이다.
+
+    그래서 완료 키에 이 해시를 포함한다. payload 에는 최소한 다음이 들어가야
+    한다.
+
+    ```text
+    track / protocol_version / config
+    action space 정의 (damping 값, cg budget, step size)
+    horizon / beam / GE budget / max_steps / tuning_budget
+    damping 경계와 초기값 / target 정의 / device
+    code_dirty (커밋되지 않은 변경이 있는지)
+    ```
+
+    git commit 은 provenance 로는 유용하지만 정체성으로 충분하지 않다.
+    작업 중 커밋되지 않은 변경이 있을 수 있으므로 ``code_dirty`` 를 함께 본다.
+    """
+    return config_hash(dict(payload))
+
+
 @dataclass(frozen=True, slots=True)
 class RunKey:
-    """run 하나를 유일하게 식별한다. 재개 판단의 기준이다."""
+    """run 하나를 유일하게 식별한다. 재개 판단의 기준이다.
 
+    ``experiment_id`` 가 앞에 오는 것이 중요하다. 설정이 달라지면 같은
+    ``(controller, task, seed, target)`` 이라도 다른 run 으로 취급된다.
+    """
+
+    experiment_id: str
     controller: str
     task_instance_id: str
     seed: int
     target: str
 
     def as_str(self) -> str:
-        return f"{self.controller}|{self.task_instance_id}|{self.seed}|{self.target}"
+        return (
+            f"{self.experiment_id}|{self.controller}|{self.task_instance_id}"
+            f"|{self.seed}|{self.target}"
+        )
 
     @classmethod
-    def from_summary(cls, summary: RunSummary) -> RunKey:
+    def from_summary(cls, summary: RunSummary, experiment_id: str) -> RunKey:
         return cls(
+            experiment_id=experiment_id,
             controller=summary.controller,
             task_instance_id=summary.task_instance_id,
             seed=summary.seed,
@@ -292,6 +334,7 @@ class ResultStore:
     def record_success(
         self,
         summary: RunSummary,
+        experiment_id: str,
         *,
         wall_clock_sec: float,
         action_counts: dict[str, int] | None = None,
@@ -299,7 +342,7 @@ class ResultStore:
     ) -> None:
         self.put(
             RunRecord(
-                key=RunKey.from_summary(summary),
+                key=RunKey.from_summary(summary, experiment_id),
                 status="completed",
                 summary=summary,
                 wall_clock_sec=wall_clock_sec,
@@ -327,3 +370,51 @@ class ResultStore:
             f"ResultStore({self.path.name}): 완료 {completed}, 실패 {failed}, "
             f"컨트롤러 {len(self.controllers())}종"
         )
+
+
+# ---------------------------------------------------------------------------
+# 실행 환경 기록과 CPU 스레드 고정
+# ---------------------------------------------------------------------------
+
+
+def environment_fingerprint(*, pin_threads: int | None = 1) -> dict[str, Any]:
+    """실행 환경을 기록하고 필요하면 CPU 스레드를 고정한다.
+
+    GE 가 주 지표이므로 핵심 결론은 CPU 경쟁에 영향받지 않는다. 그러나 beam
+    선택의 마지막 tie-break 로 wall-clock 을 쓰므로, 다른 실험과 CPU 를
+    공유하면 그 tie-break 가 흔들린다.
+
+    ``pin_threads`` 를 주면 ``torch.set_num_threads`` 와
+    ``set_num_interop_threads`` 를 고정한다. 이미 병렬 영역이 시작된 뒤에는
+    interop 설정이 실패할 수 있으므로 예외를 삼키고 실제 값을 기록한다.
+
+    Args:
+        pin_threads: 고정할 스레드 수. ``None`` 이면 건드리지 않는다.
+
+    Returns:
+        기록용 dict. 동시 실행 프로세스 수는 관측할 수 없으므로 호출자가
+        알고 있다면 별도로 넣는다.
+    """
+    import contextlib
+    import os
+    import platform
+
+    import torch
+
+    if pin_threads is not None:
+        torch.set_num_threads(pin_threads)
+        # 이미 병렬 영역이 초기화된 뒤에는 interop 설정이 실패한다.
+        # 실제 값을 아래에서 기록하므로 삼켜도 정보가 사라지지 않는다.
+        with contextlib.suppress(RuntimeError):
+            torch.set_num_interop_threads(1)
+
+    return {
+        "platform": f"{platform.system()} {platform.release()}",
+        "processor": platform.processor(),
+        "cpu_count": os.cpu_count(),
+        "torch_num_threads": torch.get_num_threads(),
+        "torch_num_interop_threads": torch.get_num_interop_threads(),
+        "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+        "mkl_num_threads": os.environ.get("MKL_NUM_THREADS"),
+        "pinned": pin_threads,
+    }

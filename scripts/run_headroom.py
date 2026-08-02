@@ -50,7 +50,7 @@ from rl_newton.benchmark.oracle import (
     calibrate_beam_width,
     run_headroom,
 )
-from rl_newton.benchmark.store import ResultStore
+from rl_newton.benchmark.store import ResultStore, environment_fingerprint
 from rl_newton.optimizers.action_space import ABSOLUTE, NARROW, WIDE
 from rl_newton.tasks.quadratics import QuadraticSpec
 from rl_newton.tasks.rosenbrock import RosenbrockSpec
@@ -182,6 +182,18 @@ def main() -> int:
         action="store_true",
         help="step_size 축을 제어에 포함. 기본은 1.0 고정 (aliasing 회피)",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="torch CPU 스레드 수. wall-clock tie-break 안정화를 위해 고정한다",
+    )
+    parser.add_argument(
+        "--concurrent-processes",
+        type=int,
+        default=1,
+        help="동시 실행 중인 다른 실험 프로세스 수 (기록용)",
+    )
     parser.add_argument("--raw-dir", type=Path, default=Path("results/raw"))
     parser.add_argument("--out-dir", type=Path, default=Path("results/summaries"))
     parser.add_argument(
@@ -201,10 +213,20 @@ def main() -> int:
 
     store = ResultStore(raw_path, git_commit=commit, config_hash=cfg_hash)
 
+    # wall-clock 은 beam 선택의 마지막 tie-break 로만 쓰이지만, 다른 실험과 CPU
+    # 를 공유하면 그 tie-break 가 흔들린다. 스레드를 고정하고 환경을 기록한다.
+    env = environment_fingerprint(pin_threads=args.threads)
+    meta["environment"] = env
+    meta["concurrent_processes"] = args.concurrent_processes
+
     print("=" * 96)
     print(f"Stage 2 {args.mode}  조건={meta['condition']}  device=cpu (GPU 미사용)")
     print(f"  seeds={config.seeds}  GE 예산={config.cost_budget_ge:g}  beam={args.beam}")
     print(f"  git={commit}{' (dirty)' if dirty else ''}  config_hash={cfg_hash}")
+    print(
+        f"  torch threads={env['torch_num_threads']} "
+        f"interop={env['torch_num_interop_threads']} cpu={env['cpu_count']}"
+    )
     print(f"  raw={raw_path}  (이미 {len(store)}개 기록됨, 완료분은 건너뜀)")
     for space in (narrow, wide, absolute):
         print(
@@ -223,6 +245,7 @@ def main() -> int:
             beams=(1, 2, 4),
             horizons=(3, 5),
             store=store,
+            code_dirty=dirty,
         )
         print("\n" + calibration.table())
         print(f"\n선택: beam {calibration.selected_beam}")
@@ -252,7 +275,13 @@ def main() -> int:
         return 0
 
     report = run_headroom(
-        config, narrow=narrow, wide=wide, absolute=absolute, store=store, verbose=True
+        config,
+        narrow=narrow,
+        wide=wide,
+        absolute=absolute,
+        store=store,
+        code_dirty=dirty,
+        verbose=True,
     )
 
     print("\n" + "=" * 96)
@@ -296,6 +325,8 @@ def main() -> int:
     path = args.out_dir / f"headroom_{tag}.json"
     payload = {
         "meta": meta,
+        "experiment_id": report.experiment_id,
+        "identity": report.identity,
         "n_instances": report.n_instances,
         "tuning_budget": report.tuning_budget,
         "tuning_runs": report.tuning_runs,

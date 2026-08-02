@@ -531,11 +531,17 @@ mpc_H1 / H3 / H5      H-step beam search, terminal objective 기준
 
 | 단계 | 디바이스 | VRAM |
 |---|---|---|
-| Stage 1~2 | CPU | 0 |
+| Stage 1~2 | CPU (실측) | 0 |
 | Stage 2.5 micro-neural | CPU 가능 | ~0 |
-| Stage 3 MNIST MLP (102k, B=512) | GPU 권장 | < 100 MB |
-| Stage 4 PPO (DummyVecEnv) | GPU | 수백 MB |
-| Stage 5 small CNN (2.19M, B=128) | GPU | ~1 GB |
+| Stage 3 MNIST MLP (102k, B=512) | GPU 권장 | 계획값 < 100 MB |
+| Stage 4 PPO (DummyVecEnv) | GPU 또는 CPU | 계획값 수백 MB |
+| Stage 5 small CNN (2.19M, B=128) | GPU | 계획값 ~1 GB |
+
+**Stage 3 이후의 VRAM 숫자는 확정값이 아니라 계획값이다.** HVP 메모리는
+`create_graph` 유지 기간, 후보를 병렬 평가하는지, mixed precision 여부,
+curvature batch 크기, activation 크기에 따라 달라진다. 각 Stage 진입 시
+`torch.cuda.max_memory_allocated()` 와 `max_memory_reserved()` 를 다시 실측한다.
+PPO controller 자체는 작아서 GPU가 반드시 필요한 것도 아니다.
 
 #### 실행은 재개 가능해야 한다
 
@@ -567,19 +573,61 @@ seed    dev seed 만 (held-out 100~109 사용 금지)
 **선택 규칙 (사전 정의. 결과를 본 뒤 바꾸지 않는다):**
 
 1. 최대 beam(4)을 기준으로 삼는다
-2. 모든 `(space, horizon)` 조합에서 다음을 만족하는 beam 중 **가장 작은 것**을 고른다
+2. 모든 `(space, horizon)` 조합에서 다음 **둘을 모두** 만족하는 beam 중
+   **가장 작은 것**을 고른다
 
    ```text
-   |J_b − J_4| / (|J_4| + ε) < 0.02
+   |J_b − J_ref| / max(|J_ref|, ε) < 0.02          ε = 1e-6
+   |d_b − d_ref| ≤ 0.05                            d = chosen_depth > 1 비율
    ```
 
-3. 수치 기준을 통과해도 다음이 기준 beam과 달라지면 배제한다
-   - `H=3`과 `H=5`의 우열
-   - planning headroom의 존재 여부 (게이트 C의 판정)
-   - narrow와 wide의 관계
-   - 선택 action 분포
-   - `chosen_depth` 분포 (특히 `depth > 1` 비율)
-4. tie-break: 가장 작은 beam → wall-clock이 짧은 것 → 그래도 같으면 beam 2
+3. tie-break: 가장 작은 beam → wall-clock이 짧은 것 → 그래도 같으면 beam 2
+
+수치는 코드 상수로 고정되어 있다 (`UTILITY_TOLERANCE = 0.02`,
+`UTILITY_EPSILON = 1e-6`, `DEEP_FRACTION_TOLERANCE = 0.05`). "크게 다르면 제외"를
+결과를 본 뒤 판단하면 사후 선택이 되므로 수치로 못박는다.
+
+분모가 `|J_ref| + ε` 이 아니라 `max(|J_ref|, ε)` 인 이유는 `J_ref` 가 0 근처일 때
+상대 오차가 폭발하기 때문이다.
+
+`chosen_depth` 를 함께 보는 이유는 효용이 비슷해도 깊은 계획을 쓰는 빈도가
+달라지면 게이트 C의 해석이 바뀌기 때문이다. `H=5` 인데 거의 항상 1이면 장기
+planning의 실질적 가치가 낮다는 직접적 증거이고, 이는 PPO 착수 판단에 직결된다.
+
+#### wall-clock tie-break를 쓰므로 CPU를 고정한다
+
+GE가 주 지표이므로 핵심 결론은 CPU 경쟁에 영향받지 않는다. 그러나 tie-break에
+wall-clock을 쓰므로 스레드를 고정하고 환경을 기록한다.
+
+```python
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+```
+
+기록 항목: CPU 모델, 코어 수, torch/interop 스레드 수, `OMP_NUM_THREADS`,
+`MKL_NUM_THREADS`, 동시 실행 프로세스 수. **실행 환경이 달라지면 calibration을
+재사용하지 않는다.**
+
+#### 재개 판단은 전체 config 해시로 한다
+
+`(controller, task, seed, target)` 만으로 완료를 판단하면 위험하다. beam,
+horizon, GE 예산, action space, CG budget, damping 격자 중 어느 하나가 바뀌어도
+같은 조합으로 보고 **낡은 결과를 새 결과로 착각**한다. 재개 기능이 오히려 실험을
+오염시킨다.
+
+```text
+experiment_id = hash(canonicalized_full_config)
+run_key       = experiment_id | controller | task_instance | seed | target
+```
+
+`experiment_id` payload에 포함되는 것: `protocol_version`, phase, device,
+GE 예산, `max_steps`, damping 초기값·경계, CG tolerance, `pap_eps`,
+`max_loss_increase_ratio`, `safe_fallback`, horizons, beam, `tuning_budget`,
+스케줄 구간 수, tuning seed, target 정의, task spec 목록, seed 목록,
+**행동 공간 정의 전체**(damping 값, CG budget, step size), 그리고 `code_dirty`.
+
+git commit은 provenance로 기록하지만 정체성으로는 불충분하다. 커밋되지 않은
+변경이 있을 수 있으므로 `code_dirty` 를 함께 넣는다.
 
 `chosen_depth`를 반드시 본다. `H=5`인데 거의 항상 1이면 장기 planning의 실질적
 가치가 낮다는 직접적 증거이고, 이는 PPO 착수 판단에 직결된다.
