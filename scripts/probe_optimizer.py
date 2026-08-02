@@ -17,9 +17,9 @@ import math
 
 from rl_newton.optimizers.action_space import ABSOLUTE, NARROW, WIDE
 from rl_newton.optimizers.controllers import (
+    AverageRateEfficiencyPlanner,
     FixedController,
     HeuristicController,
-    HorizonPlannerController,
     OneStepEfficiencyController,
 )
 from rl_newton.optimizers.newton_cg import NewtonCGConfig, NewtonCGOptimizer
@@ -97,7 +97,7 @@ def main() -> int:
         for horizon in (1, 3):
             run_one(
                 QuadraticTask(spec, seed=0),
-                HorizonPlannerController(
+                AverageRateEfficiencyPlanner(
                     n_fixed, horizon=horizon, beam_width=3, track="fixed_budget"
                 ),
                 config,
@@ -105,13 +105,13 @@ def main() -> int:
             )
         run_one(
             QuadraticTask(spec, seed=0),
-            HorizonPlannerController(a_fixed, horizon=3, beam_width=3, track="fixed_budget"),
+            AverageRateEfficiencyPlanner(a_fixed, horizon=3, beam_width=3, track="fixed_budget"),
             config,
             "mpc_H3(absolute)",
         )
         run_one(
             QuadraticTask(spec, seed=0),
-            HorizonPlannerController(w_fixed, horizon=3, beam_width=3, track="fixed_budget"),
+            AverageRateEfficiencyPlanner(w_fixed, horizon=3, beam_width=3, track="fixed_budget"),
             config,
             "mpc_H3(wide)",
         )

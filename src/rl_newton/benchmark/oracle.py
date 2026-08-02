@@ -56,9 +56,9 @@ from rl_newton.benchmark.paired import SyntheticTask, TaskSpec, make_task
 from rl_newton.benchmark.store import ResultStore, RunKey, experiment_id
 from rl_newton.optimizers.action_space import ActionSpace
 from rl_newton.optimizers.controllers import (
+    BudgetedMPCController,
     FixedController,
     HeuristicController,
-    HorizonPlannerController,
     OneStepEfficiencyController,
     make_open_loop_controller,
 )
@@ -137,8 +137,21 @@ class HeadroomConfig:
     initial_damping: float = 1.0e-2
     tuning_budget: int | None = None
     """N_tune. ``None`` 이면 narrow 행동 공간 크기를 쓴다. 모든 baseline 동일."""
-    horizons: Sequence[int] = (1, 3, 5)
-    """게이트 C에서 비교할 planner horizon 들."""
+    quotas: Sequence[float] = (1.0, 2.0, 4.0)
+    """게이트 C의 미래 GE 쿼터 사다리. ``c_max`` 배수다 (프로토콜 D10).
+
+    ```text
+    C0  OneStepEfficiencyController    비율 baseline (별도 계산)
+    C1  Q = 1 x c_max
+    C2  Q = 2 x c_max
+    C3  Q = 4 x c_max
+    ```
+
+    이전 판은 ``horizons=(1,3,5)`` 였다. horizon step 수로 나누면 비싼 action 과
+    싼 action 의 계획이 서로 다른 비용을 쓰므로 공정 비교가 아니었고, 효용을
+    비용으로 나눠 보정하려다 평균 희석 문제가 생겼다. 쿼터로 맞추면 나눗셈이
+    필요 없다.
+    """
     beam_width: int = 4
     tuning_seed: int = 0
     n_schedule_segments: int = 4
@@ -200,7 +213,7 @@ class HeadroomConfig:
             "max_loss_increase_ratio": optimizer.max_loss_increase_ratio,
             "safe_fallback": optimizer.safe_fallback,
             "compute_trust_ratio": optimizer.compute_trust_ratio,
-            "horizons": list(self.horizons),
+            "quotas": [float(q) for q in self.quotas],
             "beam_width": self.beam_width,
             "tuning_budget": self.tuning_budget,
             "n_schedule_segments": self.n_schedule_segments,
@@ -278,6 +291,39 @@ def _chosen_depths(controller: Controller) -> dict[str, int] | None:
         depth = getattr(choice, "chosen_depth", 1)
         counts[str(depth)] = counts.get(str(depth), 0) + 1
     return counts
+
+
+def _planner_stats(controller: Controller) -> dict[str, float] | None:
+    """planner 진단값. 쿼터 사다리 해석에 필요하다 (프로토콜 D10).
+
+    ``depth_cap_hit`` 이 0 이 아니면 계산 상한 때문에 쿼터를 다 쓰지 못한 step 이
+    있다는 뜻이므로, 쿼터 사다리 비교가 훼손된다. 조용히 넘기면 게이트 C 결론이
+    계산 예산의 부산물이 되므로 반드시 기록한다.
+
+    ``quota_used_fraction`` 은 채택된 계획이 쿼터의 몇 %를 실제로 썼는지다.
+    1.0 에 가까우면 쿼터가 실제로 구속하고 있다는 뜻이고, 아주 작으면 쿼터를
+    늘려도 planner 가 쓰지 않는다는 뜻이다.
+    """
+    choices = getattr(controller, "choices", None)
+    if not choices:
+        return None
+    quotas = [c.quota_ge for c in choices if math.isfinite(getattr(c, "quota_ge", float("nan")))]
+    if not quotas:
+        return None
+    used = [
+        c.plan_used_ge / c.quota_ge
+        for c in choices
+        if math.isfinite(getattr(c, "plan_used_ge", float("nan"))) and c.quota_ge > 0.0
+    ]
+    sims = [float(getattr(c, "n_simulations", 0)) for c in choices]
+    n_cap = sum(1 for c in choices if getattr(c, "depth_cap_hit", False))
+    return {
+        "quota_ge": quotas[0],
+        "depth_cap_hit": n_cap / len(choices),
+        "quota_used_fraction": (sum(used) / len(used)) if used else float("nan"),
+        "mean_simulations": sum(sims) / len(sims),
+        "max_depth_seen": float(max(getattr(c, "chosen_depth", 1) for c in choices)),
+    }
 
 
 def run_controller(
@@ -363,6 +409,7 @@ def run_controller(
                     wall_clock_sec=elapsed,
                     action_counts=_action_counts(trace),
                     chosen_depths=_chosen_depths(controller),
+                    planner_stats=_planner_stats(controller),
                 )
 
     if verbose and n_skipped:
@@ -545,13 +592,13 @@ class BeamCalibration:
     게이트 C의 결론을 바꿀 수 있다.
 
     Attributes:
-        rows: ``(space, horizon, beam)`` -> 측정값.
+        rows: ``(space, quota, beam)`` -> 측정값. ``quota`` 는 ``c_max`` 배수다.
         selected_beam: 선택 규칙을 적용한 결과.
         reference_beam: 비교 기준이 된 최대 beam.
         tolerance: 상대 허용 오차.
     """
 
-    rows: dict[tuple[str, int, int], dict[str, float]] = field(default_factory=dict)
+    rows: dict[tuple[str, float, int], dict[str, float]] = field(default_factory=dict)
     selected_beam: int = 0
     reference_beam: int = 0
     tolerance: float = UTILITY_TOLERANCE
@@ -563,18 +610,45 @@ class BeamCalibration:
 
     def table(self) -> str:
         header = (
-            f"{'space':<8} {'H':>3} {'beam':>5} {'logΔ(nat)':>11} "
-            f"{'rel.diff':>9} {'depth>1':>8} {'Δdepth':>8} {'wall(s)':>9}"
+            f"{'space':<8} {'Q/cmax':>7} {'beam':>5} {'logΔ(nat)':>11} "
+            f"{'rel.diff':>9} {'depth>1':>8} {'Δdepth':>8} {'cap':>4} {'wall(s)':>9}"
         )
         lines = [header, "-" * len(header)]
-        for (space, horizon, beam), row in sorted(self.rows.items()):
+        for (space, quota, beam), row in sorted(self.rows.items()):
+            cap = row.get("depth_cap_fraction", float("nan"))
             lines.append(
-                f"{space:<8} {horizon:>3} {beam:>5} {row['log_improvement']:>11.4f} "
+                f"{space:<8} {quota:>7.1f} {beam:>5} {row['log_improvement']:>11.4f} "
                 f"{row['relative_diff']:>9.4f} {row['deep_fraction']:>8.2f} "
                 f"{row.get('deep_diff', float('nan')):>8.3f} "
-                f"{row['wall_clock_sec']:>9.2f}"
+                f"{cap:>4.2f} {row['wall_clock_sec']:>9.2f}"
             )
         return "\n".join(lines)
+
+
+def _depth_stats(store: ResultStore | None, label: str) -> tuple[float, float]:
+    """``(depth>1 비율, depth_cap 에 걸린 run 비율)``.
+
+    ``depth_cap_fraction`` 이 0 이 아니면 쿼터를 다 쓰지 못한 계획이 있으므로
+    쿼터 사다리 비교가 훼손된다. 게이트 C 보고에 포함해야 한다.
+    """
+    if store is None:
+        return float("nan"), float("nan")
+    depth_totals: dict[str, int] = {}
+    n_runs = 0
+    n_capped = 0
+    for record in store:
+        if record.key.controller != label:
+            continue
+        if record.chosen_depths:
+            for depth, count in record.chosen_depths.items():
+                depth_totals[depth] = depth_totals.get(depth, 0) + count
+        if record.planner_stats is not None:
+            n_runs += 1
+            n_capped += record.planner_stats.get("depth_cap_hit", 0.0)
+    total = sum(depth_totals.values())
+    deep = 1.0 - depth_totals.get("1", 0) / total if total else float("nan")
+    cap = n_capped / n_runs if n_runs else float("nan")
+    return deep, cap
 
 
 def calibrate_beam_width(
@@ -583,7 +657,7 @@ def calibrate_beam_width(
     narrow: ActionSpace,
     wide: ActionSpace,
     beams: Sequence[int] = (1, 2, 4),
-    horizons: Sequence[int] = (3, 5),
+    quotas: Sequence[float] = (1.0, 4.0),
     tolerance: float = UTILITY_TOLERANCE,
     utility_epsilon: float = UTILITY_EPSILON,
     deep_fraction_tolerance: float = DEEP_FRACTION_TOLERANCE,
@@ -615,7 +689,7 @@ def calibrate_beam_width(
 
     Args:
         beams: 시험할 beam 폭.
-        horizons: 시험할 horizon.
+        quotas: 시험할 미래 GE 쿼터 (``c_max`` 배수). 사다리의 양 끝을 쓴다.
         tolerance: 효용 상대 허용 오차.
         utility_epsilon: 상대 오차 분모의 하한.
         deep_fraction_tolerance: ``depth > 1`` 비율의 허용 차이.
@@ -634,14 +708,14 @@ def calibrate_beam_width(
     calibration.reference_beam = reference
     spaces = {"narrow": narrow, "wide": wide}
 
-    measured: dict[tuple[str, int, int], dict[str, float]] = {}
+    measured: dict[tuple[str, float, int], dict[str, float]] = {}
     for space_label, space in spaces.items():
-        for horizon in horizons:
+        for quota in quotas:
             for beam in beams:
-                label = f"cal_mpc_H{horizon}_{space_label}_b{beam}"
+                label = f"cal_budgeted_Q{quota:g}_{space_label}_b{beam}"
                 if verbose:
                     print(f"  {label}", flush=True)
-                # beam 과 horizon 이 실험 정체성에 들어가야 재개가 안전하다.
+                # beam 과 쿼터가 실험 정체성에 들어가야 재개가 안전하다.
                 exp_id = experiment_id(
                     config.identity_payload(
                         {space_label: space},
@@ -649,7 +723,7 @@ def calibrate_beam_width(
                         extra={
                             "mode": "beam_calibration",
                             "cal_beam": beam,
-                            "cal_horizon": horizon,
+                            "cal_quota": float(quota),
                             "cal_space": space_label,
                         },
                     )
@@ -657,8 +731,8 @@ def calibrate_beam_width(
                 started = time.perf_counter()
                 runs = run_controller(
                     config,
-                    lambda _t, _g, s=space, h=horizon, b=beam: HorizonPlannerController(
-                        s, horizon=h, beam_width=b, track="fixed_budget"
+                    lambda _t, _g, s=space, q=quota, b=beam: BudgetedMPCController(
+                        s, quota_multiplier=q, beam_width=b, track="fixed_budget"
                     ),
                     label=label,
                     exp_id=exp_id,
@@ -667,29 +741,20 @@ def calibrate_beam_width(
                 )
                 elapsed = time.perf_counter() - started
                 group = summarize_group(runs, controller=label)
-                deep = float("nan")
-                if store is not None:
-                    depth_totals: dict[str, int] = {}
-                    for record in store:
-                        if record.key.controller != label or not record.chosen_depths:
-                            continue
-                        for depth, count in record.chosen_depths.items():
-                            depth_totals[depth] = depth_totals.get(depth, 0) + count
-                    total = sum(depth_totals.values())
-                    if total:
-                        deep = 1.0 - depth_totals.get("1", 0) / total
-                measured[space_label, horizon, beam] = {
+                deep, cap = _depth_stats(store, label)
+                measured[space_label, float(quota), beam] = {
                     "log_improvement": group.median_log_improvement,
                     "relative_diff": float("nan"),
                     "deep_fraction": deep,
+                    "depth_cap_fraction": cap,
                     "wall_clock_sec": elapsed,
                 }
 
     # 상대 차이와 depth 차이를 채운다.
     # 분모는 ``|J_ref| + eps`` 가 아니라 ``max(|J_ref|, eps)`` 다. J_ref 가 0
     # 근처일 때 상대 오차가 폭발하는 것을 막는다.
-    for (space_label, horizon, _beam), row in measured.items():
-        ref_row = measured[space_label, horizon, reference]
+    for (space_label, quota, _beam), row in measured.items():
+        ref_row = measured[space_label, quota, reference]
         ref = ref_row["log_improvement"]
         if math.isfinite(ref) and math.isfinite(row["log_improvement"]):
             row["relative_diff"] = abs(row["log_improvement"] - ref) / max(
@@ -708,9 +773,9 @@ def calibrate_beam_width(
     for beam in sorted(beams):
         reasons: list[str] = []
         for space_label in spaces:
-            for horizon in horizons:
-                row = measured[space_label, horizon, beam]
-                tag = f"{space_label}/H{horizon}"
+            for quota in quotas:
+                row = measured[space_label, float(quota), beam]
+                tag = f"{space_label}/Q{quota:g}"
                 if not math.isfinite(row["relative_diff"]):
                     reasons.append(f"{tag}: 효용 비교 불가")
                 elif row["relative_diff"] >= tolerance:
@@ -730,13 +795,13 @@ def calibrate_beam_width(
             candidates,
             key=lambda b: (
                 b,
-                sum(measured[s, h, b]["wall_clock_sec"] for s in spaces for h in horizons),
+                sum(measured[s, float(q), b]["wall_clock_sec"] for s in spaces for q in quotas),
                 0 if b == 2 else 1,
             ),
         )
         calibration.selected_beam = selected
         calibration.rationale = (
-            f"beam {selected}: 모든 (space, horizon) 에서 기준 beam {reference} 대비 "
+            f"beam {selected}: 모든 (space, quota) 에서 기준 beam {reference} 대비 "
             f"효용 상대차 < {tolerance:g} 이고 depth>1 비율 차이 "
             f"<= {deep_fraction_tolerance:g}"
         )
@@ -860,14 +925,14 @@ def run_headroom(
     # 감당할 수 없다 (실제 step 당 약 1,200회 시뮬레이션).
     planner_runs: dict[str, list[RunSummary]] = {}
     for space_label, space in (("narrow", narrow), ("wide", wide)):
-        for horizon in config.horizons:
-            label = f"mpc_H{horizon}_{space_label}"
+        for quota in config.quotas:
+            label = f"budgeted_Q{quota:g}_{space_label}"
             log(f"{label} ({len(space)} actions, beam {config.beam_width})")
             runs = run_controller(
                 config,
-                lambda _t, _g, s=space, h=horizon: HorizonPlannerController(
+                lambda _t, _g, s=space, q=quota: BudgetedMPCController(
                     s,
-                    horizon=h,
+                    quota_multiplier=q,
                     beam_width=config.beam_width,
                     track="fixed_budget",
                 ),
@@ -883,20 +948,25 @@ def run_headroom(
     def delta(base: Sequence[RunSummary], treat: Sequence[RunSummary]) -> PairedDelta:
         return compare_paired_delta(base, treat, metric="log_improvement")
 
-    max_h = max(config.horizons)
-    min_h = min(config.horizons)
+    max_q = max(config.quotas)
+    min_q = min(config.quotas)
     e_pairs = [
         # 게이트 A1: 순간적 absolute headroom (도달성 제약 제거, H=1)
         (static_runs, onestep_runs["onestep_absolute"]),
         # 게이트 A2: 도달 가능한 sequential headroom
-        (static_runs, planner_runs[f"mpc_H{max_h}_narrow"]),
-        (static_runs, planner_runs[f"mpc_H{max_h}_wide"]),
+        (static_runs, planner_runs[f"budgeted_Q{max_q:g}_narrow"]),
+        (static_runs, planner_runs[f"budgeted_Q{max_q:g}_wide"]),
         # 게이트 B: action-space restriction (모두 H=1, 같은 조건)
         (onestep_runs["onestep_narrow"], onestep_runs["onestep_absolute"]),
         (onestep_runs["onestep_narrow"], onestep_runs["onestep_wide"]),
-        # 게이트 C: temporal planning value (absolute 제외)
-        (planner_runs[f"mpc_H{min_h}_narrow"], planner_runs[f"mpc_H{max_h}_narrow"]),
-        (planner_runs[f"mpc_H{min_h}_wide"], planner_runs[f"mpc_H{max_h}_wide"]),
+        # 게이트 C: 쿼터 사다리. C0 -> C_min -> C_max (프로토콜 D10)
+        #
+        # C0 은 비율 baseline 이다. C0 -> C1 은 "목적함수를 고정 예산 형태로
+        # 바꾼 것" 의 효과이고, C_min -> C_max 는 "예산을 늘린 것" 의 효과다.
+        # 둘을 분리해야 어느 쪽이 기여했는지 알 수 있다.
+        (onestep_runs["onestep_narrow"], planner_runs[f"budgeted_Q{min_q:g}_narrow"]),
+        (planner_runs[f"budgeted_Q{min_q:g}_narrow"], planner_runs[f"budgeted_Q{max_q:g}_narrow"]),
+        (planner_runs[f"budgeted_Q{min_q:g}_wide"], planner_runs[f"budgeted_Q{max_q:g}_wide"]),
         # 참고 baseline
         (static_runs, open_group.runs),
         (static_runs, heuristic_runs),
@@ -919,14 +989,14 @@ def run_headroom(
         # cost-to-go 추정이 무의미해진다.
         planner_t = run_controller(
             config,
-            lambda task, target, s=narrow: HorizonPlannerController(
+            lambda task, target, s=narrow: BudgetedMPCController(
                 s,
-                horizon=max_h,
+                quota_multiplier=max_q,
                 beam_width=config.beam_width,
                 track="cost_to_target",
                 target_loss=absolute_target_loss(task, target),
             ),
-            label=f"mpc_H{max_h}@{level}",
+            label=f"budgeted_Q{max_q:g}@{level}",
             difficulty=level,
             exp_id=exp_id,
             store=store,
@@ -934,8 +1004,8 @@ def run_headroom(
         report.groups[f"best_static@{level}"] = summarize_group(
             static_t, controller=f"best_static@{level}"
         )
-        report.groups[f"mpc_H{max_h}@{level}"] = summarize_group(
-            planner_t, controller=f"mpc_H{max_h}@{level}"
+        report.groups[f"budgeted_Q{max_q:g}@{level}"] = summarize_group(
+            planner_t, controller=f"budgeted_Q{max_q:g}@{level}"
         )
         report.track_t_ratios[level] = compare_paired(
             static_t, planner_t, metric="cost_to_target_ge"
@@ -969,8 +1039,8 @@ def run_headroom(
         )
     )
 
-    gate_a2_narrow = e_delta("best_static", f"mpc_H{max_h}_narrow")
-    gate_a2_wide = e_delta("best_static", f"mpc_H{max_h}_wide")
+    gate_a2_narrow = e_delta("best_static", f"budgeted_Q{max_q:g}_narrow")
+    gate_a2_wide = e_delta("best_static", f"budgeted_Q{max_q:g}_wide")
     gate_a2 = (
         max(v for v in (gate_a2_narrow, gate_a2_wide) if math.isfinite(v))
         if any(math.isfinite(v) for v in (gate_a2_narrow, gate_a2_wide))
@@ -982,7 +1052,7 @@ def run_headroom(
             track="Track E",
             question=(
                 "현실적인 multiplier action 으로 그 이득에 접근할 수 있는가 "
-                f"(narrow/wide H{max_h} vs best_static)"
+                f"(narrow/wide Q={max_q:g}xc_max vs best_static)"
             ),
             statistic=gate_a2,
             unit="nat",
@@ -1010,35 +1080,53 @@ def run_headroom(
         )
     )
 
-    gate_c_narrow = e_delta(f"mpc_H{min_h}_narrow", f"mpc_H{max_h}_narrow")
-    gate_c_wide = e_delta(f"mpc_H{min_h}_wide", f"mpc_H{max_h}_wide")
+    gate_c_narrow = e_delta(f"budgeted_Q{min_q:g}_narrow", f"budgeted_Q{max_q:g}_narrow")
+    gate_c_wide = e_delta(f"budgeted_Q{min_q:g}_wide", f"budgeted_Q{max_q:g}_wide")
     gate_c = (
         max(v for v in (gate_c_narrow, gate_c_wide) if math.isfinite(v))
         if any(math.isfinite(v) for v in (gate_c_narrow, gate_c_wide))
         else float("nan")
     )
+    # C0 -> C1: 목적함수를 비율에서 고정 예산으로 바꾼 효과. 쿼터 증가 효과와
+    # 분리해서 보고해야 한다 (프로토콜 D10).
+    objective_gain = e_delta("onestep_narrow", f"budgeted_Q{min_q:g}_narrow")
     curves = []
+    depth_notes = []
     for label in ("narrow", "wide"):
         points = " → ".join(
-            f"H{h}:{report.groups[f'mpc_H{h}_{label}'].median_log_improvement:.3f}"
-            for h in config.horizons
+            f"Q{q:g}:{report.groups[f'budgeted_Q{q:g}_{label}'].median_log_improvement:.3f}"
+            for q in config.quotas
         )
         curves.append(f"{label} {points}")
+        deep_bits = []
+        for q in config.quotas:
+            deep, cap = _depth_stats(store, f"budgeted_Q{q:g}_{label}")
+            deep_bits.append(f"Q{q:g}:d>1={deep:.2f},cap={cap:.2f}")
+        depth_notes.append(f"{label} {' '.join(deep_bits)}")
     report.gates.append(
         GateVerdict(
             name="C",
             track="Track E",
-            question=f"그 접근에 여러 step 의 planning 이 필요한가 (H{max_h} vs H{min_h})",
+            question=(
+                f"같은 미래 예산에서 여러 step planning 이 필요한가 "
+                f"(Q={max_q:g} vs Q={min_q:g}, 단위 c_max)"
+            ),
             statistic=gate_c,
             unit="nat",
             go_threshold=0.3,
             pivot_threshold=0.05,
             detail=(
-                f"horizon 곡선: {' | '.join(curves)}. "
-                "beam search 는 정확한 planner 가 아니므로 실현 성능의 단조성은 "
-                "보장되지 않는다. incumbent carry-over 로 planner 효용의 단조성만 "
-                "보장된다. 재설계 판정이면 contextual bandit / heuristic 으로 "
-                "충분하며 PPO 를 시작하지 않는다 (프로토콜 PPO 착수 조건 1)."
+                f"쿼터 곡선: {' | '.join(curves)}. "
+                f"깊이/상한: {' | '.join(depth_notes)}. "
+                f"참고 C0->C1 (목적함수 교체 효과, 쿼터 증가와 별개): "
+                f"{objective_gain:+.3f} nat. "
+                "**GO 판정에는 두 조건이 모두 필요하다.** 쿼터 증가로 유의미한 "
+                "개선이 있고, 동시에 depth>1 이 실제로 채택돼야 한다. 개선만 있고 "
+                "depth 가 계속 1 이면 planning 이 아니라 탐색량이 기여한 것이다. "
+                "``cap`` 이 0 이 아니면 계산 상한 때문에 쿼터를 다 쓰지 못한 "
+                "step 이 있으므로 사다리 비교가 훼손된 것으로 보고해야 한다. "
+                "재설계 판정이면 contextual bandit / heuristic 으로 충분하며 "
+                "PPO 를 시작하지 않는다 (프로토콜 PPO 착수 조건 1)."
             ),
         )
     )

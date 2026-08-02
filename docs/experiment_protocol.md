@@ -398,6 +398,105 @@ H_T = C_τ(best_static) / C_τ(planner)              [배수, 클수록 여지 �
 - 상태에 `progress` 를 포함하되, 이것이 open_loop baseline과 겹치므로
   `progress` 제거 ablation을 반드시 수행
 
+### D10. Planner 목적함수를 비율에서 고정 GE 쿼터로 교체한다
+
+Track E planner의 초기 목적함수는 다음이었다.
+
+```text
+U = (log L_start − log L_terminal) / cumulative_cost
+```
+
+dry run에서 이것이 **장기 계획을 구조적으로 검출하지 못한다**는 것이 드러났다.
+
+#### 무엇이 관측됐는가
+
+`quadratic`, seed 0, beam 3, 150 GE 예산:
+
+```text
+SPD κ=1e2    H=1/3/5 전부 logΔ=59.8636, depth 히스토그램 {1: 8}
+ill κ=1e5    H=1 → 10.4998 {1:10} / H=3 → 10.5116 {1:9,2:1} / H=5 → 동일
+wide κ=1e5   H=1 → 10.3315 {1:9}  / H=5 → 10.3564 {1:7,2:2}
+```
+
+- `H=3` 과 `H=5` 가 모든 조건에서 완전히 동일했다
+- `depth ≥ 3` 은 `H=5` 에서도 채택 0회
+- 게이트 C 효과 크기 0.025 nat (GO 0.3, 재설계 0.05)
+- `H=5` 의 search 비용은 본문의 약 100배 (16,848 GE vs 166 GE)
+
+#### 왜 그런가
+
+`U` 는 step별 rate의 **비용 가중 평균**이다. mediant 부등식에 의해
+
+```text
+min(r₁, r₂) ≤ (g₁+g₂)/(c₁+c₂) ≤ max(r₁, r₂)
+```
+
+depth 1에서 이미 최대 rate `R*` 를 골랐으면, depth 2가 이기려면 `r₂ > R*`,
+즉 두 번째 step이 **지금 당장 가능한 모든 행동보다** 효율적이어야 한다.
+수익 체감이 일반적인 환경에서는 드물다. mediant 부등식 때문에 깊은 계획이
+수학적으로 절대 불가능한 것은 아니고, 두 번째 상태에서 더 효율적인 행동이 열리면
+이길 수 있다. 실제로 ill-conditioned 문제에서 depth 2가 간헐적으로 채택됐다.
+그러나 **장기 투자 행동을 검출하는 목적함수로는 부적합**하다.
+
+#### 결정
+
+이 결과를 "lookahead가 불필요하다"는 근거로 **쓰지 않는다.** 증명되는 것은
+다음뿐이다.
+
+> 누적 평균 효율을 최대화하는 목적에서는 짧은 계획이 유리하다.
+
+Track E의 실제 연구 질문은 고정 예산 문제다.
+
+```text
+max  log L_t − log L_{t+m}     s.t.  Σ_{i=t}^{t+m−1} c_i ≤ Q
+```
+
+여기에 비용으로 나누는 비율은 들어가지 않는다. 따라서 게이트 C의 주 컨트롤러를
+`BudgetedMPCController` 로 교체한다. 후보마다 동일한 미래 GE 쿼터 `Q` 를 주고
+그 안에서 도달한 terminal loss를 비교한다.
+
+#### 기존 planner는 버리지 않고 이름을 바꿔 보존한다
+
+```text
+기존:  HorizonPlannerController   (게이트 C 주 컨트롤러로 오해될 이름)
+수정:  AverageRateEfficiencyPlanner  (진단 baseline)
+```
+
+버그가 아니었다. 푸는 문제가 달랐을 뿐이다. 이 발견은 별도 결과로 보고한다.
+
+> `Δlog L / GE` 의 누적 평균을 최적화하면 planner가 거의 항상 depth 1을
+> 선택했으며, 이는 cost-to-target이나 fixed-budget terminal performance를
+> 개선하지 못했다.
+
+이는 **RL 보상을 ratio로 설계할 때 생기는 실제 함정**을 보여준다. D3의 보상
+설계 근거를 강화한다.
+
+#### Beam pruning도 비율을 쓰지 않는다
+
+후보를 `Δlog L / c` 스칼라 하나로 정렬하면 같은 문제가 가지치기 안에서 재발한다.
+비싼 장기 계획이 싼 단기 계획과 섞여 조기에 탈락한다. 대신 `(used_GE,
+terminal_loss)` 의 **Pareto frontier** 를 유지한다.
+
+```text
+A 가 B 보다 GE 를 같거나 적게 쓰고 terminal loss 도 같거나 낮으면 B 를 제거
+```
+
+Pareto frontier는 크기 상한이 없으므로 계산량 제한을 위해 GE cost bucket을
+함께 쓴다. 구간마다 terminal loss가 좋은 후보를 `beam_width` 개 남긴다.
+
+Pareto는 **terminal loss 최소 후보를 절대 지우지 않으므로** incumbent
+carry-over를 대체한다. depth 1 최선은 더 나은 계획에 의해서만 밀려난다.
+
+#### Track T planner는 lexicographic
+
+임의의 큰 실패 벌점이나 비율을 넣지 않는다.
+
+```text
+1. target 에 도달한 sequence 가 있으면 누적 GE 가 가장 작은 것
+2. 아무도 도달하지 못하면 같은 쿼터에서 terminal loss 가 가장 낮은 것
+3. 동률이면 더 적은 GE, 그다음 더 짧은 sequence
+```
+
 ---
 
 ## 3. 로깅과 provenance
@@ -510,8 +609,10 @@ README 순서대로 가면 RL이 돌아가기까지 2~3주가 걸리고 그때�
 best_static           행동 공간 전수 고정 → 최고 선택            (N_tune 회)
 best_open_loop        progress 만 보는 스케줄, 랜덤 서치         (N_tune 회)
 heuristic             trust ratio 규칙                          (N_tune 회)
-one_step_efficiency   매 step 전수 sweep, 즉시 효율 최대 선택
-mpc_H1 / H3 / H5      H-step beam search, terminal objective 기준
+one_step_efficiency   매 step 전수 sweep, 즉시 효율 최대 선택     (게이트 C의 C0)
+budgeted_Q1/Q2/Q4     동일 미래 GE 쿼터 안의 계획 비교            (게이트 C의 C1~C3)
+avgrate_H3/H5         누적 평균 효율 planner                     (진단 baseline, D10)
+lagrangian_b*         `Δlog L − β·Σc` planner                    (보조 민감도, D10)
 ```
 
 `one_step_efficiency` 는 **상한이 아니다** (D9). `mpc_*` 도 유한 horizon 근사다.
@@ -555,25 +656,25 @@ run이 된다. 프로세스가 끊겨도(셸 중단, timeout) 계산한 결과�
   config hash를 함께 기록
 - **raw와 집계를 분리한다.** 집계 로직을 바꿔도 실험을 다시 돌리지 않는다
 
-#### Beam width는 추측이 아니라 측정으로 정한다
+#### Beam width와 쿼터는 추측이 아니라 측정으로 정한다
 
 beam search는 정확한 planner가 아니므로 폭을 줄이면 계획 품질이 떨어질 수 있고,
 그것이 게이트 C의 결론을 바꿀 수 있다. 따라서 **pilot calibration parameter**로
-취급한다.
+취급한다. D10 이후에는 planning 쿼터와 beam을 **함께** calibration한다.
 
 측정 범위:
 
 ```text
-beam    ∈ {1, 2, 4}
-horizon ∈ {3, 5}
-space   ∈ {narrow, wide}
-seed    dev seed 만 (held-out 100~109 사용 금지)
+beam   ∈ {1, 2, 4}
+quota  ∈ {1, 4} × c_max        사다리의 양 끝
+space  ∈ {narrow, wide}
+seed   dev seed 만 (held-out 100~109 사용 금지)
 ```
 
 **선택 규칙 (사전 정의. 결과를 본 뒤 바꾸지 않는다):**
 
 1. 최대 beam(4)을 기준으로 삼는다
-2. 모든 `(space, horizon)` 조합에서 다음 **둘을 모두** 만족하는 beam 중
+2. 모든 `(space, quota)` 조합에서 다음 **둘을 모두** 만족하는 beam 중
    **가장 작은 것**을 고른다
 
    ```text
@@ -591,8 +692,13 @@ seed    dev seed 만 (held-out 100~109 사용 금지)
 상대 오차가 폭발하기 때문이다.
 
 `chosen_depth` 를 함께 보는 이유는 효용이 비슷해도 깊은 계획을 쓰는 빈도가
-달라지면 게이트 C의 해석이 바뀌기 때문이다. `H=5` 인데 거의 항상 1이면 장기
-planning의 실질적 가치가 낮다는 직접적 증거이고, 이는 PPO 착수 판단에 직결된다.
+달라지면 게이트 C의 해석이 바뀌기 때문이다. 큰 쿼터를 줬는데도 거의 항상 1이면
+장기 planning의 실질적 가치가 낮다는 직접적 증거이고, 이는 PPO 착수 판단에
+직결된다.
+
+`depth_cap_hit` 도 함께 기록한다. 0이 아니면 계산 상한 때문에 쿼터를 다 쓰지
+못한 step이 있다는 뜻이므로, 그 calibration 행은 쿼터 사다리 비교가 훼손된
+것으로 표시한다.
 
 #### wall-clock tie-break를 쓰므로 CPU를 고정한다
 
@@ -700,35 +806,67 @@ ABSOLUTE  {3^-16 .. 3^16}   33점
 4. 마지막 수단으로 CG budget 축 축소            (하지 않음)
 ```
 
-**Gate C — Temporal planning value**
+**Gate C — Temporal planning value (미래 GE 쿼터 사다리)**
 
-같은 terminal objective, 같은 행동 공간(`narrow` / `wide`)에서 `H = 1, 3, 5` 를
-비교한다. `absolute` 는 제외한다 (위 A1 참조).
+D10에 따라 재정의됐다. `H = 1, 3, 5` 비교는 폐기했다. 이유는 D10 참조.
+
+`c_max` 를 단일 action 최대 비용이라 할 때, planner마다 동일한 미래 GE 쿼터
+`Q` 를 준다. `narrow` / `wide` 만 쓰고 `absolute` 는 제외한다 (A1 참조).
+
+```text
+C0  one_step_efficiency        비율 baseline
+C1  budgeted MPC  Q = 1 × c_max
+C2  budgeted MPC  Q = 2 × c_max
+C3  budgeted MPC  Q = 4 × c_max
+```
+
+각 planner는 쿼터 안에서 여러 action을 선택할 수 있다. `Q = 1 × c_max` 는
+"비싼 action 한 번"과 "싼 action 여러 번"을 같은 예산에서 겨루게 한다.
 
 | 결과 | 판단 |
 |---|---|
-| `H_E(H=5) − H_E(H=1) ≥ 0.3 nat` | 순차적 의사결정에 가치가 있다. RL 진행 근거 |
+| `J_E(C3) − J_E(C1) ≥ 0.3 nat` **그리고** `depth > 1` 이 실제로 채택됨 | 순차적 의사결정에 가치가 있다. RL 진행 근거 |
 | < 0.05 nat | contextual bandit이나 heuristic이 적절하다. **PPO를 시작하지 않는다** |
 
-**이 게이트가 Stage 4 착수 여부를 직접 결정한다.** 가장 비싼 단계를 시작하기
-전에 그것이 필요한지 먼저 확인한다.
+**두 조건이 모두 필요하다.** 쿼터를 늘려 개선이 나왔지만 `chosen_depth` 가 계속
+1이면, 기여한 것은 planning이 아니라 늘어난 탐색량이다. 그 경우 GO 판정을 내리지
+않는다.
 
-**실현 성능의 단조성을 가정하지 않는다.** beam search는 정확한 planner가 아니고
-MPC는 매 step 재계획하므로, `H=5`가 `H=3`보다 항상 좋다는 보장이 없다. 구현은
-**incumbent carry-over**를 하므로(depth를 늘려도 이전 depth의 최선을 버리지 않음)
-planner가 선택한 계획의 **효용**은 `H`에 대해 비감소다. 그 성질만 테스트로
-검증하고, 실현 성능은 측정 대상으로 둔다.
+함께 보고할 것:
 
 ```text
-내부 planner utility의 비감소   ≠   실제 episode 성능의 비감소
+실제 episode 의 고정 GE terminal loss
+쿼터별 개선량 (C1 → C2 → C3)
+chosen_depth 분포와 최대 채택 depth
+quota_used_fraction   쿼터를 실제로 얼마나 썼는가
+depth_cap_hit         계산 상한에 걸린 step 비율
+narrow 와 wide 의 차이
+planner 분석 비용 (search_cost_ge)
+action sequence 분포
 ```
 
-보조 지표로 `chosen_depth` 분포를 본다.
+`depth_cap_hit` 이 0이 아니면 계산 상한 때문에 쿼터를 다 쓰지 못한 계획이
+있으므로 **사다리 비교가 훼손된 것으로 보고한다.** 조용히 넘기면 게이트 C
+결론이 계산 예산의 부산물이 된다.
+
+`C0 → C1` 차이도 별도로 보고한다. 이것은 "목적함수를 비율에서 고정 예산으로
+바꾼 효과"이고 "예산을 늘린 효과"와 다르다. 섞으면 어느 쪽이 기여했는지
+알 수 없다.
+
+**실현 성능의 단조성을 가정하지 않는다.** MPC는 매 step 재계획하므로 큰 쿼터가
+항상 좋다는 보장이 없다. 쿼터가 커지면 탐색 가능 집합이 포함관계로 커지므로
+**최대 채택 depth** 는 감소할 수 없고, 그 성질만 테스트로 검증한다.
 
 ```text
-H=5 인데 chosen_depth 가 거의 항상 1  ->  장기 planning 의 실질적 가치가 낮다
-H=5 에서 depth 3~5 가 자주 선택됨      ->  temporal planning 이 실제로 활용된다
+탐색 가능 집합의 포함관계   ≠   실제 episode 성능의 비감소
 ```
+
+**보조 분석: Lagrangian planner.** `U_β = Δlog L − β·Σc` 를 최대화하는 변종을
+사전 고정 β 격자 `{0, 0.01, 0.03, 0.1, 0.3, 1.0}` 전체에서 돌린다. 특정 β 하나를
+골라 주 결과로 쓰지 않는다. discrete action에서 Lagrangian 완화는 고정 예산
+문제와 정확히 같지 않고(duality gap이 0이라는 보장이 없음), β 선택에 따라 결론이
+뒤집힐 수 있다. 탐색과 가지치기는 `BudgetedMPCController` 와 동일하고 최종 선택
+규칙만 다르므로, 목적함수 차이가 탐색 품질 차이와 섞이지 않는다.
 
 **Gate D — Cost-to-target headroom (Track T)**
 
@@ -933,6 +1071,10 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-01 | `max_damping` 1e3 → 1e8, damping을 로그공간 지속 상태로 | Stage 1에서 κ=1e6이 damping ~1e6을 요구함이 확인됨. 이전 값은 그 자체로 병목 |
 | 2026-08-01 | damping 배수를 정확한 역수쌍으로 (`0.3` → `1/3`) | `3 × 0.3 = 0.9` 라 배수를 번갈아 고르면 damping이 step당 10% 아래로 표류. `1/3` 이면 `3 × (1/3) = 1` 로 표류 없음 |
 | 2026-08-01 | **D9 신설: 실험을 Track E / Track T로 분리** | 파일럿에서 `Δlog L / cost` 목적의 컨트롤러가 cost-to-target에서 best_static보다 나빴다(0.967x). 국소 효율 최대화와 총비용 최소화는 다른 문제다 |
+| 2026-08-01 | **D10 신설: planner 목적함수를 비율 → 고정 GE 쿼터로 교체. 게이트 C를 `H=1/3/5` → 쿼터 사다리 `C0~C3` 로 재정의** | dry run에서 `H=3`과 `H=5`가 완전히 동일하고 `depth≥3`이 채택 0회였다. 누적 비율 효용은 step별 rate의 가중 평균이므로(mediant 부등식) depth 1 incumbent가 지나치게 강해져 "지금 손해, 나중에 이득"을 표현할 수 없다. 이 목적함수 아래의 음성 게이트 C는 증거가 아니라 항진명제에 가깝다 |
+| 2026-08-01 | `HorizonPlannerController` → `AverageRateEfficiencyPlanner` 로 개명, 진단 baseline으로 보존 | 버그가 아니라 푸는 문제가 달랐다. "RL 보상을 ratio로 설계하면 생기는 함정"의 증거로 별도 보고 |
+| 2026-08-01 | Beam pruning을 비율 스칼라 → `(used_GE, terminal_loss)` Pareto + GE cost bucket으로 교체 | 비율로 정렬하면 mediant 문제가 가지치기 안에서 재발한다. 비싼 장기 계획이 싼 단기 계획과 섞여 조기 탈락한다 |
+| 2026-08-01 | Track T planner 선택 규칙을 cost-to-go 추정 → lexicographic(도달 여부 → 누적 GE)으로 교체 | 임의의 실패 벌점이나 비율 없이 "도달이 우선, 비용이 그다음"을 순서로 표현한다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |

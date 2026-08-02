@@ -121,6 +121,10 @@ class RunRecord:
         wall_clock_sec: 실제 소요 시간. GE 와 별개로 기록한다 (프로토콜 D1).
         action_counts: 선택한 action 의 빈도. 정책 분석용 (README §8).
         chosen_depths: planner 가 채택한 계획 길이의 빈도. 게이트 C 해석용.
+        planner_stats: planner 진단값. ``depth_cap_hit`` (계산 상한에 걸린
+            step 비율), ``mean_quota_used`` (쿼터 소진율), ``mean_simulations``
+            등이 들어간다. ``depth_cap_hit`` 가 0 이 아니면 쿼터 사다리 비교가
+            훼손되므로 게이트 C 보고에 포함해야 한다 (프로토콜 D10).
         error: 실패 원인.
         recorded_at: 기록 시각.
         git_commit: 코드 버전.
@@ -133,6 +137,7 @@ class RunRecord:
     wall_clock_sec: float = float("nan")
     action_counts: dict[str, int] | None = None
     chosen_depths: dict[str, int] | None = None
+    planner_stats: dict[str, float] | None = None
     error: str | None = None
     recorded_at: str = ""
     git_commit: str = ""
@@ -146,6 +151,7 @@ class RunRecord:
             "wall_clock_sec": self.wall_clock_sec,
             "action_counts": self.action_counts,
             "chosen_depths": self.chosen_depths,
+            "planner_stats": self.planner_stats,
             "error": self.error,
             "recorded_at": self.recorded_at or datetime.now(UTC).isoformat(),
             "git_commit": self.git_commit,
@@ -173,6 +179,7 @@ class RunRecord:
             wall_clock_sec=_as_float(payload.get("wall_clock_sec")),
             action_counts=payload.get("action_counts"),
             chosen_depths=payload.get("chosen_depths"),
+            planner_stats=payload.get("planner_stats"),
             error=payload.get("error"),
             recorded_at=payload.get("recorded_at", ""),
             git_commit=payload.get("git_commit", ""),
@@ -337,6 +344,7 @@ class ResultStore:
         wall_clock_sec: float,
         action_counts: dict[str, int] | None = None,
         chosen_depths: dict[str, int] | None = None,
+        planner_stats: dict[str, float] | None = None,
     ) -> None:
         self.put(
             RunRecord(
@@ -346,6 +354,7 @@ class ResultStore:
                 wall_clock_sec=wall_clock_sec,
                 action_counts=action_counts,
                 chosen_depths=chosen_depths,
+                planner_stats=planner_stats,
             )
         )
 

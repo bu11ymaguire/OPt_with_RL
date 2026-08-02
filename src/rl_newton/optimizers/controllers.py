@@ -4,11 +4,13 @@
 차이는 **무엇을 보고 고르는가** 뿐이다.
 
 ```text
-FixedController              아무것도 안 본다. 항상 같은 action
-OpenLoopController           progress 만 본다 (step / total_steps)
-HeuristicController          trust ratio 를 본다
-OneStepEfficiencyController  현재 step 결과를 본다 (전수 시도, 국소 효율 최대)
-HorizonPlannerController     H step 앞을 본다 (beam search, terminal objective)
+FixedController               아무것도 안 본다. 항상 같은 action
+OpenLoopController            progress 만 본다 (step / total_steps)
+HeuristicController           trust ratio 를 본다
+OneStepEfficiencyController   현재 step 결과를 본다 (전수 시도, 국소 효율 최대)
+AverageRateEfficiencyPlanner  H step 앞을 본다. 누적 평균 효율 최대화 (진단용)
+BudgetedMPCController         동일 미래 GE 쿼터 안에서 terminal loss 최소화 (게이트 C)
+LagrangianPlannerController   ``Δlog L - β·Σc`` 최대화 (보조 민감도 분석)
 ```
 
 어느 것도 전역 상한이 아니다
@@ -24,7 +26,45 @@ HorizonPlannerController     H step 앞을 본다 (beam search, terminal objecti
 
 국소 효율 최대화와 총비용 최소화는 다른 문제다. 그래서 이름과 해석을 정정했다
 (프로토콜 D9). ``OneStepEfficiencyController`` 는 상한이 아니라 **비교군의 하나**이고,
-``HorizonPlannerController`` 는 유한 horizon 과 beam 폭에 제한된 근사다.
+planner 들은 유한 쿼터와 beam 폭에 제한된 근사다.
+
+비율 목적함수는 장기 투자를 검출하지 못한다 (프로토콜 D10)
+----------------------------------------------------------
+``AverageRateEfficiencyPlanner`` 는 시퀀스를
+``(log L_start - log L_terminal) / cumulative_cost`` 로 평가했다. 이는 step 별
+rate 의 **비용 가중 평균**이므로 mediant 부등식이 적용된다.
+
+```text
+min(r1, r2) <= (g1+g2)/(c1+c2) <= max(r1, r2)
+```
+
+depth 1 에서 이미 최대 rate ``R*`` 를 골랐으면, depth 2 가 이기려면
+``r2 > R*`` 여야 한다. 즉 두 번째 step 이 **지금 당장 가능한 모든 행동보다**
+효율적이어야 한다. 수익 체감이 일반적인 환경에서는 드물다.
+
+실측 (quadratic, seed 0, beam 3, 150 GE):
+
+```text
+SPD k=1e2   H=1/3/5 전부 logΔ=59.8636, depth 히스토그램 {1: 8}
+ill k=1e5   H=1 -> 10.4998 {1:10} / H=3,5 -> 10.5116 {1:9, 2:1}
+게이트 C 효과크기 0.025 nat (GO 0.3, pivot 0.05)
+```
+
+depth 3 이상은 H=5 에서도 한 번도 채택되지 않았다. 이것은 버그가 아니라
+목적함수가 푸는 문제가 달랐던 것이다. 따라서 **이 결과를 "lookahead 가
+불필요하다"는 근거로 쓸 수 없다.** 증명되는 것은 다음뿐이다.
+
+> 누적 평균 효율을 최대화하는 목적에서는 짧은 계획이 유리하다.
+
+Track E 의 실제 연구 질문은 고정 예산 문제다.
+
+```text
+max  log(L_t / L_{t+m})   s.t.   sum_{i} c_i <= Q
+```
+
+여기에 비용으로 나누는 비율은 들어가지 않는다. 그래서 게이트 C 의 주
+컨트롤러를 ``BudgetedMPCController`` 로 교체했다. 기존 planner 는 "RL 보상을
+ratio 로 설계하면 생기는 함정"의 진단 baseline 으로 보존한다.
 
 이 계층이 프로토콜 게이트를 구성한다
 ------------------------------------
@@ -35,9 +75,14 @@ HorizonPlannerController     H step 앞을 본다 (beam search, terminal objecti
 게이트 B  absolute vs wide vs narrow planner   (로그 해상도를 맞춘 상태에서)
           -> 도달성/행동범위 손실. 크면 행동 공간을 고친다.
 
-게이트 C  H=1 vs H=3 vs H=5 planner            (같은 terminal objective)
-          -> 장기 의사결정의 가치. 개선이 미미하면 contextual bandit 이나
-             heuristic 으로 충분하고 PPO 를 시작하지 않는다.
+게이트 C  미래 GE 쿼터 사다리 (프로토콜 D10 개정)
+          C0  OneStepEfficiencyController        (비율 baseline)
+          C1  BudgetedMPC  Q = 1 x c_max
+          C2  BudgetedMPC  Q = 2 x c_max
+          C3  BudgetedMPC  Q = 4 x c_max
+          -> 큰 쿼터가 유의미한 개선을 만들고 **동시에** depth >= 2 를 실제로
+             채택할 때만 장기 계획에 가치가 있다고 판단한다. 둘 중 하나만
+             만족하면 근거가 되지 않는다.
 
 게이트 D  best_static vs planner               (Track T, target 난이도별)
           -> cost-to-target 헤드룸. 게이트 A와 결론이 다를 수 있고
@@ -53,7 +98,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 from rl_newton.optimizers.action_space import ActionSpace
 from rl_newton.optimizers.newton_cg import (
@@ -68,13 +113,20 @@ __all__ = [
     "OpenLoopController",
     "HeuristicController",
     "OneStepEfficiencyController",
-    "HorizonPlannerController",
+    "AverageRateEfficiencyPlanner",
+    "BudgetedMPCController",
+    "LagrangianPlannerController",
     "PlannerTrack",
     "ScheduleSegment",
     "PlannerChoice",
+    "PlanCandidate",
     "make_open_loop_controller",
     "efficiency_score",
-    "horizon_utility",
+    "average_rate_utility",
+    "lagrangian_utility",
+    "pareto_frontier",
+    "bucket_prune",
+    "LAGRANGIAN_BETA_GRID",
 ]
 
 PlannerTrack = Literal["fixed_budget", "cost_to_target"]
@@ -96,8 +148,8 @@ def efficiency_score(
     그 행동이 다음 step 의 상태를 나쁘게 만드는 것을 보지 못한다.
 
     따라서 이 함수는 ``OneStepEfficiencyController`` 전용이며, 그 컨트롤러는
-    **상한이 아니라 비교군의 하나**다 (프로토콜 D9). planner 는
-    ``horizon_utility`` 를 쓴다.
+    **상한이 아니라 비교군의 하나**다 (프로토콜 D9). 게이트 C 사다리에서는
+    ``C0`` 에 해당한다.
 
     **CG 수렴 여부가 아니라 objective 감소를 본다.** 높은 damping 은
     ``(H + lambda I)^{-1} g ~ g / lambda`` 로 CG 를 쉽게 만들지만 실제 감소는
@@ -113,7 +165,7 @@ def efficiency_score(
     return (math.log(before) - math.log(after)) / max(cost_ge, 1e-12)
 
 
-def horizon_utility(
+def average_rate_utility(
     loss_start: float,
     loss_terminal: float,
     cumulative_cost: float,
@@ -122,11 +174,18 @@ def horizon_utility(
     target_loss: float | None = None,
     loss_floor: float = 1.0e-30,
 ) -> float:
-    """H-step 시퀀스의 효용. **per-step ratio 의 합이 아니다.**
+    """시퀀스의 **누적 평균 효율**. ``AverageRateEfficiencyPlanner`` 전용이다.
 
-    이것이 파일럿 실패의 핵심 수정이다. 초판 planner 는 step 별 비율을 더했고,
-    그러면 각 step 의 국소 효율을 합산하는 것이므로 근시안성이 그대로 남는다.
-    시퀀스는 **terminal loss 와 누적 비용**으로 평가해야 한다.
+    per-step ratio 의 합은 아니다 (그건 초판의 결함이었다). 그러나 여전히
+    비용으로 나누는 비율이므로 **장기 투자 행동을 검출하지 못한다.**
+
+    ``fixed_budget`` 트랙에서 이 값은 step 별 rate 의 비용 가중 평균이고,
+    mediant 부등식에 의해 ``min(r_i) <= U <= max(r_i)`` 다. depth 1 에서 최대
+    rate 를 골랐으면 depth 2 는 평균을 희석시킬 뿐이다. 실측에서 depth 3 이상은
+    H=5 에서도 한 번도 채택되지 않았다 (프로토콜 D10).
+
+    따라서 게이트 C 의 주 지표로 쓰지 않는다. 주 지표는
+    ``BudgetedMPCController`` 이고, 이 함수는 "ratio 보상의 함정" 진단용이다.
 
     Args:
         loss_start: 시퀀스 시작 시점 loss.
@@ -382,8 +441,22 @@ class PlannerChoice:
     chosen_depth: int = 1
     """채택된 계획의 시퀀스 길이. planner 가 실제로 깊은 계획을 쓰는지 분석용.
 
-    항상 1이면 horizon 을 늘려도 의미가 없다는 직접적 증거다.
+    항상 1이면 horizon 이나 쿼터를 늘려도 의미가 없다는 직접적 증거다.
     """
+    plan_used_ge: float = float("nan")
+    """채택된 계획이 쿼터 중 실제로 소모한 GE. ``BudgetedMPCController`` 전용."""
+    quota_ge: float = float("nan")
+    """이 step 에서 각 후보에게 부여된 미래 GE 쿼터."""
+    n_simulations: int = 0
+    """이 step 의 계획 수립에 쓴 ``simulate_step`` 호출 수. 탐색 비용 진단용."""
+    depth_cap_hit: bool = False
+    """``max_depth`` 때문에 확장이 끊겼는지.
+
+    ``True`` 면 쿼터를 다 쓰지 못한 계획이 있으므로 **쿼터 사다리 비교가
+    훼손된다.** 게이트 C 보고에 반드시 포함해야 한다.
+    """
+    reached_target: bool = False
+    """채택된 계획이 쿼터 안에서 target 에 도달했는지. Track T 진단용."""
 
 
 class OneStepEfficiencyController:
@@ -513,39 +586,38 @@ class _BeamNode:
     """이 노드가 대응하는 시퀀스 길이. 어느 depth 의 계획이 채택됐는지 분석용."""
 
 
-class HorizonPlannerController:
-    """``horizon`` step 앞을 beam search 로 보고 첫 action 을 고른다 (MPC).
+class AverageRateEfficiencyPlanner:
+    """``horizon`` step 앞을 beam search 로 보고 **누적 평균 효율**을 최대화한다.
 
-    프로토콜 게이트 C를 담당한다. 답하는 질문은 하나다.
+    **게이트 C 의 주 컨트롤러가 아니다.** 진단 baseline 이다 (프로토콜 D10).
 
-    > 지금 손해를 감수하고 미래 상태를 개선할 필요가 있는가?
-
-    ```text
-    H=1 ~= H=3 ~= H=5  -> 장기 의사결정이 거의 필요 없다.
-                          contextual bandit 이나 heuristic 으로 충분하고
-                          PPO 의 temporal credit assignment 는 정당화되지 않는다.
-
-    H 증가에 단조 개선  -> 순차적 의사결정이 실제로 이득이다.
-                          RL 진행 근거가 확보된다.
-    ```
-
-    terminal objective 를 쓴다
-    --------------------------
-    초판은 step 별 ``Δlog L / cost`` 를 **더했다**. 그러면 국소 효율의 합을
-    최대화하는 것이므로 근시안성이 그대로 남는다. 파일럿에서 H=3 이 H=1 을
-    개선하지 못한 이유가 이것이다.
-
-    지금은 시퀀스를 **terminal loss 와 누적 비용**으로 평가한다
-    (``horizon_utility``). 트랙에 따라 효용이 다르다.
+    무엇을 보여주는 결과인가
+    ------------------------
+    이 planner 는 버그가 아니다. 다만 푸는 문제가 Track E 의 연구 질문과 달랐다.
 
     ```text
-    fixed_budget    U = (log L_start - log L_terminal) / cumulative_cost
-    cost_to_target  U = -(cumulative_cost + 남은거리 / 관측진행률)
+    이 planner:   max (log L_start - log L_terminal) / cumulative_cost
+    Track E:      max  log L_t - log L_{t+m}    s.t.  sum c_i <= Q
     ```
 
-    ``horizon=1`` 이면 ``fixed_budget`` 트랙에서 one-step efficiency 와 같은
-    선택을 한다. 즉 H=1 은 자동으로 그 baseline 을 재현하므로 게이트 C 비교가
-    같은 코드 경로에서 이루어진다.
+    앞쪽은 비용으로 나누므로 step 별 rate 의 가중 평균이 되고, mediant 부등식에
+    의해 depth 1 incumbent 가 지나치게 강해진다. 실측에서 그 결과는 다음이었다.
+
+    ```text
+    SPD k=1e2   H=1/3/5 전부 동일, depth 히스토그램 {1: 8}
+    ill k=1e5   H=1 -> 10.4998 / H=3,5 -> 10.5116  (차이 0.0118 nat)
+    depth 3 이상은 H=5 에서도 채택 0회
+    search 비용은 H=5 에서 본문의 약 100배
+    ```
+
+    이것은 **RL 보상을 ``Δlog L / GE`` 비율로 설계하면 생기는 함정**의 증거다.
+    Mediant 부등식 때문에 깊은 계획이 수학적으로 절대 불가능한 것은 아니다.
+    두 번째 상태에서 더 효율적인 행동이 열리면 이길 수 있고, 실제로
+    ill-conditioned 문제에서 depth 2 가 간헐적으로 채택됐다. 그러나 수익 체감이
+    일반적인 환경에서는 **장기 투자 행동을 검출하는 목적함수로 부적합**하다.
+
+    따라서 이 planner 의 음성 결과는 "lookahead 가 불필요하다"의 근거가 될 수
+    없다. 게이트 C 는 ``BudgetedMPCController`` 로 판정한다.
 
     구현
     ----
@@ -596,7 +668,7 @@ class HorizonPlannerController:
         self._track: PlannerTrack = track
         self._target_loss = target_loss
         self._loss_floor = loss_floor
-        self._name = name or f"mpc_H{horizon}_{track}({space.name})"
+        self._name = name or f"avgrate_H{horizon}_{track}({space.name})"
         self._choices: list[PlannerChoice] = []
         self._trajectory: list[tuple[StepContext, ControllerAction]] = []
         self._last_utility = float("nan")
@@ -637,7 +709,7 @@ class HorizonPlannerController:
         return self._last_utility
 
     def _utility(self, loss_start: float, node: _BeamNode) -> float:
-        return horizon_utility(
+        return average_rate_utility(
             loss_start,
             node.loss,
             node.cumulative_cost,
@@ -770,8 +842,504 @@ class HorizonPlannerController:
 
     def __repr__(self) -> str:
         return (
-            f"HorizonPlannerController(space={self._space.name}, "
+            f"AverageRateEfficiencyPlanner(space={self._space.name}, "
             f"horizon={self._horizon}, beam={self._beam_width}, track={self._track})"
+        )
+
+
+LAGRANGIAN_BETA_GRID: tuple[float, ...] = (0.0, 0.01, 0.03, 0.1, 0.3, 1.0)
+"""보조 민감도 분석용 β 격자. **사전 고정이며 결과를 보고 바꾸지 않는다.**
+
+Lagrangian planner 는 주 결과가 아니다 (프로토콜 D10). 특정 β 하나를 골라
+게이트 C 결론으로 쓰면 사후 선택이 되므로, 이 격자 **전체**를 보고한다.
+"""
+
+
+def lagrangian_utility(
+    loss_start: float,
+    loss_terminal: float,
+    cumulative_cost: float,
+    *,
+    beta: float,
+    loss_floor: float = 1.0e-30,
+) -> float:
+    """``(log L_start - log L_terminal) - beta * cumulative_cost``.
+
+    비용으로 나누지 않으므로 ``average_rate_utility`` 의 평균 희석이 없다.
+    깊은 계획이 더 많은 진행을 만들면 이길 수 있다. 대신 β 에 따라 결론이
+    바뀌므로 **보조 분석 전용**이다 (프로토콜 D10).
+
+    ``beta=0`` 은 비용을 무시하고 terminal loss 만 본다. 쿼터 제약이 없으면
+    항상 가장 긴 계획을 고르므로, 이 함수는 쿼터 안에서만 쓴다.
+    """
+    if not math.isfinite(loss_terminal):
+        return -math.inf
+    start = max(loss_start, loss_floor)
+    terminal = max(loss_terminal, loss_floor)
+    return (math.log(start) - math.log(terminal)) - beta * cumulative_cost
+
+
+class _CostLoss(Protocol):
+    """``(used_ge, terminal_loss)`` 를 가진 후보. 둘 다 작을수록 좋다."""
+
+    used_ge: float
+    terminal_loss: float
+
+
+def pareto_frontier[N: _CostLoss](candidates: Sequence[N]) -> list[N]:
+    """``(used_ge, terminal_loss)`` 의 비지배 후보만 남긴다.
+
+    **비율 하나로 정렬하면 안 되는 이유** (프로토콜 D10): ``Δlog L / cost`` 로
+    가지치기하면 mediant 문제가 beam pruning 안에서 그대로 재발한다. 비싼
+    장기 계획이 싼 단기 계획과 스칼라 하나로 섞여 조기에 탈락한다.
+
+    후보 A 가 B 보다 GE 를 같거나 적게 쓰고 terminal loss 도 같거나 낮으면
+    B 를 제거한다.
+
+    Returns:
+        비용 오름차순으로 정렬된 비지배 후보. **terminal loss 최소 후보는 항상
+        포함된다** (비용이 더 적으면서 loss 가 더 낮은 후보는 존재할 수 없으므로).
+        이것이 incumbent carry-over 를 대체한다. depth 1 최선이 더 나은 계획에
+        의해서만 밀려난다.
+    """
+    order = sorted(candidates, key=lambda n: (n.used_ge, n.terminal_loss))
+    out: list[N] = []
+    best_loss = math.inf
+    for node in order:
+        if node.terminal_loss < best_loss:
+            out.append(node)
+            best_loss = node.terminal_loss
+    return out
+
+
+def bucket_prune[N: _CostLoss](
+    candidates: Sequence[N], *, beam_width: int, bucket_ge: float
+) -> list[N]:
+    """GE 비용 구간별로 상위 ``beam_width`` 개만 남긴다.
+
+    Pareto frontier 는 크기 상한이 없어서 탐색량을 제한하지 못한다. 그래서
+    비용을 ``bucket_ge`` 폭의 구간으로 나누고 구간마다 terminal loss 가 좋은
+    후보를 ``beam_width`` 개 남긴다. 이렇게 하면 "싼 단기 계획"과 "비싼 장기
+    계획"이 각자의 구간에서 살아남으므로, 스칼라 하나로 조기에 섞이지 않는다.
+
+    Args:
+        candidates: 후보들.
+        beam_width: 구간당 유지 수.
+        bucket_ge: 구간 폭 (GE). 0 이하면 전체를 한 구간으로 본다.
+    """
+    if beam_width < 1:
+        raise ValueError(f"beam_width must be >= 1, got {beam_width}")
+    buckets: dict[int, list[N]] = {}
+    for node in candidates:
+        key = int(node.used_ge // bucket_ge) if bucket_ge > 0.0 else 0
+        buckets.setdefault(key, []).append(node)
+    out: list[N] = []
+    for key in sorted(buckets):
+        ranked = sorted(buckets[key], key=lambda n: (n.terminal_loss, n.used_ge))
+        out.extend(ranked[:beam_width])
+    return out
+
+
+@dataclass(slots=True)
+class PlanCandidate:
+    """계획 후보의 공개 표현. 스냅샷을 들지 않으므로 기록/테스트에 쓴다."""
+
+    used_ge: float
+    terminal_loss: float
+    depth: int = 1
+    reached_target: bool = False
+
+
+@dataclass(slots=True)
+class _PlanNode:
+    """쿼터 기반 탐색의 한 노드. ``used_ge`` 와 ``terminal_loss`` 로 비교된다."""
+
+    first_action: ControllerAction
+    used_ge: float
+    terminal_loss: float
+    snapshot: tuple[object, float]
+    depth: int = 1
+    reached_target: bool = False
+
+
+class BudgetedMPCController:
+    """각 후보에게 **동일한 미래 GE 쿼터** ``Q`` 를 주고 terminal loss 를 겨룬다.
+
+    프로토콜 게이트 C 의 주 컨트롤러다 (D10 개정). Track E 의 연구 질문과 형태가
+    일치한다.
+
+    ```text
+    max  log L_t - log L_{t+m}     s.t.  sum_{i=t}^{t+m-1} c_i <= Q
+    ```
+
+    **비용으로 나누는 비율이 들어가지 않는다.** 그래서
+    ``AverageRateEfficiencyPlanner`` 의 평균 희석 문제가 없다. 비싼 한 방과 싼
+    여러 방이 같은 예산 안에서 공정하게 비교된다. 이것이 게이트 C 가 원래
+    물으려던 것이다.
+
+    > 같은 미래 예산을 쓴다면, 지금 손해를 보고 나중에 이득을 보는 것이
+    > 이득인가?
+
+    쿼터 사다리
+    -----------
+    ``c_max`` 를 단일 action 최대 비용이라 하면
+
+    ```text
+    C1  Q = 1 x c_max    비싼 action 1회 vs 싼 action 여러 회
+    C2  Q = 2 x c_max
+    C3  Q = 4 x c_max
+    ```
+
+    쿼터를 늘려도 실제 episode 의 terminal loss 가 개선되지 않거나, 개선돼도
+    ``chosen_depth`` 가 계속 1 이면 장기 계획의 실질 가치가 없다. **두 조건을
+    모두** 만족해야 temporal planning 근거가 된다.
+
+    확장 규칙
+    ---------
+    - depth 1 후보는 **쿼터와 무관하게 항상 생성한다.** planner 는 반드시 행동
+      해야 하고, ``Q < c_max`` 여도 비싼 action 을 후보에서 배제하면 행동 공간이
+      쿼터에 따라 달라져 게이트 B 와 혼동된다.
+    - depth >= 2 확장은 ``used_ge + c <= Q`` 일 때만 유효하다. 초과하면 그 확장을
+      버리고 부모를 leaf 로 둔다. 실제 관측 비용을 쓰므로 CG 조기 수렴이
+      반영된다.
+    - 더 확장할 수 있는 노드가 없거나 ``max_depth`` 에 닿으면 멈춘다.
+
+    선택 규칙
+    ---------
+    Pareto/bucket 가지치기는 **탐색 중**에만 쓴다. 최종 선택은 다르다.
+
+    ```text
+    fixed_budget (Track E)
+        terminal loss 최소 -> 동률이면 GE 적은 것 -> 그래도 동률이면 짧은 것
+
+    cost_to_target (Track T)  lexicographic
+        1. target 도달 후보가 있으면 그 중 누적 GE 최소
+        2. 아무도 못 도달하면 terminal loss 최소
+        3. 동률이면 GE 적은 것, 그다음 짧은 것
+    ```
+
+    Track T 에 임의의 실패 벌점이나 비율을 넣지 않는다. 도달 여부가 우선이고
+    비용이 그다음이라는 것을 순서로 표현한다.
+
+    Args:
+        space: 행동 공간. 비교군과 동일해야 게이트가 성립한다.
+        quota_multiplier: ``Q = quota_multiplier * c_max``. ``quota_ge`` 와
+            정확히 하나만 준다.
+        quota_ge: 절대 GE 쿼터.
+        beam_width: 비용 구간당 유지할 후보 수.
+        bucket_ge: 비용 구간 폭. ``None`` 이면 단일 action 최소 비용 ``c_min``.
+        track: ``fixed_budget`` (Track E) 또는 ``cost_to_target`` (Track T).
+        target_loss: Track T 의 절대 목표 loss.
+        max_depth: 계획 길이 상한. 계산량 안전장치다. 이것에 걸리면
+            ``depth_cap_hit`` 가 기록되고 쿼터 사다리 비교가 훼손되므로
+            보고에 포함해야 한다.
+        max_open: 한 라운드에서 확장할 노드 수 상한. ``None`` 이면
+            ``4 * beam_width``.
+    """
+
+    def __init__(
+        self,
+        space: ActionSpace,
+        *,
+        quota_multiplier: float | None = None,
+        quota_ge: float | None = None,
+        beam_width: int = 4,
+        bucket_ge: float | None = None,
+        track: PlannerTrack = "fixed_budget",
+        target_loss: float | None = None,
+        max_depth: int = 6,
+        max_open: int | None = None,
+        loss_floor: float = 1.0e-30,
+        name: str | None = None,
+    ) -> None:
+        if (quota_multiplier is None) == (quota_ge is None):
+            raise ValueError("quota_multiplier 와 quota_ge 중 정확히 하나를 지정해야 한다")
+        if quota_multiplier is not None and quota_multiplier <= 0.0:
+            raise ValueError(f"quota_multiplier must be > 0, got {quota_multiplier}")
+        if quota_ge is not None and quota_ge <= 0.0:
+            raise ValueError(f"quota_ge must be > 0, got {quota_ge}")
+        if beam_width < 1:
+            raise ValueError(f"beam_width must be >= 1, got {beam_width}")
+        if max_depth < 1:
+            raise ValueError(f"max_depth must be >= 1, got {max_depth}")
+        if track == "cost_to_target" and target_loss is None:
+            raise ValueError("cost_to_target track requires target_loss")
+        self._space = space
+        self._quota_multiplier = quota_multiplier
+        self._quota_ge = quota_ge
+        self._beam_width = beam_width
+        self._bucket_ge = bucket_ge
+        self._track: PlannerTrack = track
+        self._target_loss = target_loss
+        self._max_depth = max_depth
+        self._max_open = max_open if max_open is not None else 4 * beam_width
+        self._loss_floor = loss_floor
+        label = (
+            f"Q{quota_multiplier:g}xcmax" if quota_multiplier is not None else f"Q{quota_ge:g}ge"
+        )
+        self._name = name or f"budgeted_{label}_{track}({space.name})"
+        self._choices: list[PlannerChoice] = []
+        self._trajectory: list[tuple[StepContext, ControllerAction]] = []
+        self._resolved_quota = float("nan")
+        self._resolved_bucket = float("nan")
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def space(self) -> ActionSpace:
+        return self._space
+
+    @property
+    def track(self) -> PlannerTrack:
+        return self._track
+
+    @property
+    def choices(self) -> list[PlannerChoice]:
+        return self._choices
+
+    @property
+    def trajectory(self) -> list[tuple[StepContext, ControllerAction]]:
+        return self._trajectory
+
+    @property
+    def quota_ge(self) -> float:
+        """해석된 쿼터. 첫 ``select`` 이전에는 ``nan``."""
+        return self._resolved_quota
+
+    def _action_cost(self, optimizer: NewtonCGOptimizer, action: ControllerAction) -> float:
+        """단일 action 의 예측 비용. 쿼터 정의에만 쓴다 (결정적이어야 하므로)."""
+        return optimizer.step_cost_ge(action.cg_budget, 1, with_graph=True)
+
+    def _resolve(self, optimizer: NewtonCGOptimizer, actions: Sequence[ControllerAction]) -> None:
+        if math.isfinite(self._resolved_quota):
+            return
+        costs = [self._action_cost(optimizer, a) for a in actions]
+        if self._quota_ge is not None:
+            self._resolved_quota = self._quota_ge
+        else:
+            assert self._quota_multiplier is not None
+            self._resolved_quota = self._quota_multiplier * max(costs)
+        self._resolved_bucket = self._bucket_ge if self._bucket_ge is not None else min(costs)
+
+    def _reached(self, loss: float) -> bool:
+        return self._target_loss is not None and loss <= self._target_loss
+
+    def _prune(self, nodes: Sequence[_PlanNode]) -> list[_PlanNode]:
+        return bucket_prune(
+            pareto_frontier(nodes), beam_width=self._beam_width, bucket_ge=self._resolved_bucket
+        )
+
+    def _best(self, nodes: Sequence[_PlanNode]) -> _PlanNode:
+        if self._track == "cost_to_target":
+            reached = [n for n in nodes if n.reached_target]
+            if reached:
+                # 1. 도달한 것 중 누적 GE 최소
+                return min(reached, key=lambda n: (n.used_ge, n.depth, n.terminal_loss))
+        # 2. 아무도 못 도달했거나 Track E: terminal loss 최소
+        return min(nodes, key=lambda n: (n.terminal_loss, n.used_ge, n.depth))
+
+    def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
+        root = optimizer.snapshot()
+        actions = list(self._space.iter_actions())
+        self._resolve(optimizer, actions)
+        quota = self._resolved_quota
+        # 부동소수 비교 여유. 쿼터 경계에서 확장이 임의로 갈리지 않게 한다.
+        slack = quota * 1.0e-9
+        n_sims = 0
+
+        # --- depth 1: 쿼터와 무관하게 전부 생성 ---
+        frontier: list[_PlanNode] = []
+        for action in actions:
+            optimizer.restore(root)
+            loss_after, cost_ge, _ = optimizer.simulate_step(action)
+            n_sims += 1
+            if not math.isfinite(loss_after):
+                continue
+            frontier.append(
+                _PlanNode(
+                    first_action=action,
+                    used_ge=cost_ge,
+                    terminal_loss=loss_after,
+                    snapshot=optimizer.snapshot(),
+                    depth=1,
+                    reached_target=self._reached(loss_after),
+                )
+            )
+        optimizer.restore(root)
+
+        if not frontier:
+            return self._fallback(context, optimizer, root, actions)
+
+        open_nodes = [
+            n
+            for n in self._prune(frontier)
+            if n.used_ge < quota - slack
+            and not (self._track == "cost_to_target" and n.reached_target)
+        ][: self._max_open]
+
+        # --- depth 2..: 쿼터를 넘지 않는 확장만 ---
+        depth = 1
+        depth_cap_hit = False
+        while open_nodes:
+            if depth >= self._max_depth:
+                depth_cap_hit = True
+                break
+            depth += 1
+            expanded: list[_PlanNode] = []
+            for node in open_nodes:
+                for action in actions:
+                    optimizer.restore(node.snapshot)  # type: ignore[arg-type]
+                    loss_after, cost_ge, _ = optimizer.simulate_step(action)
+                    n_sims += 1
+                    if not math.isfinite(loss_after):
+                        continue
+                    total = node.used_ge + cost_ge
+                    if total > quota + slack:
+                        # 쿼터 초과 계획은 이 사다리 단계에서 유효하지 않다.
+                        continue
+                    expanded.append(
+                        _PlanNode(
+                            first_action=node.first_action,
+                            used_ge=total,
+                            terminal_loss=loss_after,
+                            snapshot=optimizer.snapshot(),
+                            depth=depth,
+                            reached_target=self._reached(loss_after),
+                        )
+                    )
+            optimizer.restore(root)
+            if not expanded:
+                break
+            # 모든 depth 를 한 frontier 에 모아 가지치기한다. Pareto 는 terminal
+            # loss 최소 후보를 지우지 않으므로 depth 1 최선이 보존된다.
+            frontier = self._prune(frontier + expanded)
+            open_nodes = [
+                n
+                for n in self._prune(expanded)
+                if n.used_ge < quota - slack
+                and not (self._track == "cost_to_target" and n.reached_target)
+            ][: self._max_open]
+
+        optimizer.restore(root)
+        best = self._best(frontier)
+
+        losses = [n.terminal_loss for n in frontier]
+        self._choices.append(
+            PlannerChoice(
+                step=context.step,
+                chosen_flat=actions.index(best.first_action),
+                chosen_score=-best.terminal_loss,
+                best_loss=min(losses),
+                worst_loss=max(losses),
+                n_finite=len(frontier),
+                n_candidates=len(actions),
+                damping_before=context.damping,
+                chosen_depth=best.depth,
+                plan_used_ge=best.used_ge,
+                quota_ge=quota,
+                n_simulations=n_sims,
+                depth_cap_hit=depth_cap_hit,
+                reached_target=best.reached_target,
+            )
+        )
+        self._trajectory.append((context, best.first_action))
+        return best.first_action
+
+    def _fallback(
+        self,
+        context: StepContext,
+        optimizer: NewtonCGOptimizer,
+        root: tuple[object, float],
+        actions: Sequence[ControllerAction],
+    ) -> ControllerAction:
+        """유한한 결과를 내는 action 이 없을 때. loss 가 가장 낮은 것을 고른다."""
+        best_action = actions[0]
+        best_loss = math.inf
+        for action in actions:
+            optimizer.restore(root)
+            loss_after, _, _ = optimizer.simulate_step(action)
+            if math.isfinite(loss_after) and loss_after < best_loss:
+                best_loss = loss_after
+                best_action = action
+        optimizer.restore(root)
+        self._choices.append(
+            PlannerChoice(
+                step=context.step,
+                chosen_flat=list(actions).index(best_action),
+                chosen_score=-math.inf,
+                best_loss=best_loss,
+                worst_loss=float("nan"),
+                n_finite=0,
+                n_candidates=len(actions),
+                damping_before=context.damping,
+                quota_ge=self._resolved_quota,
+            )
+        )
+        self._trajectory.append((context, best_action))
+        return best_action
+
+    def reset(self) -> None:
+        self._choices = []
+        self._trajectory = []
+
+    def __repr__(self) -> str:
+        return (
+            f"BudgetedMPCController(space={self._space.name}, quota={self._resolved_quota:g}, "
+            f"beam={self._beam_width}, track={self._track})"
+        )
+
+
+class LagrangianPlannerController(BudgetedMPCController):
+    """``(Δlog L) - β·Σc`` 를 최대화한다. **보조 민감도 분석 전용**이다.
+
+    쿼터 기반 탐색과 Pareto 가지치기는 ``BudgetedMPCController`` 와 동일하고,
+    **최종 선택 규칙만** 다르다. 그래서 두 목적함수의 차이가 탐색 품질 차이와
+    섞이지 않는다.
+
+    β 하나를 골라 게이트 C 주 결과로 쓰지 않는다. ``LAGRANGIAN_BETA_GRID``
+    전체를 보고한다 (프로토콜 D10). 이유는 두 가지다.
+
+    - β 에 따라 결론이 뒤집힐 수 있다.
+    - discrete action 에서 Lagrangian 완화는 고정 예산 문제와 정확히 같지 않다
+      (duality gap 이 0 이라는 보장이 없다).
+    """
+
+    def __init__(self, space: ActionSpace, *, beta: float, **kwargs: object) -> None:
+        if beta < 0.0:
+            raise ValueError(f"beta must be >= 0, got {beta}")
+        name = kwargs.pop("name", None)
+        super().__init__(space, **kwargs)  # type: ignore[arg-type]
+        self._beta = float(beta)
+        self._name = name or f"lagrangian_b{beta:g}_{self._track}({space.name})"  # type: ignore[assignment]
+
+    @property
+    def beta(self) -> float:
+        return self._beta
+
+    def _best(self, nodes: Sequence[_PlanNode]) -> _PlanNode:
+        if self._track == "cost_to_target":
+            reached = [n for n in nodes if n.reached_target]
+            if reached:
+                return min(reached, key=lambda n: (n.used_ge, n.depth, n.terminal_loss))
+        # loss_start 는 상수이므로 후보 간 비교에서 상쇄된다. 1.0 을 넣어도 순서가
+        # 같다. 명시적으로 남겨 목적함수를 읽을 수 있게 한다.
+        return max(
+            nodes,
+            key=lambda n: (
+                lagrangian_utility(
+                    1.0, n.terminal_loss, n.used_ge, beta=self._beta, loss_floor=self._loss_floor
+                ),
+                -n.used_ge,
+                -n.depth,
+            ),
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"LagrangianPlannerController(space={self._space.name}, beta={self._beta:g}, "
+            f"quota={self._resolved_quota:g}, track={self._track})"
         )
 
 

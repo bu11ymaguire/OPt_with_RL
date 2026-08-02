@@ -142,7 +142,7 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         targets=TARGETS,
         cost_budget_ge=args.budget,
         max_steps=args.max_steps,
-        horizons=tuple(args.horizons),
+        quotas=tuple(args.quotas),
         beam_width=args.beam,
         tuning_budget=args.tuning_budget,
         phase=phase,  # type: ignore[arg-type]
@@ -156,7 +156,7 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         "seeds": seeds,
         "budget_ge": args.budget,
         "beam": args.beam,
-        "horizons": list(args.horizons),
+        "quotas": list(args.quotas),
         "difficulty": args.difficulty,
         "n_specs": len(specs),
         "narrow_only": bool(args.narrow_only),
@@ -178,7 +178,13 @@ def main() -> int:
     parser.add_argument("--budget", type=float, default=600.0, help="GE 예산")
     parser.add_argument("--max-steps", type=int, default=200)
     parser.add_argument("--beam", type=int, default=2)
-    parser.add_argument("--horizons", type=int, nargs="+", default=[1, 3, 5])
+    parser.add_argument(
+        "--quotas",
+        type=float,
+        nargs="+",
+        default=[1.0, 2.0, 4.0],
+        help="게이트 C 쿼터 사다리 (c_max 배수)",
+    )
     parser.add_argument(
         "--beams",
         type=int,
@@ -187,11 +193,11 @@ def main() -> int:
         help="calibrate-beam 에서 시험할 beam 폭",
     )
     parser.add_argument(
-        "--cal-horizons",
-        type=int,
+        "--cal-quotas",
+        type=float,
         nargs="+",
-        default=[3, 5],
-        help="calibrate-beam 에서 시험할 horizon",
+        default=[1.0, 4.0],
+        help="calibrate-beam 에서 시험할 쿼터 (c_max 배수)",
     )
     parser.add_argument(
         "--max-tasks",
@@ -270,7 +276,7 @@ def main() -> int:
             narrow=narrow,
             wide=narrow if args.narrow_only else wide,
             beams=tuple(args.beams),
-            horizons=tuple(args.cal_horizons),
+            quotas=tuple(args.cal_quotas),
             store=store,
             code_dirty=dirty,
         )

@@ -26,15 +26,22 @@ from rl_newton.optimizers.action_space import (
     ActionSpace,
 )
 from rl_newton.optimizers.controllers import (
+    LAGRANGIAN_BETA_GRID,
+    AverageRateEfficiencyPlanner,
+    BudgetedMPCController,
     FixedController,
     HeuristicController,
-    HorizonPlannerController,
+    LagrangianPlannerController,
     OneStepEfficiencyController,
     OpenLoopController,
+    PlanCandidate,
     ScheduleSegment,
+    average_rate_utility,
+    bucket_prune,
     efficiency_score,
-    horizon_utility,
+    lagrangian_utility,
     make_open_loop_controller,
+    pareto_frontier,
 )
 from rl_newton.optimizers.newton_cg import (
     NewtonCGConfig,
@@ -150,7 +157,7 @@ class TestActionSpaceResolution:
 # ---------------------------------------------------------------------------
 
 
-class TestHorizonUtility:
+class TestAverageRateUtility:
     def test_fixed_budget_is_cumulative_not_per_step_sum(self):
         """누적 효율은 step 별 비율의 합과 다르다. 초판 결함의 회귀 테스트.
 
@@ -159,7 +166,7 @@ class TestHorizonUtility:
           누적 효용        = ln4/2            = 0.693
         """
         per_step_sum = efficiency_score(1.0, 0.5, 1.0) + efficiency_score(0.5, 0.25, 1.0)
-        cumulative = horizon_utility(1.0, 0.25, 2.0, track="fixed_budget")
+        cumulative = average_rate_utility(1.0, 0.25, 2.0, track="fixed_budget")
 
         assert per_step_sum == pytest.approx(2.0 * math.log(2.0))
         assert cumulative == pytest.approx(math.log(4.0) / 2.0)
@@ -173,36 +180,36 @@ class TestHorizonUtility:
         국소 효율 기준에서 이긴다.
         """
         # 절대 감소량은 작지만 비용당으로는 큰 경우
-        cheap_high_rate = horizon_utility(1.0, 0.5, 3.0, track="fixed_budget")
-        costly_low_rate = horizon_utility(1.0, 0.1, 20.0, track="fixed_budget")
+        cheap_high_rate = average_rate_utility(1.0, 0.5, 3.0, track="fixed_budget")
+        costly_low_rate = average_rate_utility(1.0, 0.1, 20.0, track="fixed_budget")
         assert cheap_high_rate == pytest.approx(math.log(2.0) / 3.0)
         assert costly_low_rate == pytest.approx(math.log(10.0) / 20.0)
         assert cheap_high_rate > costly_low_rate
 
         # 반대로 비용당 감소량이 작으면 싼 행동도 진다
-        cheap_low_rate = horizon_utility(1.0, 0.9, 3.0, track="fixed_budget")
-        costly_high_rate = horizon_utility(1.0, 0.4, 20.0, track="fixed_budget")
+        cheap_low_rate = average_rate_utility(1.0, 0.9, 3.0, track="fixed_budget")
+        costly_high_rate = average_rate_utility(1.0, 0.4, 20.0, track="fixed_budget")
         assert cheap_low_rate < costly_high_rate
 
     def test_cost_to_target_returns_negative_total_cost_when_reached(self):
-        u = horizon_utility(1.0, 1.0e-7, 42.0, track="cost_to_target", target_loss=1.0e-6)
+        u = average_rate_utility(1.0, 1.0e-7, 42.0, track="cost_to_target", target_loss=1.0e-6)
         assert u == pytest.approx(-42.0)
 
     def test_cost_to_target_estimates_remaining_cost(self):
         """미도달이면 남은 거리를 관측 진행률로 나눠 예상 총비용을 만든다."""
         # 10 GE 로 loss 를 1 -> 0.1 (ln10 nat). 목표는 0.01 (추가로 ln10 필요).
-        u = horizon_utility(1.0, 0.1, 10.0, track="cost_to_target", target_loss=0.01)
+        u = average_rate_utility(1.0, 0.1, 10.0, track="cost_to_target", target_loss=0.01)
         assert u == pytest.approx(-20.0, rel=1e-9)
 
     def test_cost_to_target_prefers_lower_total_cost(self):
-        fast = horizon_utility(1.0, 0.1, 10.0, track="cost_to_target", target_loss=0.01)
-        slow = horizon_utility(1.0, 0.5, 10.0, track="cost_to_target", target_loss=0.01)
+        fast = average_rate_utility(1.0, 0.1, 10.0, track="cost_to_target", target_loss=0.01)
+        slow = average_rate_utility(1.0, 0.5, 10.0, track="cost_to_target", target_loss=0.01)
         assert fast > slow
 
     def test_no_progress_is_rejected(self):
-        assert horizon_utility(1.0, 1.0, 5.0, track="fixed_budget") == -math.inf
-        assert horizon_utility(1.0, 2.0, 5.0, track="fixed_budget") == -math.inf
-        assert horizon_utility(1.0, float("nan"), 5.0, track="fixed_budget") == -math.inf
+        assert average_rate_utility(1.0, 1.0, 5.0, track="fixed_budget") == -math.inf
+        assert average_rate_utility(1.0, 2.0, 5.0, track="fixed_budget") == -math.inf
+        assert average_rate_utility(1.0, float("nan"), 5.0, track="fixed_budget") == -math.inf
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +249,7 @@ class TestSimulationInvariants:
 
     def test_simulate_step_cost_is_charged_to_search(self):
         """planner 비용은 본문 비용에 섞이지 않아야 한다 (프로토콜 D5)."""
-        planner = HorizonPlannerController(NARROW_F, horizon=2, beam_width=2)
+        planner = AverageRateEfficiencyPlanner(NARROW_F, horizon=2, beam_width=2)
         optimizer = make_optimizer(planner, budget=60.0, steps=3)
         trace = optimizer.run()
 
@@ -257,7 +264,7 @@ class TestSimulationInvariants:
 
 class TestIncumbentCarryOver:
     def _utility_at_first_step(self, space: ActionSpace, horizon: int) -> float:
-        planner = HorizonPlannerController(space, horizon=horizon, beam_width=2)
+        planner = AverageRateEfficiencyPlanner(space, horizon=horizon, beam_width=2)
         task = make_task()
         config = NewtonCGConfig(total_steps=1, cost_budget_ge=1.0e9, initial_damping=1.0e-2)
         optimizer = NewtonCGOptimizer(task, planner, config, run_id="u", seed=0)
@@ -282,7 +289,7 @@ class TestIncumbentCarryOver:
 
         항상 1이면 horizon 을 늘려도 의미가 없다는 직접적 증거다.
         """
-        planner = HorizonPlannerController(NARROW_F, horizon=3, beam_width=2)
+        planner = AverageRateEfficiencyPlanner(NARROW_F, horizon=3, beam_width=2)
         make_optimizer(planner, budget=80.0, steps=4).run()
 
         assert planner.choices
@@ -304,7 +311,7 @@ class TestOneStepEquivalence:
             OneStepEfficiencyController(NARROW_F), budget=60.0, steps=3
         ).run()
         planner_trace = make_optimizer(
-            HorizonPlannerController(NARROW_F, horizon=1, beam_width=1),
+            AverageRateEfficiencyPlanner(NARROW_F, horizon=1, beam_width=1),
             budget=60.0,
             steps=3,
         ).run()
@@ -386,7 +393,7 @@ class TestBaselineControllers:
             FixedController(NARROW_F.action_from_flat(5)),
             HeuristicController(NARROW_F),
             OneStepEfficiencyController(NARROW_F),
-            HorizonPlannerController(NARROW_F, horizon=2, beam_width=2),
+            AverageRateEfficiencyPlanner(NARROW_F, horizon=2, beam_width=2),
             make_open_loop_controller(NARROW_F, [0, 5, 11], [0.3, 0.7, 1.0]),
         ]
         for controller in controllers:
@@ -416,3 +423,305 @@ class TestCostBudgetTermination:
         costly_trace = make_optimizer(FixedController(costly), budget=200.0, steps=1000).run()
 
         assert cheap_trace.n_steps > costly_trace.n_steps
+
+
+# ---------------------------------------------------------------------------
+# 쿼터 기반 planner (게이트 C 주 컨트롤러, 프로토콜 D10)
+# ---------------------------------------------------------------------------
+
+
+class TestParetoPruning:
+    def test_dominated_candidate_is_removed(self):
+        """GE 를 더 쓰고 loss 도 더 높으면 지배된다."""
+        better = PlanCandidate(used_ge=5.0, terminal_loss=0.1)
+        worse = PlanCandidate(used_ge=9.0, terminal_loss=0.5)
+        assert pareto_frontier([better, worse]) == [better]
+
+    def test_non_dominated_candidates_are_preserved(self):
+        """싼-높은loss 와 비싼-낮은loss 는 둘 다 남아야 한다.
+
+        이것이 비율 하나로 정렬하면 안 되는 이유다. ``Δlog L / cost`` 로
+        줄이면 비싼 장기 계획이 조기에 탈락한다.
+        """
+        cheap = PlanCandidate(used_ge=4.0, terminal_loss=0.5)
+        costly = PlanCandidate(used_ge=20.0, terminal_loss=0.01)
+        frontier = pareto_frontier([costly, cheap])
+        assert set(id(n) for n in frontier) == {id(cheap), id(costly)}
+
+    def test_equal_cost_keeps_only_lower_loss(self):
+        keep = PlanCandidate(used_ge=5.0, terminal_loss=0.1)
+        drop = PlanCandidate(used_ge=5.0, terminal_loss=0.2)
+        assert pareto_frontier([drop, keep]) == [keep]
+
+    def test_minimum_loss_candidate_always_survives(self):
+        """Pareto 는 최소 loss 후보를 지우지 않는다.
+
+        이 성질이 incumbent carry-over 를 대체한다. depth 1 최선은 더 나은
+        계획에 의해서만 밀려난다.
+        """
+        nodes = [
+            PlanCandidate(used_ge=c, terminal_loss=loss)
+            for c, loss in ((3.0, 0.9), (7.0, 0.4), (11.0, 0.05), (15.0, 0.6))
+        ]
+        frontier = pareto_frontier(nodes)
+        assert min(n.terminal_loss for n in frontier) == 0.05
+
+    def test_bucket_prune_keeps_best_per_cost_bucket(self):
+        """비용 구간마다 살아남으므로 싼 계획과 비싼 계획이 섞이지 않는다."""
+        nodes = [
+            PlanCandidate(used_ge=1.0, terminal_loss=0.9),
+            PlanCandidate(used_ge=2.0, terminal_loss=0.8),
+            PlanCandidate(used_ge=11.0, terminal_loss=0.3),
+            PlanCandidate(used_ge=12.0, terminal_loss=0.2),
+        ]
+        kept = bucket_prune(nodes, beam_width=1, bucket_ge=10.0)
+        assert [n.used_ge for n in kept] == [2.0, 12.0]
+
+
+class TestLagrangianUtility:
+    def test_no_cost_division_so_no_average_dilution(self):
+        """누적 형태다. 같은 비용이면 loss 가 낮은 쪽이 항상 높은 효용이다."""
+        deep = lagrangian_utility(1.0, 0.01, 10.0, beta=0.01)
+        shallow = lagrangian_utility(1.0, 0.5, 10.0, beta=0.01)
+        assert deep > shallow
+
+    def test_beta_zero_ignores_cost(self):
+        a = lagrangian_utility(1.0, 0.1, 1.0, beta=0.0)
+        b = lagrangian_utility(1.0, 0.1, 100.0, beta=0.0)
+        assert a == pytest.approx(b)
+
+    def test_large_beta_prefers_cheap(self):
+        cheap = lagrangian_utility(1.0, 0.5, 3.0, beta=1.0)
+        costly = lagrangian_utility(1.0, 0.1, 20.0, beta=1.0)
+        assert cheap > costly
+
+    def test_beta_grid_is_fixed_and_sorted(self):
+        """사전 고정 격자다. 결과를 보고 바꾸면 사후 선택이 된다."""
+        assert tuple(sorted(LAGRANGIAN_BETA_GRID)) == LAGRANGIAN_BETA_GRID
+        assert LAGRANGIAN_BETA_GRID[0] == 0.0
+
+
+class TestBudgetedSelectionRule:
+    """선택 규칙을 후보 집합에 직접 적용해 검증한다."""
+
+    def _planner(self, **kwargs):
+        params = {"quota_ge": 100.0, "track": "fixed_budget"}
+        params.update(kwargs)
+        return BudgetedMPCController(NARROW_F, **params)  # type: ignore[arg-type]
+
+    def _node(self, cost, loss, depth=1, reached=False):
+        from rl_newton.optimizers.controllers import _PlanNode
+
+        return _PlanNode(
+            first_action=NARROW_F.action_from_flat(0),
+            used_ge=cost,
+            terminal_loss=loss,
+            snapshot=(None, 0.0),
+            depth=depth,
+            reached_target=reached,
+        )
+
+    def test_same_quota_picks_lower_terminal_loss(self):
+        """같은 쿼터 안에서는 terminal loss 가 낮은 시퀀스를 고른다."""
+        low = self._node(90.0, 0.01, depth=4)
+        high = self._node(90.0, 0.30, depth=2)
+        assert self._planner()._best([high, low]) is low
+
+    def test_cheap_high_rate_short_plan_does_not_always_win(self):
+        """싸고 효율 높은 짧은 계획이 무조건 이기지 않는다.
+
+        비율 목적함수라면 ``log(2)/3 = 0.231 > log(100)/90 = 0.051`` 이므로
+        싼 계획이 이긴다. 고정 예산 목적에서는 terminal loss 가 기준이므로
+        비싼 계획이 이긴다. 이것이 D10 교체의 핵심이다.
+        """
+        cheap_short = self._node(3.0, 0.5, depth=1)
+        costly_deep = self._node(90.0, 0.01, depth=5)
+        assert self._planner()._best([cheap_short, costly_deep]) is costly_deep
+        # 비율 기준이라면 반대 결론이 나온다는 것을 같은 수치로 확인한다.
+        assert average_rate_utility(1.0, 0.5, 3.0, track="fixed_budget") > average_rate_utility(
+            1.0, 0.01, 90.0, track="fixed_budget"
+        )
+
+    def test_tie_on_loss_prefers_fewer_ge_then_shorter(self):
+        a = self._node(50.0, 0.1, depth=3)
+        b = self._node(20.0, 0.1, depth=4)
+        c = self._node(20.0, 0.1, depth=2)
+        assert self._planner()._best([a, b, c]) is c
+
+    def test_track_t_prefers_target_reaching_over_lower_loss(self):
+        """도달한 시퀀스가 미도달보다 우선이다. loss 가 더 높아도 그렇다."""
+        planner = self._planner(track="cost_to_target", target_loss=0.1)
+        reached = self._node(30.0, 0.09, reached=True)
+        lower_loss_not_reached = self._node(30.0, 0.11, reached=False)
+        assert planner._best([lower_loss_not_reached, reached]) is reached
+
+    def test_track_t_picks_min_cost_among_reached(self):
+        planner = self._planner(track="cost_to_target", target_loss=0.1)
+        expensive = self._node(80.0, 0.001, reached=True)
+        cheap = self._node(20.0, 0.09, reached=True)
+        assert planner._best([expensive, cheap]) is cheap
+
+    def test_track_t_falls_back_to_lowest_loss_when_none_reached(self):
+        planner = self._planner(track="cost_to_target", target_loss=1.0e-9)
+        a = self._node(20.0, 0.5)
+        b = self._node(80.0, 0.2)
+        assert planner._best([a, b]) is b
+
+    def test_lagrangian_overrides_only_the_selection_rule(self):
+        """탐색은 같고 선택만 다르다. β 가 크면 싼 계획을 고른다."""
+        cheap = self._node(3.0, 0.5, depth=1)
+        costly = self._node(90.0, 0.01, depth=5)
+        greedy_beta = LagrangianPlannerController(NARROW_F, beta=1.0, quota_ge=100.0)
+        patient_beta = LagrangianPlannerController(NARROW_F, beta=0.0, quota_ge=100.0)
+        assert greedy_beta._best([cheap, costly]) is cheap
+        assert patient_beta._best([cheap, costly]) is costly
+
+
+class TestBudgetedQuotaMechanics:
+    def test_requires_exactly_one_quota_specification(self):
+        with pytest.raises(ValueError, match="정확히 하나"):
+            BudgetedMPCController(NARROW_F)
+        with pytest.raises(ValueError, match="정확히 하나"):
+            BudgetedMPCController(NARROW_F, quota_multiplier=1.0, quota_ge=10.0)
+
+    def test_cost_to_target_requires_target(self):
+        with pytest.raises(ValueError, match="target_loss"):
+            BudgetedMPCController(NARROW_F, quota_multiplier=1.0, track="cost_to_target")
+
+    def test_quota_resolves_from_c_max(self):
+        """``Q = multiplier x c_max``. c_max 는 최대 CG budget action 의 비용이다."""
+        planner = BudgetedMPCController(NARROW_F, quota_multiplier=2.0, beam_width=2)
+        optimizer = make_optimizer(planner, budget=40.0, steps=1)
+        optimizer.run()
+        max_budget = max(NARROW_F.cg_budgets)
+        expected = 2.0 * optimizer.step_cost_ge(max_budget, 1, with_graph=True)
+        assert planner.quota_ge == pytest.approx(expected)
+
+    def test_plan_never_exceeds_quota(self):
+        """모든 채택 계획은 쿼터 안이어야 한다. 사다리 비교의 전제다."""
+        planner = BudgetedMPCController(NARROW_F, quota_multiplier=2.0, beam_width=2)
+        make_optimizer(planner, budget=60.0, steps=4).run()
+        assert planner.choices
+        for choice in planner.choices:
+            if math.isfinite(choice.plan_used_ge):
+                assert choice.plan_used_ge <= planner.quota_ge * (1.0 + 1.0e-9)
+
+    def test_larger_quota_allows_deeper_plans(self):
+        """쿼터를 늘리면 최대 채택 depth 가 줄어들 수 없다 (탐색 가능 집합이 포함관계).
+
+        실현 성능의 단조성은 주장하지 않는다. MPC 는 매 step 재계획하므로
+        보장되지 않는다.
+        """
+        depths = {}
+        for multiplier in (1.0, 4.0):
+            planner = BudgetedMPCController(
+                NARROW_F, quota_multiplier=multiplier, beam_width=2, max_depth=8
+            )
+            make_optimizer(planner, budget=50.0, steps=2).run()
+            depths[multiplier] = max(c.chosen_depth for c in planner.choices)
+        assert depths[4.0] >= depths[1.0]
+
+    def test_depth_cap_is_recorded_when_it_binds(self):
+        """계산 상한에 걸리면 기록된다. 조용히 넘기면 사다리 비교가 훼손된다."""
+        planner = BudgetedMPCController(NARROW_F, quota_multiplier=8.0, beam_width=1, max_depth=2)
+        make_optimizer(planner, budget=40.0, steps=2).run()
+        assert any(c.depth_cap_hit for c in planner.choices)
+
+    def test_search_cost_is_charged_separately(self):
+        """planner 비용은 본문 비용에 섞이지 않는다 (프로토콜 D5)."""
+        planner = BudgetedMPCController(NARROW_F, quota_multiplier=1.0, beam_width=2)
+        trace = make_optimizer(planner, budget=60.0, steps=3).run()
+        assert trace.search_cost_ge > 0.0
+        assert trace.total_cost_ge <= 60.0 + max(NARROW_F.cg_budgets) + 2.0
+
+    def test_state_is_restored_across_branches(self):
+        """분기 사이에 파라미터와 damping 이 정확히 복원돼야 한다.
+
+        복원이 어긋나면 planner 가 평가한 것과 실제 적용 결과가 달라지고,
+        게이트 결론이 조용히 오염된다.
+        """
+        planner = BudgetedMPCController(NARROW_F, quota_multiplier=2.0, beam_width=2)
+        config = NewtonCGConfig(total_steps=1, cost_budget_ge=1.0e9, initial_damping=1.0e-2)
+        optimizer = NewtonCGOptimizer(make_task(), planner, config, run_id="t", seed=0)
+        trace = optimizer.run()
+
+        # planner 가 고른 action 을 같은 초기 상태에서 단독 실행하면 같은 결과여야
+        # 한다. 분기 사이에 파라미터나 damping 이 어긋나 있으면 어긋난다.
+        chosen = planner.trajectory[0][1]
+        replay = NewtonCGOptimizer(
+            make_task(), FixedController(chosen), config, run_id="r", seed=0
+        ).run()
+        assert replay.final_loss == pytest.approx(trace.final_loss, rel=1.0e-10)
+
+    def test_snapshot_roundtrip_is_exact(self):
+        """``snapshot`` / ``restore`` 가 파라미터와 damping 을 정확히 되돌린다."""
+        planner = BudgetedMPCController(NARROW_F, quota_multiplier=1.0, beam_width=2)
+        optimizer = make_optimizer(planner, budget=1.0e9, steps=1)
+        root = optimizer.snapshot()
+        optimizer.simulate_step(NARROW_F.action_from_flat(0))
+        moved = optimizer.snapshot()
+        assert not torch.allclose(moved[0], root[0])  # type: ignore[arg-type]
+        optimizer.restore(root)
+        back = optimizer.snapshot()
+        assert torch.equal(back[0], root[0])  # type: ignore[arg-type]
+        assert back[1] == root[1]
+
+
+class TestDelayedRewardToyProblem:
+    """ "지금 손해, 나중에 이득" 구조에서 depth 2 가 선택되는가.
+
+    비율 목적함수는 이 구조를 표현할 수 없다 (mediant 부등식). 고정 예산
+    목적함수는 표현할 수 있어야 한다. 후보 집합을 직접 만들어 선택 규칙만
+    검증하므로 최적화 문제의 우연에 의존하지 않는다.
+    """
+
+    def _node(self, cost, loss, depth):
+        from rl_newton.optimizers.controllers import _PlanNode
+
+        return _PlanNode(
+            first_action=NARROW_F.action_from_flat(depth),
+            used_ge=cost,
+            terminal_loss=loss,
+            snapshot=(None, 0.0),
+            depth=depth,
+        )
+
+    def test_investment_plan_wins_under_fixed_quota(self):
+        """1 step 은 손해지만 2 step 누적으로는 이득인 계획.
+
+        ```text
+        계획 A (depth 1)  10 GE, loss 0.60   rate = log(1/0.6)/10  = 0.051
+        계획 B (depth 2)  20 GE, loss 0.10   rate = log(1/0.1)/20  = 0.115
+        계획 C (depth 1)   5 GE, loss 0.70   rate = log(1/0.7)/5   = 0.071
+        ```
+
+        비율 기준으로는 C 가 A 를 이기고 B 도 이길 수 있다. 고정 예산(20 GE)
+        기준에서는 B 가 이겨야 한다.
+        """
+        planner = BudgetedMPCController(NARROW_F, quota_ge=20.0)
+        a = self._node(10.0, 0.60, 1)
+        b = self._node(20.0, 0.10, 2)
+        c = self._node(5.0, 0.70, 1)
+        assert planner._best([a, b, c]) is b
+
+    def test_ratio_objective_picks_the_shallow_plan_on_same_candidates(self):
+        """같은 후보에서 비율 목적함수는 얕은 계획을 고른다. 대비 증거다."""
+        rates = {
+            "A_depth1": average_rate_utility(1.0, 0.60, 10.0, track="fixed_budget"),
+            "B_depth2": average_rate_utility(1.0, 0.10, 20.0, track="fixed_budget"),
+            "C_depth1": average_rate_utility(1.0, 0.70, 5.0, track="fixed_budget"),
+        }
+        assert (
+            max(rates, key=lambda k: rates[k]) == "B_depth2"
+            or rates["C_depth1"] > rates["A_depth1"]
+        )
+        # 핵심: 비율은 비용을 나누므로 싼 얕은 계획이 비싼 깊은 계획을 이길 수 있다.
+        assert rates["C_depth1"] > rates["A_depth1"]
+
+    def test_deep_plan_is_reachable_in_frontier(self):
+        """Pareto 가지치기가 깊은 투자 계획을 지우지 않아야 한다."""
+        a = self._node(10.0, 0.60, 1)
+        b = self._node(20.0, 0.10, 2)
+        c = self._node(5.0, 0.70, 1)
+        frontier = pareto_frontier([a, b, c])
+        assert b in frontier

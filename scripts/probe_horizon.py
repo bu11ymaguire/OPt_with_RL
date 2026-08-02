@@ -29,12 +29,12 @@ from __future__ import annotations
 import math
 
 from rl_newton.optimizers.action_space import NARROW, WIDE
-from rl_newton.optimizers.controllers import HorizonPlannerController
+from rl_newton.optimizers.controllers import AverageRateEfficiencyPlanner
 from rl_newton.optimizers.newton_cg import NewtonCGConfig, NewtonCGOptimizer
 from rl_newton.tasks.quadratics import QuadraticSpec, QuadraticTask
 
 
-def depth_histogram(planner: HorizonPlannerController) -> dict[int, int]:
+def depth_histogram(planner: AverageRateEfficiencyPlanner) -> dict[int, int]:
     counts: dict[int, int] = {}
     for choice in planner.choices:
         counts[choice.chosen_depth] = counts.get(choice.chosen_depth, 0) + 1
@@ -43,7 +43,7 @@ def depth_histogram(planner: HorizonPlannerController) -> dict[int, int]:
 
 def run(space, horizon, track, target_loss, spec, budget=150.0):
     task = QuadraticTask(spec, seed=0)
-    planner = HorizonPlannerController(
+    planner = AverageRateEfficiencyPlanner(
         space,
         horizon=horizon,
         beam_width=3,

@@ -6,11 +6,12 @@ open_loop / greedy_oracle / RL 의 차이는 optimizer 가 아니라 **누가 ac
 차이로 인한 교란이 원천적으로 없다 (프로토콜 D4).
 
 ```text
-fixed          아무것도 안 본다. 항상 같은 action
-open_loop      progress 만 본다              <- RL이 "적응 제어"인지 "스케줄"인지 판별
-heuristic      trust ratio 를 본다
-greedy_oracle  후보를 전수 시도한다            <- 헤드룸의 상한 대리 지표
-rl             상태 특징을 본다 (Stage 4)
+fixed              아무것도 안 본다. 항상 같은 action
+open_loop          progress 만 본다          <- RL이 "적응 제어"인지 "스케줄"인지 판별
+heuristic          trust ratio 를 본다
+one_step_efficiency 후보를 전수 시도한다      <- 상한이 아니라 비교군 (프로토콜 D9)
+budgeted_mpc       동일 GE 쿼터 안의 계획을 겨룬다  <- 게이트 C 주 컨트롤러
+rl                 상태 특징을 본다 (Stage 4)
 ```
 
 행동 공간
@@ -35,17 +36,22 @@ from rl_newton.optimizers.action_space import (
     ActionSpace,
 )
 from rl_newton.optimizers.controllers import (
+    AverageRateEfficiencyPlanner,
+    BudgetedMPCController,
     FixedController,
     HeuristicController,
-    HorizonPlannerController,
+    LagrangianPlannerController,
     OneStepEfficiencyController,
     OpenLoopController,
     PlannerChoice,
     PlannerTrack,
     ScheduleSegment,
+    average_rate_utility,
+    bucket_prune,
     efficiency_score,
-    horizon_utility,
+    lagrangian_utility,
     make_open_loop_controller,
+    pareto_frontier,
 )
 from rl_newton.optimizers.newton_cg import (
     Candidate,
@@ -74,11 +80,16 @@ __all__ = [
     "OpenLoopController",
     "HeuristicController",
     "OneStepEfficiencyController",
-    "HorizonPlannerController",
+    "AverageRateEfficiencyPlanner",
+    "BudgetedMPCController",
+    "LagrangianPlannerController",
     "PlannerTrack",
     "PlannerChoice",
     "ScheduleSegment",
     "efficiency_score",
-    "horizon_utility",
+    "average_rate_utility",
+    "lagrangian_utility",
+    "pareto_frontier",
+    "bucket_prune",
     "make_open_loop_controller",
 ]
