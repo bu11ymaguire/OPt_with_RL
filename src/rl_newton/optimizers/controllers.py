@@ -1485,11 +1485,36 @@ class ShrinkingQuotaMPCController(BudgetedMPCController):
         self._suffix: tuple[ControllerAction, ...] = ()
         self._last_loss = float("nan")
         self._windows = 0
+        self._n_replans = 0
+        self._n_suffix_retained = 0
 
     @property
     def windows(self) -> int:
         """열린 window 수. 쿼터 소진 횟수다."""
         return self._windows
+
+    @property
+    def suffix_retention_rate(self) -> float:
+        """재계획 결과가 이전 계획의 suffix 와 **정확히 같았던** 비율.
+
+        ```text
+        replanned_actions == previous_plan[1:]
+        ```
+
+        1.0 이면 재계획이 계획을 한 번도 바꾸지 않았다는 뜻이고, committed 실행과
+        같은 경로를 간다. ``chosen_depth`` 히스토그램만으로는 깊이만 같고 내용이
+        다를 수 있으므로 **행동 내용까지 비교해** 계측한다 (프로토콜 D15).
+
+        ``nan`` 이면 재계획 기회가 없었다 (window 하나에 step 하나).
+        """
+        if self._n_replans == 0:
+            return float("nan")
+        return self._n_suffix_retained / self._n_replans
+
+    @property
+    def n_replans(self) -> int:
+        """이전 계획이 남아 있는 상태에서 재계획한 횟수. 분모다."""
+        return self._n_replans
 
     def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
         actions = list(self._space.iter_actions())
@@ -1510,9 +1535,17 @@ class ShrinkingQuotaMPCController(BudgetedMPCController):
             self._suffix = ()
             self._windows += 1
 
-        plan = self.plan(context, optimizer, quota=self._remaining, seed_plan=self._suffix)
+        previous = self._suffix
+        plan = self.plan(context, optimizer, quota=self._remaining, seed_plan=previous)
         if plan is None:
             return self._fallback_action(context, optimizer)
+
+        # 재계획이 이전 계획을 실제로 바꿨는지 계측한다 (프로토콜 D15).
+        # 깊이가 아니라 **행동 내용**을 비교한다.
+        if previous:
+            self._n_replans += 1
+            if plan.actions == previous:
+                self._n_suffix_retained += 1
 
         # 남은 suffix 를 다음 재계획의 보장 후보로 넘긴다. **탐색에서 살아남는
         # 것은 보장되지만 채택이 보장되는 것은 아니다.** 목적함수가 남은 쿼터
@@ -1526,6 +1559,8 @@ class ShrinkingQuotaMPCController(BudgetedMPCController):
         self._remaining = float("nan")
         self._suffix = ()
         self._windows = 0
+        self._n_replans = 0
+        self._n_suffix_retained = 0
 
     def __repr__(self) -> str:
         return (

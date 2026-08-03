@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import pytest
 
+import math
+
 from rl_newton.benchmark.metrics import (
+    RELATIVE_LOSS_FLOOR,
     TargetSpec,
     budget_respecting_prefix,
     summarize_run,
@@ -131,3 +134,171 @@ class TestSummarizeRunFairness:
         summary = summarize_run(trace, TargetSpec(metric="relative_loss", value=1.0e-6))
         assert summary.final_loss == pytest.approx(0.01)
         assert summary.n_steps == 3
+
+
+# ---------------------------------------------------------------------------
+# 수치 하한과 조용한 제외 금지 (프로토콜 D14)
+# ---------------------------------------------------------------------------
+
+
+def make_summary(
+    *,
+    controller: str,
+    instance: str = "inst",
+    seed: int = 0,
+    initial_loss: float = 24.2,
+    final_loss: float = 1.0,
+    reached: bool = False,
+    cost_to_target: float | None = None,
+    total_cost_ge: float = 100.0,
+):
+    """최소 ``RunSummary``. Track E / Track T 분리를 검증하는 데 쓴다."""
+    from rl_newton.benchmark.metrics import RunSummary
+
+    return RunSummary(
+        run_id="r",
+        controller=controller,
+        task_instance_id=instance,
+        seed=seed,
+        target="absolute_loss<=0.01",
+        reached=reached,
+        cost_to_target_ge=cost_to_target,
+        steps_to_target=None,
+        hvp_to_target=None,
+        initial_loss=initial_loss,
+        final_loss=final_loss,
+        total_cost_ge=total_cost_ge,
+        total_hvp=10,
+        search_cost_ge=0.0,
+        n_steps=10,
+        stop_reason="cost_budget",
+        rejection_rate=0.0,
+        failure_rate=0.0,
+        negative_curvature_rate=0.0,
+        cg_convergence_rate=1.0,
+        median_residual_ratio=0.0,
+        median_damping=1.0e-2,
+        median_trust_ratio=1.0,
+    )
+
+
+class TestLossFloorPolicy:
+    """``final_loss = 0`` 을 조용히 버리면 최적점에 도달한 run 이 제거된다.
+
+    beam 4 pilot 실측: ``rosen_d2`` 에서 ``onestep_absolute`` 와 ``heuristic`` 이
+    ``final_loss=0.0`` 이라 3쌍씩 빠졌고, 게이트 A1 과 B 가 낮게 잡혔다.
+    """
+
+    def test_relative_floor_is_scale_invariant(self):
+        small = make_summary(controller="c", initial_loss=1.0, final_loss=0.0)
+        large = make_summary(controller="c", initial_loss=1.0e6, final_loss=0.0)
+        # floor 가 초기 loss 에 비례하므로 최대 logΔ 가 같다.
+        assert small.log_improvement == pytest.approx(large.log_improvement)
+
+    def test_floor_is_not_finfo_tiny(self):
+        """``tiny`` 를 쓰면 최대 logΔ 가 708 nat 까지 커져 통계를 지배한다."""
+        run = make_summary(controller="c", initial_loss=24.2, final_loss=0.0)
+        assert run.log_improvement < 40.0
+        assert run.log_improvement == pytest.approx(
+            math.log(24.2) - math.log(24.2 * RELATIVE_LOSS_FLOOR)
+        )
+
+    def test_exact_zero_is_capped_not_dropped(self):
+        run = make_summary(controller="c", final_loss=0.0)
+        assert run.exact_zero
+        assert run.floor_hit
+        assert math.isfinite(run.log_improvement)
+
+    def test_small_negative_is_roundoff_and_capped(self):
+        run = make_summary(controller="c", initial_loss=24.2, final_loss=-1.0e-15)
+        assert run.negative_roundoff
+        assert run.floor_hit
+        assert math.isfinite(run.log_improvement)
+
+    def test_large_negative_is_numerical_failure(self):
+        """모든 음수를 clamp 하면 실제 계산 오류를 숨긴다."""
+        run = make_summary(controller="c", initial_loss=24.2, final_loss=-1.0)
+        assert not run.negative_roundoff
+        assert not math.isfinite(run.log_improvement)
+
+    def test_nonfinite_final_loss_is_not_capped(self):
+        for bad in (float("nan"), float("inf")):
+            run = make_summary(controller="c", final_loss=bad)
+            assert not math.isfinite(run.log_improvement)
+
+
+class TestTrackSeparation:
+    def test_unreached_run_is_included_in_track_e(self):
+        """Track E 는 target 도달 여부와 무관하다."""
+        from rl_newton.benchmark.metrics import compare_paired_delta
+
+        base = [make_summary(controller="b", final_loss=1.0, reached=False)]
+        treat = [make_summary(controller="t", final_loss=0.1, reached=False)]
+        d = compare_paired_delta(base, treat)
+        assert d.n_valid == 1
+        assert d.median_delta == pytest.approx(math.log(10.0))
+
+    def test_same_run_is_censored_in_track_t(self):
+        """같은 run 이 Track T 에서는 미도달로 절단된다."""
+        from rl_newton.benchmark.metrics import compare_paired
+
+        base = [make_summary(controller="b", reached=True, cost_to_target=50.0)]
+        treat = [make_summary(controller="t", reached=False, cost_to_target=None)]
+        c = compare_paired(base, treat, metric="cost_to_target_ge")
+        assert c.n_both_reached == 0
+
+
+class TestExclusionIsRecorded:
+    def test_excluded_pairs_records_reason(self):
+        """조용한 dropna 금지. 빠진 쌍의 task/seed/사유가 남아야 한다."""
+        from rl_newton.benchmark.metrics import compare_paired_delta
+
+        base = [make_summary(controller="b", instance="i0", final_loss=1.0)]
+        treat = [make_summary(controller="t", instance="i0", final_loss=float("nan"))]
+        d = compare_paired_delta(base, treat)
+        assert d.n_pairs == 1
+        assert d.n_valid == 0
+        assert len(d.excluded_pairs) == 1
+        task, seed, why = d.excluded_pairs[0]
+        assert (task, seed) == ("i0", 0)
+        assert "final_loss" in why
+
+    def test_joint_and_one_sided_saturation_are_counted(self):
+        from rl_newton.benchmark.metrics import compare_paired_delta
+
+        base = [
+            make_summary(controller="b", instance="i0", final_loss=0.0),
+            make_summary(controller="b", instance="i1", final_loss=1.0),
+        ]
+        treat = [
+            make_summary(controller="t", instance="i0", final_loss=0.0),
+            make_summary(controller="t", instance="i1", final_loss=0.0),
+        ]
+        d = compare_paired_delta(base, treat)
+        assert d.n_valid == 2
+        assert d.n_joint_saturated == 1
+        assert d.n_one_sided_saturated == 1
+
+    def test_joint_saturation_gives_zero_delta(self):
+        """양쪽 모두 하한이면 terminal objective 상 실제 동률이다."""
+        from rl_newton.benchmark.metrics import compare_paired_delta
+
+        base = [make_summary(controller="b", final_loss=0.0)]
+        treat = [make_summary(controller="t", final_loss=0.0)]
+        assert compare_paired_delta(base, treat).median_delta == pytest.approx(0.0)
+
+    def test_drop_saturated_is_sensitivity_only(self):
+        """비포화 필터가 포화 쌍만 정확히 제거한다."""
+        from rl_newton.benchmark.metrics import drop_saturated_pairs
+
+        base = [
+            make_summary(controller="b", instance="i0", final_loss=0.0),
+            make_summary(controller="b", instance="i1", final_loss=1.0),
+        ]
+        treat = [
+            make_summary(controller="t", instance="i0", final_loss=0.5),
+            make_summary(controller="t", instance="i1", final_loss=0.5),
+        ]
+        b, t = drop_saturated_pairs(base, treat)
+        assert [r.task_instance_id for r in b] == ["i1"]
+        assert len(t) == 1

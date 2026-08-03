@@ -51,6 +51,7 @@ from rl_newton.benchmark.metrics import (
     TargetSpec,
     compare_paired,
     compare_paired_delta,
+    drop_saturated_pairs,
     summarize_group,
     summarize_run,
 )
@@ -345,13 +346,22 @@ def _planner_stats(controller: Controller) -> dict[str, float] | None:
     ]
     sims = [float(getattr(c, "n_simulations", 0)) for c in choices]
     n_cap = sum(1 for c in choices if getattr(c, "depth_cap_hit", False))
-    return {
+    stats: dict[str, float] = {
         "quota_ge": quotas[0],
         "depth_cap_hit": n_cap / len(choices),
         "quota_used_fraction": (sum(used) / len(used)) if used else float("nan"),
         "mean_simulations": sum(sims) / len(sims),
         "max_depth_seen": float(max(getattr(c, "chosen_depth", 1) for c in choices)),
     }
+    # shrinking 전용. 재계획이 이전 계획을 실제로 바꿨는지 (프로토콜 D15).
+    retention = getattr(controller, "suffix_retention_rate", None)
+    if retention is not None:
+        stats["suffix_retention_rate"] = float(retention)
+        stats["n_replans"] = float(getattr(controller, "n_replans", 0))
+    windows = getattr(controller, "windows", None)
+    if windows is not None:
+        stats["windows"] = float(windows)
+    return stats
 
 
 def run_controller(
@@ -558,6 +568,12 @@ class GateVerdict:
     go_threshold: float
     pivot_threshold: float
     detail: str = ""
+    nonsaturated: str = ""
+    """비포화 쌍만으로 계산한 같은 통계 (프로토콜 D14).
+
+    **민감도 분석 전용이다.** 주 판정은 floor-capped 전체 쌍으로 한다. 두 값의
+    결론이 다르면 "쉬운 인스턴스의 포화 처리에 민감하다" 고 보고한다.
+    """
 
     @property
     def verdict(self) -> str:
@@ -574,7 +590,9 @@ class GateVerdict:
             f"[{self.name}] ({self.track}) {self.question}\n"
             f"    {self.statistic:+.3f} {self.unit}  "
             f"(GO >= {self.go_threshold:g}, 재설계 < {self.pivot_threshold:g})  "
-            f"-> {self.verdict}" + (f"\n    {self.detail}" if self.detail else "")
+            f"-> {self.verdict}"
+            + (f"\n    비포화 민감도: {self.nonsaturated}" if self.nonsaturated else "")
+            + (f"\n    {self.detail}" if self.detail else "")
         )
 
 
@@ -1081,6 +1099,21 @@ def run_headroom(
         d = by_e.get((base, treat))
         return d.median_delta if d else float("nan")
 
+    # 비포화 민감도 (프로토콜 D14). 주 통계는 floor-capped 전체 쌍이고 이것은
+    # 병기용이다. 비포화만 primary 로 쓰면 최적점에 도달한 강한 run 을 제거하는
+    # 편향이 된다.
+    def e_delta_nonsat(base: Sequence[RunSummary], treat: Sequence[RunSummary]) -> str:
+        b, t = drop_saturated_pairs(base, treat)
+        if not b:
+            return "비포화 쌍 없음"
+        d = compare_paired_delta(b, t, metric="log_improvement")
+        return f"{d.median_delta:+.3f} nat (n={d.n_valid})"
+
+    gate_a1_nonsat = e_delta_nonsat(static_runs, onestep_runs["onestep_absolute"])
+    gate_b_nonsat = e_delta_nonsat(
+        onestep_runs["onestep_narrow"], onestep_runs["onestep_absolute"]
+    )
+
     gate_a1 = e_delta("best_static", "onestep_absolute")
     report.gates.append(
         GateVerdict(
@@ -1091,6 +1124,7 @@ def run_headroom(
                 "(instantaneous absolute-action headroom, H=1)"
             ),
             statistic=gate_a1,
+            nonsaturated=gate_a1_nonsat,
             unit="nat",
             go_threshold=1.0,
             pivot_threshold=0.3,
@@ -1136,6 +1170,7 @@ def run_headroom(
             track="Track E",
             question="행동 공간이 병목인가 (absolute vs narrow, 모두 H=1, 해상도 정렬)",
             statistic=gate_b,
+            nonsaturated=gate_b_nonsat,
             unit="nat",
             go_threshold=0.5,
             pivot_threshold=0.1,

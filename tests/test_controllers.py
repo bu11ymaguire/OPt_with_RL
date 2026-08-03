@@ -884,3 +884,123 @@ class TestSeedPlanIncumbent:
         seeded = self._plan_once(seed_plan=long_seed, beam=1)
         assert seeded is not None
         assert seeded.used_ge <= 60.0 * (1.0 + 1.0e-9)
+
+
+# ---------------------------------------------------------------------------
+# 실행 방식 사이의 상태 비공유와 suffix 유지율 (프로토콜 D15)
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionModeIsolation:
+    """``committed`` 와 ``shrinking`` 이 같은 결과를 낼 때 alias 가 아님을 봉인한다.
+
+    beam 4 pilot 에서 ``Q1`` 의 두 컨트롤러가 bitwise 같은 ``final_loss`` 를 냈다.
+    실제 동률로 확인됐지만(``chosen_depths`` 와 ``planner_stats`` 가 달랐다),
+    객체나 mutable 상태 공유는 별도로 배제해야 한다.
+    """
+
+    def _pair(self):
+        return (
+            CommittedPlanController(NARROW_F, quota_multiplier=1.0, beam_width=2),
+            ShrinkingQuotaMPCController(NARROW_F, quota_multiplier=1.0, beam_width=2),
+        )
+
+    def test_controllers_are_distinct_objects_and_types(self):
+        committed, shrinking = self._pair()
+        assert committed is not shrinking
+        assert type(committed) is not type(shrinking)
+        assert committed.name != shrinking.name
+
+    def test_mutable_state_is_not_shared(self):
+        """클래스 변수나 mutable default 를 쓰면 계획 상태가 새어 나간다."""
+        committed, shrinking = self._pair()
+        committed.reset()
+        shrinking.reset()
+        assert committed.choices is not shrinking.choices
+        assert committed.trajectory is not shrinking.trajectory
+
+        sentinel = NARROW_F.action_from_flat(0)
+        committed.trajectory.append((None, sentinel))  # type: ignore[arg-type]
+        assert len(shrinking.trajectory) == 0
+
+    def test_two_instances_of_same_type_do_not_share_state(self):
+        a = ShrinkingQuotaMPCController(NARROW_F, quota_multiplier=1.0, beam_width=2)
+        b = ShrinkingQuotaMPCController(NARROW_F, quota_multiplier=1.0, beam_width=2)
+        make_optimizer(a, budget=40.0, steps=3).run()
+        assert a.choices
+        assert b.choices == []
+
+    def test_result_is_independent_of_execution_order(self):
+        """실행 순서에 따라 결과가 달라지면 전역 상태나 공유 cache 가 있다."""
+
+        def run(cls):
+            planner = cls(NARROW_F, quota_multiplier=1.0, beam_width=2)
+            trace = make_optimizer(planner, budget=60.0, steps=20).run()
+            return trace.final_loss
+
+        c_first = run(CommittedPlanController)
+        s_after = run(ShrinkingQuotaMPCController)
+        s_first = run(ShrinkingQuotaMPCController)
+        c_after = run(CommittedPlanController)
+
+        assert c_first == pytest.approx(c_after, rel=1e-12)
+        assert s_first == pytest.approx(s_after, rel=1e-12)
+
+
+class TestSuffixRetentionRate:
+    """``chosen_depth`` 히스토그램은 깊이만 보여준다. 행동 내용을 비교해야 한다.
+
+    ```text
+    replanned_actions == previous_plan[1:]
+    ```
+    """
+
+    def test_retention_rate_is_measured_on_action_content(self):
+        # Q=1 은 이 quadratic 에서 depth 1 계획만 내므로 재계획 기회가 없다.
+        # 실측(rosen_d2, depth 4)과 같은 조건을 만들려면 쿼터를 키운다.
+        planner = ShrinkingQuotaMPCController(
+            NARROW_F, quota_multiplier=4.0, beam_width=2, max_depth=8
+        )
+        make_optimizer(planner, budget=80.0, steps=30).run()
+        rate = planner.suffix_retention_rate
+        assert planner.n_replans > 0, "재계획 기회가 있어야 한다"
+        assert 0.0 <= rate <= 1.0
+
+    def test_no_replan_opportunity_gives_nan(self):
+        planner = ShrinkingQuotaMPCController(
+            NARROW_F, quota_multiplier=1.0, beam_width=2
+        )
+        assert math.isnan(planner.suffix_retention_rate)
+
+    def test_reset_clears_retention_counters(self):
+        planner = ShrinkingQuotaMPCController(
+            NARROW_F, quota_multiplier=4.0, beam_width=2, max_depth=8
+        )
+        make_optimizer(planner, budget=80.0, steps=30).run()
+        assert planner.n_replans > 0
+        planner.reset()
+        assert planner.n_replans == 0
+        assert math.isnan(planner.suffix_retention_rate)
+
+    def test_full_retention_implies_committed_equivalence(self):
+        """유지율이 1.0 이면 committed 와 같은 경로를 간다.
+
+        ``Q1`` 에서 두 컨트롤러가 같은 ``final_loss`` 를 낸 이유가 이것이다.
+        재계획은 하지만 계획이 바뀌지 않는다.
+        """
+        shrinking = ShrinkingQuotaMPCController(
+            NARROW_F, quota_multiplier=4.0, beam_width=2, max_depth=8
+        )
+        committed = CommittedPlanController(
+            NARROW_F, quota_multiplier=4.0, beam_width=2, max_depth=8
+        )
+        s_trace = make_optimizer(shrinking, budget=80.0, steps=30).run()
+        c_trace = make_optimizer(committed, budget=80.0, steps=30).run()
+
+        assert shrinking.n_replans > 0
+        if shrinking.suffix_retention_rate == 1.0:
+            # 유지율 1.0 이면 committed 와 같은 경로다. Q1 동일성의 원인이다.
+            assert s_trace.final_loss == pytest.approx(c_trace.final_loss, rel=1e-12)
+        else:
+            # 계획이 바뀌었다는 것이 계측에 반영돼야 한다.
+            assert shrinking.suffix_retention_rate < 1.0

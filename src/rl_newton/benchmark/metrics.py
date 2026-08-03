@@ -41,6 +41,9 @@ __all__ = [
     "summarize_group",
     "compare_paired",
     "compare_paired_delta",
+    "drop_saturated_pairs",
+    "budget_respecting_prefix",
+    "RELATIVE_LOSS_FLOOR",
     "recovery_ratio",
     "geometric_mean",
     "bootstrap_ci",
@@ -112,11 +115,54 @@ class RunSummary:
     median_trust_ratio: float
 
     @property
+    def loss_floor(self) -> float:
+        """이 run 의 수치 하한. ``max(tiny, |L_0| * 100*eps)`` (프로토콜 D14).
+
+        **초기 loss 에 상대적**이라 scale invariant 하다. ``finfo.tiny`` 를 그대로
+        쓰면 최대 log improvement 가 708 nat 까지 커져서 underflow 여부가 통계를
+        지배한다. ``d=2`` Rosenbrock (``L_0 = 24.2``) 에서 이 floor 는 5.4e-13
+        이고 최대 logΔ 는 약 31.5 nat 다.
+        """
+        return max(_TINY, abs(self.initial_loss) * RELATIVE_LOSS_FLOOR)
+
+    @property
+    def exact_zero(self) -> bool:
+        """``final_loss`` 가 정확히 0인가. Rosenbrock ``d=2`` 는 실제로 도달한다."""
+        return self.final_loss == 0.0
+
+    @property
+    def negative_roundoff(self) -> bool:
+        """``-floor <= final_loss < 0``. 부동소수점 roundoff 로 간주해 0으로 clamp."""
+        return -self.loss_floor <= self.final_loss < 0.0
+
+    @property
+    def floor_hit(self) -> bool:
+        """``final_loss`` 가 수치 하한 이하인가.
+
+        ``True`` 면 이 run 의 ``log_improvement`` 는 **하한** 이고 정확한 값이
+        아니다. 게이트 보고에 포화 쌍 수를 함께 낸다 (프로토콜 D14).
+        """
+        return math.isfinite(self.final_loss) and self.final_loss <= self.loss_floor
+
+    @property
     def log_improvement(self) -> float:
-        """``log(L_0 / L_final)``. 총 감소 자릿수(nat)."""
-        if self.initial_loss <= 0.0 or self.final_loss <= 0.0:
+        """``log(L_0 / max(L_final, floor))``. 총 감소 자릿수(nat).
+
+        **0 이나 작은 음수를 조용히 제외하지 않는다** (프로토콜 D14). 초판은
+        ``final_loss <= 0`` 이면 NaN 을 반환했고, 그러면 최적점에 정확히 도달한
+        run 이 paired 비교에서 빠져 편향이 생겼다. beam 4 pilot 에서
+        ``rosen_d2`` 의 ``onestep_absolute`` / ``heuristic`` 이 ``final_loss=0.0``
+        으로 3쌍씩 제거되어 게이트 A1 과 B 가 낮게 잡혔다.
+
+        허용 범위를 넘는 음수와 비유한값만 NaN 이다. 그것은 수치 실패이고
+        ``excluded_pairs`` 에 사유가 기록된다.
+        """
+        if self.initial_loss <= 0.0 or not math.isfinite(self.final_loss):
             return float("nan")
-        return math.log(self.initial_loss) - math.log(self.final_loss)
+        if self.final_loss < -self.loss_floor:
+            # 허용 범위를 넘는 음수. 실제 계산 오류이므로 숨기지 않는다.
+            return float("nan")
+        return math.log(self.initial_loss) - math.log(max(self.final_loss, self.loss_floor))
 
     @property
     def log_improvement_per_ge(self) -> float:
@@ -124,6 +170,24 @@ class RunSummary:
         if self.total_cost_ge <= 0.0:
             return float("nan")
         return self.log_improvement / self.total_cost_ge
+
+
+_TINY = 2.2250738585072014e-308
+"""``float64`` 최소 정규 양수. ``torch.finfo(torch.float64).tiny``."""
+
+_EPS_FLOAT64 = 2.220446049250313e-16
+"""``float64`` machine epsilon."""
+
+RELATIVE_LOSS_FLOOR = 100.0 * _EPS_FLOAT64
+"""초기 loss 에 대한 상대 수치 하한 계수 (프로토콜 D14). ``2.22e-14``.
+
+**결과를 보고 고른 값이 아니다.** dtype 특성에서 나온다. ``100 x eps`` 는
+누적 반올림 오차가 machine epsilon 의 수십 배까지 커지는 것을 감안한 값이며,
+protocol freeze 전에 이 근거와 함께 고정한다.
+
+``finfo.tiny`` 를 floor 로 쓰면 안 된다. 최대 log improvement 가 708 nat 까지
+커져서 실제 최적화 차이보다 **underflow 여부가 통계를 지배**한다.
+"""
 
 
 def _median(values: Sequence[float]) -> float:
@@ -533,6 +597,30 @@ class PairedDelta:
     baseline_median: float
     treatment_median: float
 
+    # --- 포화와 제외 (프로토콜 D14) ---
+    n_joint_saturated: int = 0
+    """양쪽 모두 수치 하한에 걸린 쌍 수. **terminal objective 상 실제 동률**이다."""
+    n_one_sided_saturated: int = 0
+    """한쪽만 하한에 걸린 쌍 수.
+
+    그 컨트롤러가 엄격히 우수하지만 **차이의 크기는 floor 에 의존하는 하한**이다.
+    """
+    excluded_pairs: tuple[tuple[str, int, str], ...] = ()
+    """``(task_instance_id, seed, 사유)``. 조용한 ``dropna`` 를 금지한다.
+
+    ``n_valid < n_pairs`` 이면 반드시 여기에 사유가 남는다. beam 4 pilot 에서
+    ``final_loss=0`` 쌍이 아무 기록 없이 빠져 게이트 A1/B 가 낮게 잡혔다.
+    """
+
+    @property
+    def n_saturated(self) -> int:
+        return self.n_joint_saturated + self.n_one_sided_saturated
+
+    @property
+    def is_saturation_sensitive(self) -> bool:
+        """포화 쌍이 유효 쌍의 1/3 이상인가. 참이면 결론을 floor 정책과 함께 읽는다."""
+        return self.n_valid > 0 and self.n_saturated * 3 >= self.n_valid
+
     @property
     def loss_ratio_equivalent(self) -> float:
         """``exp(median_delta)``. "loss 몇 배 차이" 로 읽을 수 있다."""
@@ -549,6 +637,18 @@ class PairedDelta:
             f"(95% CI {ci[0]:+.3f}~{ci[1]:+.3f}), "
             f"loss {self.loss_ratio_equivalent:.2f}배, p={p}, "
             f"쌍 {self.n_valid}/{self.n_pairs}"
+            + (
+                f", 포화 joint={self.n_joint_saturated} "
+                f"one-sided={self.n_one_sided_saturated}"
+                if self.n_saturated
+                else ""
+            )
+            + (
+                "\n      제외: "
+                + "; ".join(f"{t}/seed{s}: {why}" for t, s, why in self.excluded_pairs)
+                if self.excluded_pairs
+                else ""
+            )
         )
 
 
@@ -575,6 +675,42 @@ def _bootstrap_median_ci(
     lo = samples[int(alpha * len(samples))]
     hi = samples[min(len(samples) - 1, int((1.0 - alpha) * len(samples)))]
     return lo, hi
+
+
+def drop_saturated_pairs(
+    baseline: Sequence[RunSummary], treatment: Sequence[RunSummary]
+) -> tuple[list[RunSummary], list[RunSummary]]:
+    """어느 쪽이든 수치 하한에 걸린 쌍을 제거한다. **민감도 분석 전용**이다.
+
+    프로토콜 D14. 주 게이트 통계는 floor-capped 전체 쌍으로 낸다. 비포화 쌍만
+    골라 primary 로 쓰면 최적점에 도달한 강한 run 을 다시 제거하는 편향이 된다.
+    두 결과의 결론이 다르면 "쉬운 인스턴스의 포화 처리에 민감하다" 고 보고한다.
+    """
+
+    def key(r: RunSummary) -> tuple[str, int]:
+        return r.task_instance_id, r.seed
+
+    base_map = {key(r): r for r in baseline}
+    treat_map = {key(r): r for r in treatment}
+    keep = [
+        k
+        for k in set(base_map) & set(treat_map)
+        if not (base_map[k].floor_hit or treat_map[k].floor_hit)
+    ]
+    return [base_map[k] for k in keep], [treat_map[k] for k in keep]
+
+
+def _nonfinite_reason(run: RunSummary) -> str:
+    """왜 이 run 의 지표가 비유한값인지. ``excluded_pairs`` 에 남긴다."""
+    if run.initial_loss <= 0.0:
+        return f"initial_loss={run.initial_loss!r}"
+    if not math.isfinite(run.final_loss):
+        return f"final_loss={run.final_loss!r} (numerical failure)"
+    if run.final_loss < -run.loss_floor:
+        return f"final_loss={run.final_loss!r} < -floor={-run.loss_floor:.3e}"
+    if run.total_cost_ge <= 0.0:
+        return f"total_cost_ge={run.total_cost_ge!r}"
+    return "unknown"
 
 
 def compare_paired_delta(
@@ -615,11 +751,26 @@ def compare_paired_delta(
     deltas: list[float] = []
     base_values: list[float] = []
     treat_values: list[float] = []
+    excluded: list[tuple[str, int, str]] = []
+    n_joint = 0
+    n_one_sided = 0
     for k in shared:
-        b = value(base_map[k])
-        t = value(treat_map[k])
+        br, tr = base_map[k], treat_map[k]
+        b, t = value(br), value(tr)
         if not (math.isfinite(b) and math.isfinite(t)):
+            # 조용히 버리지 않는다. 어느 쪽이 왜 비유한값인지 남긴다.
+            reasons = [
+                f"{tag}={_nonfinite_reason(r)}"
+                for tag, r, v in (("base", br, b), ("treat", tr, t))
+                if not math.isfinite(v)
+            ]
+            excluded.append((k[0], k[1], "; ".join(reasons)))
             continue
+        n_hit = int(br.floor_hit) + int(tr.floor_hit)
+        if n_hit == 2:
+            n_joint += 1
+        elif n_hit == 1:
+            n_one_sided += 1
         deltas.append(t - b)
         base_values.append(b)
         treat_values.append(t)
@@ -635,6 +786,9 @@ def compare_paired_delta(
         p_value=wilcoxon_signed_rank_p(deltas),
         baseline_median=_median(base_values),
         treatment_median=_median(treat_values),
+        n_joint_saturated=n_joint,
+        n_one_sided_saturated=n_one_sided,
+        excluded_pairs=tuple(excluded),
     )
 
 

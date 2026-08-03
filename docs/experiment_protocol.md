@@ -527,6 +527,70 @@ Track T 지표(`cost_to_target_ge`, `reached`)는 목표 도달 시점으로 정
 `B ≤ A` 였다. **고정 예산 비교에서는 "예산"과 "실제 소모량"을 항상 함께
 확인한다.**
 
+### D13. 실험 정체성을 run semantics와 sweep coverage로 분리한다
+
+D8에서 `experiment_id = hash(canonicalized_full_config)` 로 정했다. 낡은 결과
+재사용을 막는 데는 맞았지만 **하나의 해시가 두 역할을 겸하고 있었다.**
+
+실측 사례: `fresh_diagnostic_seeds` 와 `run_fresh_wide` 를 추가하자
+`experiment_id` 가 `eab1697716b5 → 0a63f5e6de3d` 로 갈리면서 `best_static`,
+`open_loop`, `heuristic`, `shrinking`, `committed` 320 run이 전부 무효화됐다.
+그런데 그 두 값은 **어떤 run을 도는가**만 정하고 **각 run이 어떻게 동작하는가**는
+바꾸지 않는다. 재사용을 막을 이유가 없었다.
+
+#### 두 개의 ID로 나눈다
+
+```text
+run_semantics_id = hash(effective_controller_config)
+    개별 run 의 출력값을 바꾸는 설정만 포함한다.
+      task / seed / controller / track / GE budget / target
+      damping grid / CG budgets / step sizes
+      beam / quota / max plan depth
+      solver tolerance / fallback 규칙
+      protocol version / git commit / code dirty
+
+sweep_id = hash(run_selection_config)
+    이번 실행에서 어떤 run 들을 모으는가.
+      fresh_diagnostic_seeds / run_fresh_wide
+      선택된 controller 목록 / 전체 seed 목록
+      출력 경로 / screening 인지 confirmation 인지
+```
+
+```text
+RunKey = run_semantics_id | controller | task_instance | seed | target
+```
+
+**sweep_id 가 바뀌어도 semantics 가 같으면 재사용한다.** 그래야 diagnostic arm
+하나를 추가할 때 baseline 전체를 다시 돌리는 낭비가 없다.
+
+#### `effective_controller_config` 는 컨트롤러가 실제 쓰는 설정만 넣는다
+
+공통 config를 통째로 넣으면 안 된다. `best_static` run은 `beam` 이나 `quota` 가
+바뀌어도 무효화될 이유가 없다. 컨트롤러별로 관련 키만 골라 해시한다.
+
+#### 파일 구조와 출력 이름
+
+`results/raw/{sweep_id}.jsonl` 로 sweep 단위 파일을 만들고, **각 행에
+`run_semantics_id` 를 기록한다.** 한 screening 결과를 한 파일에서 보면서 재사용
+근거도 남는다.
+
+출력에서 `config_hash` 라는 모호한 이름을 쓰지 않고 다음을 명시한다.
+
+```text
+sweep_id
+run_semantics_id
+protocol_version
+git_commit
+code_dirty
+```
+
+#### 회귀 테스트가 필요하다
+
+- sweep 설정만 바꾸면 기존 semantics run 을 재사용한다
+- semantics 설정을 바꾸면 재사용하지 않는다
+- 컨트롤러가 쓰지 않는 설정을 바꿔도 그 컨트롤러 run 은 재사용된다
+- 한 파일에 여러 semantics 가 섞여도 조회가 정확하다
+
 ### D12. 계획의 가치와 실행 방식을 분리한다
 
 D10 쿼터 사다리에서 "쿼터를 키우면 성능이 나빠진다"가 관측됐다. 그런데 planner가
@@ -1305,6 +1369,8 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-02 | beam 16 전체 실행 보류. beam 8을 planner 성능의 **하한**으로 명시 | SPD `Q=4` 가 beam 4↔8 사이에서 8 nat 이상 움직였다. 그러나 탐색폭을 계속 늘리면 deployable controller 비교가 늦어지고 "좋은 결과가 나올 때까지 늘렸다"는 인상을 준다. 민감도 진단은 `Q=4`·seed 1개·task 2개로 제한 |
 | 2026-08-03 | **beam 8 승격 대상을 사전 고정: `Q ∈ {2, 4}` × {narrow, wide} 전부** | beam 4 결과로 Q를 선별하면 사후 선택이 된다. beam 4에서 −4.21 nat였던 SPD `Q=4`가 beam 8에서 +4.59 nat였으므로, beam 4 판정은 좋은 설정을 탈락시킬 수 있다 |
 | 2026-08-03 | `fresh` 를 seed 부분집합 + narrow 로 제한 (`fresh_diagnostic_seeds=1`, `run_fresh_wide=False`). beam 8 단계에서는 전체 제외 | 진단 baseline이고 P1~P3 판정에 쓰지 않는데 탐색 비용이 가장 크다 (`Q=4` wide 인스턴스당 1.4M GE). 시간 불일치는 이미 여러 조건에서 확인됐다. C1의 표본이 작아지는 것은 판정에 영향이 없다 |
+| 2026-08-03 | **D13 신설: 실험 정체성을 `run_semantics_id` 와 `sweep_id` 로 분리** | D8의 단일 해시가 두 역할을 겸하고 있었다. diagnostic arm의 커버리지만 바꿨는데 baseline 320 run이 무효화됐다. sweep 설정이 바뀌어도 run semantics가 같으면 재사용해야 한다. beam 8 실행 전에 적용 |
+| 2026-08-03 | 게이트 C1과 C2·C3의 표본 크기를 분리 보고하도록 명시 | `fresh` 가 seed 부분집합에만 있으므로 C1의 paired n이 작다. 한 표에 넣으면 같은 신뢰구간처럼 보인다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |
