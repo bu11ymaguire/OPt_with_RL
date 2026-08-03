@@ -157,6 +157,21 @@ class HeadroomConfig:
     필요 없다.
     """
     beam_width: int = 4
+    fresh_diagnostic_seeds: int = 1
+    """``fresh`` 실행 방식을 몇 개 seed 에서만 돌릴지 (프로토콜 D12).
+
+    ``fresh`` 는 시간 불일치가 확인된 **진단 baseline** 이고 P1~P3 판정에
+    쓰지 않는다. 그런데 탐색 비용이 가장 크다 (Q=4 wide 에서 인스턴스당
+    1.4M GE). 전체 dev 에 반복할 과학적 가치가 낮으므로 seed 부분집합에서만
+    돌려 C1 의 방향이 반복되는지만 확인한다.
+
+    ``0`` 이면 ``fresh`` 를 아예 돌리지 않는다 (beam 8 확인 단계에서 쓴다).
+    """
+    run_fresh_wide: bool = False
+    """``fresh`` 를 wide 행동 공간에서도 돌릴지.
+
+    가장 비싼 조합이고 진단 목적에는 narrow 만으로 충분하다.
+    """
     max_plan_depth: int = 24
     """계획 길이 상한. 계산량 안전장치다.
 
@@ -225,6 +240,9 @@ class HeadroomConfig:
             "compute_trust_ratio": optimizer.compute_trust_ratio,
             "quotas": [float(q) for q in self.quotas],
             "beam_width": self.beam_width,
+            "max_plan_depth": self.max_plan_depth,
+            "fresh_diagnostic_seeds": self.fresh_diagnostic_seeds,
+            "run_fresh_wide": self.run_fresh_wide,
             "tuning_budget": self.tuning_budget,
             "n_schedule_segments": self.n_schedule_segments,
             "tuning_seed": self.tuning_seed,
@@ -345,6 +363,7 @@ def run_controller(
     difficulty: str | None = None,
     store: ResultStore | None = None,
     verbose: bool = False,
+    seeds: Sequence[int] | None = None,
 ) -> list[RunSummary]:
     """모든 ``(spec, seed)`` 인스턴스에서 컨트롤러를 실행하고 집계한다.
 
@@ -362,15 +381,19 @@ def run_controller(
         difficulty: target 난이도. ``None`` 이면 ``primary_difficulty``.
         store: 재개 가능한 결과 저장소.
         verbose: 건너뛴 run 수를 보고한다.
+        seeds: seed 부분집합. ``None`` 이면 ``config.seeds`` 전체.
+            **진단 전용 컨트롤러의 계산을 줄이는 데만 쓴다.** paired 비교에
+            들어가는 컨트롤러는 반드시 같은 seed 집합을 써야 한다.
     """
     opt_config = config.optimizer_config()
     level = difficulty or config.primary_difficulty
     summaries: list[RunSummary] = []
     n_skipped = 0
+    seed_set = config.seeds if seeds is None else seeds
 
     for spec in config.specs:
         target = config.target_for(spec, level)
-        for seed in config.seeds:
+        for seed in seed_set:
             task = make_task(spec, seed, device=config.device)
             if not _is_eligible(task):
                 continue
@@ -947,11 +970,21 @@ def run_headroom(
         "fresh": BudgetedMPCController,
     }
     planner_runs: dict[str, list[RunSummary]] = {}
+    fresh_seeds = tuple(config.seeds[: config.fresh_diagnostic_seeds])
     for space_label, space in (("narrow", narrow), ("wide", wide)):
         for quota in config.quotas:
             for mode, factory in modes.items():
+                # fresh 는 진단 baseline 이므로 계산을 줄인다 (프로토콜 D12).
+                # P1~P3 판정에 쓰지 않으므로 seed 집합이 달라도 문제가 없다.
+                if mode == "fresh":
+                    if not fresh_seeds:
+                        continue
+                    if space_label == "wide" and not config.run_fresh_wide:
+                        continue
+                seeds = fresh_seeds if mode == "fresh" else None
                 label = f"{mode}_Q{quota:g}_{space_label}"
-                log(f"{label} ({len(space)} actions, beam {config.beam_width})")
+                note = f", seed {len(seeds)}개 진단" if seeds is not None else ""
+                log(f"{label} ({len(space)} actions, beam {config.beam_width}{note})")
                 runs = run_controller(
                     config,
                     lambda _t, _g, s=space, q=quota, f=factory: f(
@@ -964,6 +997,7 @@ def run_headroom(
                     label=label,
                     exp_id=exp_id,
                     store=store,
+                    seeds=seeds,
                 )
                 planner_runs[label] = runs
                 report.groups[label] = summarize_group(runs, controller=label)
@@ -1140,6 +1174,9 @@ def run_headroom(
             pivot_threshold=0.05,
             detail=(
                 f"쿼터 곡선(narrow): {' | '.join(curves)}. "
+                f"**fresh 는 seed {config.fresh_diagnostic_seeds}개에서만 돌린 "
+                "진단 baseline 이다.** paired 비교는 겹치는 seed 에서만 이루어지므로 "
+                "이 통계의 표본이 다른 게이트보다 작다. "
                 "**연구 결과이지만 PPO 착수 게이트가 아니다.** 양수면 receding "
                 "horizon 이 준비 행동만 반복하며 payoff 를 뒤로 미룬다는 증거다."
             ),

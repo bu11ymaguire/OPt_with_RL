@@ -1039,6 +1039,41 @@ beam 4↔8 사이에서 8 nat 이상 움직였다. 따라서 `Q=4` 수치는 안
 narrow로 제한한다. "좋은 결과가 나올 때까지 탐색폭을 늘렸다"는 인상을 피하고,
 분석 성능보다 deployable controller 비교에 자원을 쓴다.
 
+#### beam 8 승격 대상은 사전에 고정한다
+
+**beam 4 결과를 보고 Q를 고르지 않는다.** beam 4에서 SPD `Q=4`가 −4.21 nat,
+beam 8에서 같은 조건이 +4.59 nat였다. beam 4로 유망성을 판정하면 실제로 좋은
+`Q=4`를 탈락시킨다. 따라서 승격 규칙을 실행 전에 못박는다.
+
+```text
+Q=1   beam 8 불필요. depth 1 만 가능하므로 beam 폭이 무의미하다
+Q=2   narrow, wide 모두 beam 8 재평가
+Q=4   narrow, wide 모두 beam 8 재평가
+```
+
+`fresh` 는 beam 8 단계에서 **전체 조합에서 제외한다** (`--fresh-seeds 0`).
+진단 baseline이고 P1~P3 판정에 쓰지 않으며 탐색 비용이 가장 크다.
+
+설정(Q, action space) 선택은 **beam 8 dev 결과의 median** 으로 한 번만 하고,
+그 시점에 protocol freeze 한다.
+
+#### `fresh` 에 계산을 과도하게 쓰지 않는다
+
+`fresh` 의 시간 불일치는 이미 여러 조건에서 명확히 관측됐다 (D12). 전체 dev에
+반복할 과학적 가치가 낮은 반면 탐색 비용은 가장 크다 (`Q=4` wide 에서
+인스턴스당 1.4M GE). 필요한 것은 다음뿐이다.
+
+```text
+task 종류별 일부 seed 에서 fresh vs shrinking
+C1 의 방향이 반복되는지 확인
+fresh 가 왜 나쁜지 action / CG budget 분포 확인
+```
+
+`HeadroomConfig.fresh_diagnostic_seeds` (기본 1) 과 `run_fresh_wide`
+(기본 `False`) 로 제한한다. `fresh` 의 seed 집합이 다르므로 **C1의 표본은 다른
+게이트보다 작다.** paired 비교는 겹치는 seed에서만 이루어진다. P1~P3에는
+`fresh` 가 들어가지 않으므로 이 비대칭이 판정을 오염시키지 않는다.
+
 **실현 성능의 단조성을 가정하지 않는다.** MPC는 매 step 재계획하므로 큰 쿼터가
 항상 좋다는 보장이 없다. 쿼터가 커지면 탐색 가능 집합이 포함관계로 커지므로
 **최대 채택 depth** 는 감소할 수 없고, 그 성질만 테스트로 검증한다.
@@ -1268,6 +1303,8 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-02 | **PPO 착수 조건을 Gate C에서 분리해 P1~P4로 신설** | Gate C는 planner 오라클 간 비교이고, PPO는 그 오라클을 저비용 정책으로 amortize 할 수 있는지를 묻는 별도 질문이다. P2(baseline superiority)와 P4(micro-neural)가 없으면 open-loop schedule로 설명되는 이득을 RL 성과로 오인할 수 있다 |
 | 2026-08-02 | object-level cost와 decision-search cost를 용어로 분리 | planner 탐색비가 본문의 500~2,600배다. planner를 실용 optimizer로 제시할 수 없고, 헤드룸 측정 장치로 위치를 명시해야 한다 |
 | 2026-08-02 | beam 16 전체 실행 보류. beam 8을 planner 성능의 **하한**으로 명시 | SPD `Q=4` 가 beam 4↔8 사이에서 8 nat 이상 움직였다. 그러나 탐색폭을 계속 늘리면 deployable controller 비교가 늦어지고 "좋은 결과가 나올 때까지 늘렸다"는 인상을 준다. 민감도 진단은 `Q=4`·seed 1개·task 2개로 제한 |
+| 2026-08-03 | **beam 8 승격 대상을 사전 고정: `Q ∈ {2, 4}` × {narrow, wide} 전부** | beam 4 결과로 Q를 선별하면 사후 선택이 된다. beam 4에서 −4.21 nat였던 SPD `Q=4`가 beam 8에서 +4.59 nat였으므로, beam 4 판정은 좋은 설정을 탈락시킬 수 있다 |
+| 2026-08-03 | `fresh` 를 seed 부분집합 + narrow 로 제한 (`fresh_diagnostic_seeds=1`, `run_fresh_wide=False`). beam 8 단계에서는 전체 제외 | 진단 baseline이고 P1~P3 판정에 쓰지 않는데 탐색 비용이 가장 크다 (`Q=4` wide 인스턴스당 1.4M GE). 시간 불일치는 이미 여러 조건에서 확인됐다. C1의 표본이 작아지는 것은 판정에 영향이 없다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |

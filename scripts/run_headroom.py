@@ -151,6 +151,8 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         quotas=tuple(args.quotas),
         beam_width=args.beam,
         max_plan_depth=args.max_plan_depth,
+        fresh_diagnostic_seeds=args.fresh_seeds,
+        run_fresh_wide=args.fresh_wide,
         tuning_budget=args.tuning_budget,
         phase=phase,  # type: ignore[arg-type]
         primary_difficulty=args.difficulty,
@@ -197,6 +199,17 @@ def main() -> int:
         type=int,
         default=24,
         help="계획 길이 상한. 쿼터가 아니라 이것에 걸리면 사다리 비교가 훼손된다",
+    )
+    parser.add_argument(
+        "--fresh-seeds",
+        type=int,
+        default=1,
+        help="fresh(진단 baseline)를 돌릴 seed 수. 0 이면 제외. P1~P3 판정에 쓰지 않는다",
+    )
+    parser.add_argument(
+        "--fresh-wide",
+        action="store_true",
+        help="fresh 를 wide 에서도 돌린다. 가장 비싼 조합이므로 기본은 끔",
     )
     parser.add_argument(
         "--beams",
