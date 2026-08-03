@@ -527,6 +527,124 @@ Track T 지표(`cost_to_target_ge`, `reached`)는 목표 도달 시점으로 정
 `B ≤ A` 였다. **고정 예산 비교에서는 "예산"과 "실제 소모량"을 항상 함께
 확인한다.**
 
+### D14. log improvement의 수치 하한을 사전 고정한다
+
+초판 `RunSummary.log_improvement` 는 `final_loss <= 0` 이면 NaN 을 반환했고,
+paired 비교는 비유한값을 **조용히 버렸다.** 그러면 최적점에 정확히 도달한 run 이
+집계에서 제거된다.
+
+beam 4 pilot 실측: `rosen_d2_s100_std` 의 `onestep_absolute` 와 `heuristic` 이
+`final_loss = 0.0` (정확히 0)이라 각각 3쌍이 아무 기록 없이 빠졌다. `쌍 6/9` 로만
+표시됐고 게이트 A1 과 B 가 낮게 잡혔다.
+
+#### 상대 floor
+
+```python
+RELATIVE_LOSS_FLOOR = 100.0 * float64_eps        # 2.220e-14
+loss_floor = max(tiny, abs(initial_loss) * RELATIVE_LOSS_FLOOR)
+log_improvement = log(initial_loss) - log(max(final_loss, loss_floor))
+```
+
+**`finfo.tiny` 를 floor 로 쓰면 안 된다.** 최대 log improvement 가 708 nat 까지
+커져서 실제 최적화 차이보다 underflow 여부가 통계를 지배한다. 초기 loss 에
+상대적으로 잡으면 scale invariant 하다. `d=2` Rosenbrock (`L_0 = 24.2`) 에서
+floor 는 `5.4e-13`, 최대 logΔ 는 `31.4` nat 다.
+
+`100 x eps` 는 누적 반올림 오차가 machine epsilon 의 수십 배까지 커지는 것을
+감안한 값이며 **결과를 보고 고른 것이 아니다.**
+
+#### 음수는 두 종류로 나눈다
+
+```text
+-floor <= final_loss < 0     부동소수점 roundoff. 0 으로 clamp, negative_roundoff=True
+final_loss < -floor          numerical failure. NaN, excluded_pairs 에 사유 기록
+```
+
+모든 음수를 clamp 하면 실제 계산 오류를 숨기고, 모든 음수를 실패로 처리하면
+최적점 근처 run 을 부당하게 제거한다.
+
+#### 포화를 세 종류로 기록한다
+
+```text
+exact_zero              raw final_loss == 0
+joint_saturation        비교하는 두 컨트롤러 모두 floor_hit -> terminal objective 상 실제 동률
+one_sided_saturation    한쪽만 floor_hit -> 엄격히 우수하지만 차이 크기는 floor 의존 하한
+```
+
+paired 결과에 `n_valid`, `n_joint_saturated`, `n_one_sided_saturated`,
+`excluded_pairs` 를 함께 출력한다. **조용한 `dropna` 를 금지한다.** `n_valid` 가
+`n_pairs` 보다 작으면 반드시 task·seed·사유가 남는다.
+
+#### 게이트는 두 버전을 병기한다
+
+주 통계는 floor-capped 전체 쌍이고, 비포화 쌍만의 결과를 **민감도 분석으로만**
+병기한다. 비포화만 primary 로 쓰면 최적점에 도달한 강한 run 을 다시 제거하는
+편향이 된다. 두 결론이 다르면 "쉬운 인스턴스의 포화 처리에 민감하다" 고 보고한다.
+
+beam 4 pilot 재집계 실측: `B-wide` 는 주 `+0.308`(조건부) 대 비포화 `+0.962`(GO),
+`C1` 은 주 `+0.000`(재설계) 대 비포화 `+0.518`(GO), `C3` 은 주 `+0.000` 대 비포화
+`+0.115`(조건부)로 **세 게이트에서 결론이 뒤집혔다.** 9쌍 중 3쌍이 `rosen_d2`
+포화이고 그 쌍의 delta 가 0 이어서 중앙값을 지배한다.
+
+#### confirmatory에서 Rosenbrock d=2를 primary에서 분리한다
+
+`d=2` Rosenbrock 은 150 GE 에서 여러 컨트롤러가 정확한 최적점에 도달한다. 더 이상
+adaptive controller 의 성능 차이를 재는 benchmark 가 아니라 sanity check 다.
+
+```text
+Primary Track E:        quadratic, Rosenbrock d=5/d=10, micro-neural
+Saturation diagnostic:  Rosenbrock d=2
+```
+
+`d=2` 를 삭제하지 않고 별도 표에서 floor 도달률, 정확한 0 도달률, GE-to-zero,
+컨트롤러별 step 수를 보고한다. **전체 GE budget 을 낮추지 않는다.** 낮추면 어려운
+quadratic 과 Rosenbrock 에서 필요한 헤드룸까지 제거된다.
+
+### D15. 재계획이 계획을 실제로 바꿨는지 행동 내용으로 계측한다
+
+`shrinking` 과 `committed` 가 `Q=1` 에서 bitwise 같은 `final_loss` 를 냈다
+(`4.554803848266602`). alias 가 아니라 **실제 동률**이다. 근거는 두 컨트롤러의
+`chosen_depths` 와 `planner_stats` 가 달랐다는 것이다.
+
+```text
+committed  chosen_depths {4: 9}                      계획 9회
+shrinking  chosen_depths {4: 9, 3: 9, 2: 9, 1: 8}    계획 35회
+           mean_simulations 56.4 (committed 60.0)
+```
+
+즉 `shrinking` 은 매 step 재계획했고 남은 suffix 를 4→3→2→1 로 유지했다.
+
+그런데 **`chosen_depth` 히스토그램만으로는 부족하다.** 깊이만 같고 행동 내용이
+다를 수 있다. 그래서 행동 내용을 직접 비교해 계측한다.
+
+```text
+replanned_actions == previous_plan[1:]
+suffix_retention_rate = 유지 횟수 / 재계획 횟수
+```
+
+`1.0` 이면 재계획이 계획을 한 번도 바꾸지 않았다는 뜻이고 committed 와 같은 경로를
+간다. `planner_stats["suffix_retention_rate"]` 로 기록한다.
+
+따라서 `C3 = +0.000` 은 구현 실패가 아니라 유효한 pilot 결과다.
+
+> 작은 quota scale 에서는 피드백을 받아 재계획하더라도 기존 계획을 수정할 만한
+> 추가 헤드룸이 없다.
+
+`Q2`·`Q4` 에서는 결과가 갈리므로(9.670 vs 9.681, 9.601 vs 9.831) 진짜 sequential
+control 헤드룸은 그쪽에서 검증한다.
+
+RL 이나 adaptive controller 의 가치가 있으려면 세 조건이 모두 필요하다.
+
+```text
+재계획을 한다                  <- Q1 에서 충족
+상태 변화로 계획이 실제로 바뀐다  <- Q1 에서 미충족
+그 수정이 terminal objective 를 개선한다
+```
+
+객체·mutable 상태 비공유는 회귀 테스트로 봉인했다. 두 컨트롤러가 서로 다른 객체와
+타입이고, `choices`/`trajectory` 를 공유하지 않으며, 실행 순서를 바꿔도 결과가
+같다는 것을 검증한다.
+
 ### D13. 실험 정체성을 run semantics와 sweep coverage로 분리한다
 
 D8에서 `experiment_id = hash(canonicalized_full_config)` 로 정했다. 낡은 결과
@@ -538,30 +656,61 @@ D8에서 `experiment_id = hash(canonicalized_full_config)` 로 정했다. 낡은
 그런데 그 두 값은 **어떤 run을 도는가**만 정하고 **각 run이 어떻게 동작하는가**는
 바꾸지 않는다. 재사용을 막을 이유가 없었다.
 
-#### 두 개의 ID로 나눈다
+#### 세 개의 ID로 나눈다
+
+집계 코드만 바꿨는데 423 run 이 다시 돈 사건이 실행 정체성과 집계 정체성도
+분리해야 함을 보여줬다.
 
 ```text
 run_semantics_id = hash(effective_controller_config)
-    개별 run 의 출력값을 바꾸는 설정만 포함한다.
-      task / seed / controller / track / GE budget / target
-      damping grid / CG budgets / step sizes
-      beam / quota / max plan depth
-      solver tolerance / fallback 규칙
-      protocol version / git commit / code dirty
+    개별 run 의 출력값을 바꾸는 설정만. 컨트롤러별로 다르다.
+      task spec / seed / controller 종류 / 그 컨트롤러가 쓰는 action space
+      GE budget / max steps / damping·CG 설정 / solver·fallback 규칙
+      planner 계열이면 quota / beam / max plan depth / 실행 방식
+      target (종료 조건으로 쓰는 경우만)
+      semantics version (optimizer / planner / task)
 
 sweep_id = hash(run_selection_config)
     이번 실행에서 어떤 run 들을 모으는가.
+      controller 목록 / 전체 task·seed 목록
       fresh_diagnostic_seeds / run_fresh_wide
-      선택된 controller 목록 / 전체 seed 목록
-      출력 경로 / screening 인지 confirmation 인지
+      screening 인지 confirmation 인지 / 출력 경로 / code_dirty
+
+aggregation_id = hash(aggregation_rules)
+    표·paired delta·게이트 판정을 만드는 규칙.
+      log floor 정책 / 포화 분류 / paired intersection 규칙
+      bootstrap·CI 설정 / 게이트 정의 / report schema version
+```
+
+```text
+run_semantics_id  ->  raw trajectory / RunSummary
+aggregation_id    ->  표·paired delta·게이트 판정
+sweep_id          ->  어떤 run 과 어떤 보고서를 묶었는지
 ```
 
 ```text
 RunKey = run_semantics_id | controller | task_instance | seed | target
 ```
 
-**sweep_id 가 바뀌어도 semantics 가 같으면 재사용한다.** 그래야 diagnostic arm
-하나를 추가할 때 baseline 전체를 다시 돌리는 낭비가 없다.
+**`sweep_id` 나 `aggregation_id` 가 바뀌어도 semantics 가 같으면 재사용한다.**
+floor 정책이나 게이트 정의를 바꾸면 `aggregation_id` 만 달라져야 하며 optimizer
+trajectory 를 다시 돌면 안 된다.
+
+#### 코드 버전을 통째로 해시에 넣지 않는다
+
+git commit 을 `run_semantics_id` 에 넣으면 문서나 집계 코드만 바꿔도 모든 run 이
+무효화된다. 완전히 제외하면 optimizer 구현 변경을 놓친다. 그래서 실행 의미를
+명시적 버전으로 관리한다.
+
+```python
+OPTIMIZER_SEMANTICS_VERSION   # step 하나의 결과를 바꾸는 변경
+PLANNER_SEMANTICS_VERSION     # planner 탐색·선택 규칙. planner 계열만 영향
+TASK_SEMANTICS_VERSION        # 초기점, Hessian 구성, instance_id 규칙
+AGGREGATION_VERSION           # 집계 규칙
+```
+
+git commit 과 `code_dirty` 는 **provenance 로만 저장**한다. `code_dirty` 는
+`sweep_payload` 에만 들어간다.
 
 #### `effective_controller_config` 는 컨트롤러가 실제 쓰는 설정만 넣는다
 
@@ -584,12 +733,31 @@ git_commit
 code_dirty
 ```
 
-#### 회귀 테스트가 필요하다
+#### 회귀 테스트 (D13 완료 조건)
 
-- sweep 설정만 바꾸면 기존 semantics run 을 재사용한다
-- semantics 설정을 바꾸면 재사용하지 않는다
-- 컨트롤러가 쓰지 않는 설정을 바꿔도 그 컨트롤러 run 은 재사용된다
-- 한 파일에 여러 semantics 가 섞여도 조회가 정확하다
+1. `fresh_diagnostic_seeds` 만 바꾸면 baseline 과 planner 의 `run_semantics_id` 가 유지된다
+2. beam 을 바꾸면 static·heuristic·C0 의 ID 는 유지되고 planner 계열만 변경된다
+3. floor·CI·게이트 규칙을 바꾸면 raw run ID 는 유지되고 `aggregation_id` 만 변경된다
+4. optimizer 또는 planner 실행 규칙을 바꾸면 관련 컨트롤러의 ID 가 변경된다
+5. 같은 semantics run 이 다른 sweep 에 포함돼도 한 번만 실행되고 양쪽에서 참조된다
+6. dict 순서나 기본값 생략 여부가 달라도 ID 가 동일하다
+7. 실제 effective config 가 다른 두 run 은 절대 같은 ID 를 만들지 않는다
+8. Track E 는 target 을 정체성에서 제외하고 Track T 는 포함한다
+9. `code_dirty` 는 `run_semantics_id` 에 없고 `sweep_id` 에만 있다
+
+#### 기존 raw 결과 마이그레이션
+
+기존 결과를 버리거나 다시 실행하지 않는다. `final_loss = 0` 은 실행 오류가 아니라
+올바른 결과다.
+
+```text
+기존 raw row -> 당시 저장된 config 와 controller label 복원
+             -> effective config 생성 -> run_semantics_id 부여
+             -> migration_version 기록
+```
+
+설정 정보가 부족해 의미를 확실히 복원할 수 없는 row 만 `legacy_unresolved` 로
+분리한다. **추측해서 새 ID 를 붙이지 않는다.**
 
 ### D12. 계획의 가치와 실행 방식을 분리한다
 

@@ -20,9 +20,9 @@ Q=4 (평균 k=3.3)   150 GE 예산에 실제 154 GE 소모
 
 from __future__ import annotations
 
-import pytest
-
 import math
+
+import pytest
 
 from rl_newton.benchmark.metrics import (
     RELATIVE_LOSS_FLOOR,

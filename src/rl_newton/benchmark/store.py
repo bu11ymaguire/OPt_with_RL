@@ -48,34 +48,91 @@ __all__ = [
     "ResultStore",
     "RunStatus",
     "experiment_id",
+    "run_semantics_id",
+    "sweep_id",
+    "aggregation_id",
+    "OPTIMIZER_SEMANTICS_VERSION",
+    "PLANNER_SEMANTICS_VERSION",
+    "TASK_SEMANTICS_VERSION",
+    "AGGREGATION_VERSION",
     "environment_fingerprint",
 ]
 
 RunStatus = Literal["completed", "failed"]
 
 
+OPTIMIZER_SEMANTICS_VERSION = 1
+"""optimizer 실행 의미 버전 (프로토콜 D13).
+
+**step 하나의 결과를 바꾸는 변경이 있을 때만 올린다.** CG 종료 조건, damping
+적용 규칙, fallback, 비용 회계, trust ratio 계산 등이다.
+
+git commit 을 정체성에 넣으면 문서나 집계 코드만 바꿔도 모든 run 이 무효화된다.
+실제로 그런 일이 있었다 (집계 코드 수정으로 423 run 재실행). 그래서 실행 의미를
+명시적 버전으로 관리하고, git commit 과 dirty 상태는 provenance 로만 저장한다.
+"""
+
+PLANNER_SEMANTICS_VERSION = 1
+"""planner 탐색·선택 의미 버전. planner 계열 컨트롤러만 영향받는다.
+
+쿼터 허용 규칙, Pareto/bucket 가지치기, 선택 규칙, suffix incumbent 정책 등.
+``best_static`` 이나 ``heuristic`` 은 이 값에 영향받지 않아야 한다.
+"""
+
+TASK_SEMANTICS_VERSION = 1
+"""task 생성 의미 버전. 초기점, Hessian 구성, instance_id 규칙 등."""
+
+AGGREGATION_VERSION = 2
+"""집계 의미 버전 (프로토콜 D13/D14).
+
+log floor 정책, 포화 분류, paired intersection 규칙, bootstrap 설정, 게이트
+정의, report schema. **이것이 바뀌면 raw run 은 그대로 두고 재집계만 한다.**
+
+2: D14 relative loss floor 와 포화 분류 도입.
+"""
+
+
 def experiment_id(payload: Mapping[str, Any]) -> str:
-    """실험 정체성 해시. 재개 판단의 **필수** 구성요소다.
+    """정체성 해시. ``run_semantics_id`` / ``sweep_id`` / ``aggregation_id`` 공통.
 
-    ``(controller, task, seed, target)`` 만으로 완료를 판단하면 위험하다.
-    beam, horizon, GE 예산, action space, CG budget, damping 격자 중 어느
-    하나가 바뀌어도 같은 조합으로 보고 **낡은 결과를 새 결과로 착각**한다.
-    재개 기능이 오히려 실험을 오염시키는 셈이다.
+    직렬화는 ``config_hash`` 가 정규화하므로 dict 순서에 의존하지 않는다.
+    """
+    return config_hash(dict(payload))
 
-    그래서 완료 키에 이 해시를 포함한다. payload 에는 최소한 다음이 들어가야
-    한다.
+
+def run_semantics_id(payload: Mapping[str, Any]) -> str:
+    """**개별 run 의 결과를 바꾸는 설정만**으로 만든 해시 (프로토콜 D13).
+
+    같으면 저장된 run 을 안전하게 재사용할 수 있다. 컨트롤러가 실제로 쓰지 않는
+    설정은 넣지 않는다. ``best_static`` run 이 ``beam`` 이나 ``quota`` 변경으로
+    무효화될 이유가 없다.
 
     ```text
-    track / protocol_version / config
-    action space 정의 (damping 값, cg budget, step size)
-    horizon / beam / GE budget / max_steps / tuning_budget
-    damping 경계와 초기값 / target 정의 / device
-    code_dirty (커밋되지 않은 변경이 있는지)
+    포함:  task spec / seed / controller 종류 / 그 컨트롤러가 쓰는 action space
+           GE budget / max steps / damping·CG 설정 / solver·fallback 규칙
+           planner 계열이면 quota / beam / max plan depth / suffix 정책
+           target (termination 에 쓰는 경우만)
+           semantics version (optimizer / planner / task)
+    제외:  sweep 커버리지 (어떤 run 을 도는가)
+           집계 정책 (floor, CI, 게이트 정의)
+           git commit / dirty (provenance 로만 저장)
     ```
-
-    git commit 은 provenance 로는 유용하지만 정체성으로 충분하지 않다.
-    작업 중 커밋되지 않은 변경이 있을 수 있으므로 ``code_dirty`` 를 함께 본다.
     """
+    return config_hash(dict(payload))
+
+
+def sweep_id(payload: Mapping[str, Any]) -> str:
+    """이번 명령이 **어떤 run 집합을 요청했는지** (프로토콜 D13).
+
+    컨트롤러 목록, 전체 task·seed 목록, 진단 arm 부분집합, 단계(screening /
+    confirmation), 출력 경로 등이다. **``sweep_id`` 가 바뀌어도 같은
+    ``run_semantics_id`` 의 run 은 재사용한다.**
+    """
+    return config_hash(dict(payload))
+
+
+def aggregation_id(payload: Mapping[str, Any]) -> str:
+    """집계 규칙 정체성 (프로토콜 D13). 바뀌면 재집계만 하고 재실행하지 않는다."""
     return config_hash(dict(payload))
 
 

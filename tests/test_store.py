@@ -17,11 +17,14 @@ import pytest
 
 from rl_newton.benchmark.metrics import RunSummary
 from rl_newton.benchmark.store import (
+    OPTIMIZER_SEMANTICS_VERSION,
+    PLANNER_SEMANTICS_VERSION,
     ResultStore,
     RunKey,
     RunRecord,
     environment_fingerprint,
     experiment_id,
+    run_semantics_id,
 )
 
 EXP = "exp0001"
@@ -355,3 +358,177 @@ class TestRunRecordSerialization:
         assert restored.summary is None
         assert restored.error == "ValueError: x"
         assert restored.key.experiment_id == EXP
+
+
+# ---------------------------------------------------------------------------
+# 3계층 정체성 (프로토콜 D13)
+# ---------------------------------------------------------------------------
+
+
+class TestThreeLayerIdentity:
+    """run semantics / sweep coverage / aggregation 을 분리했는지 검증한다.
+
+    집계 코드만 바꿨는데 ``experiment_id`` 가 갈려 423 run 이 다시 돌았다.
+    무관한 변경이 고비용 optimizer run 을 무효화하면 안 된다.
+    """
+
+    def _config(self, **kwargs):
+        from rl_newton.benchmark.metrics import TargetSpec
+        from rl_newton.benchmark.oracle import HeadroomConfig
+        from rl_newton.tasks.quadratics import QuadraticSpec
+
+        params = {
+            "specs": (QuadraticSpec(dimension=32, condition_number=1.0e3),),
+            "seeds": (0, 1, 2),
+            "targets": {
+                "quadratic": {
+                    "easy": TargetSpec("relative_loss", 1.0e-2),
+                    "medium": TargetSpec("relative_loss", 1.0e-4),
+                    "hard": TargetSpec("relative_loss", 1.0e-6),
+                }
+            },
+            "cost_budget_ge": 150.0,
+            "quotas": (1.0, 4.0),
+            "beam_width": 4,
+        }
+        params.update(kwargs)
+        return HeadroomConfig(**params)
+
+    def _sem(self, config, controller, **kwargs):
+        from rl_newton.benchmark.store import run_semantics_id
+
+        return run_semantics_id(
+            config.run_semantics_payload(controller=controller, **kwargs)
+        )
+
+    def test_sweep_coverage_change_preserves_run_semantics(self):
+        """``fresh_diagnostic_seeds`` 만 바꾸면 baseline / planner ID 가 유지된다."""
+        from rl_newton.optimizers.action_space import NARROW
+
+        space = NARROW.with_fixed_step_size(1.0)
+        a = self._config(fresh_diagnostic_seeds=1)
+        b = self._config(fresh_diagnostic_seeds=3, run_fresh_wide=True)
+
+        for controller, extra in (
+            ("best_static", {}),
+            ("heuristic", {}),
+            ("onestep", {}),
+        ):
+            assert self._sem(a, controller, space=space, **extra) == self._sem(
+                b, controller, space=space, **extra
+            )
+        assert self._sem(a, "budgeted_mpc", space=space, quota=4.0) == self._sem(
+            b, "budgeted_mpc", space=space, quota=4.0
+        )
+
+    def test_beam_change_preserves_non_planner_ids(self):
+        """beam 을 바꾸면 planner 만 달라지고 static / heuristic / C0 는 유지된다."""
+        from rl_newton.optimizers.action_space import NARROW
+
+        space = NARROW.with_fixed_step_size(1.0)
+        a = self._config(beam_width=4)
+        b = self._config(beam_width=8)
+
+        for controller in ("best_static", "heuristic", "onestep"):
+            assert self._sem(a, controller, space=space) == self._sem(
+                b, controller, space=space
+            )
+        assert self._sem(a, "budgeted_mpc", space=space, quota=4.0) != self._sem(
+            b, "budgeted_mpc", space=space, quota=4.0
+        )
+
+    def test_aggregation_change_does_not_touch_run_ids(self):
+        """집계 규칙이 바뀌면 ``aggregation_id`` 만 달라진다."""
+        from rl_newton.benchmark.store import aggregation_id
+
+        config = self._config()
+        base = config.aggregation_payload()
+        changed = dict(base)
+        changed["relative_loss_floor"] = 1.0e-12
+        assert aggregation_id(base) != aggregation_id(changed)
+        # run semantics payload 에는 집계 항목이 없다.
+        payload = config.run_semantics_payload(controller="best_static")
+        assert "relative_loss_floor" not in payload
+        assert "aggregation_version" not in payload
+
+    def test_optimizer_semantics_change_invalidates_all(self):
+        """실행 의미가 바뀌면 모든 컨트롤러 ID 가 달라져야 한다."""
+        config = self._config()
+        payload = config.run_semantics_payload(controller="best_static")
+        assert payload["optimizer_semantics"] == OPTIMIZER_SEMANTICS_VERSION
+        bumped = dict(payload)
+        bumped["optimizer_semantics"] = OPTIMIZER_SEMANTICS_VERSION + 1
+        assert run_semantics_id(payload) != run_semantics_id(bumped)
+
+    def test_planner_semantics_only_in_planner_payload(self):
+        """planner 의미 버전은 planner 계열에만 들어간다."""
+        config = self._config()
+        static = config.run_semantics_payload(controller="best_static")
+        planner = config.run_semantics_payload(controller="budgeted_mpc", quota=4.0)
+        assert "planner_semantics" not in static
+        assert planner["planner_semantics"] == PLANNER_SEMANTICS_VERSION
+
+    def test_track_e_excludes_target_track_t_includes_it(self):
+        config = self._config()
+        track_e = config.run_semantics_payload(controller="budgeted_mpc", quota=4.0)
+        track_t = config.run_semantics_payload(
+            controller="budgeted_mpc", quota=4.0, uses_target=True
+        )
+        assert "targets" not in track_e
+        assert "targets" in track_t
+        assert run_semantics_id(track_e) != run_semantics_id(track_t)
+
+    def test_serialization_order_and_defaults_do_not_matter(self):
+        config = self._config()
+        payload = config.run_semantics_payload(controller="best_static")
+        shuffled = dict(reversed(list(payload.items())))
+        assert run_semantics_id(payload) == run_semantics_id(shuffled)
+
+    def test_different_effective_configs_never_collide(self):
+        """실제로 다른 설정이 같은 ID 를 만들면 안 된다."""
+        from rl_newton.optimizers.action_space import NARROW, WIDE
+
+        narrow = NARROW.with_fixed_step_size(1.0)
+        wide = WIDE.with_fixed_step_size(1.0)
+        config = self._config()
+        ids = {
+            self._sem(config, "best_static", space=narrow),
+            self._sem(config, "best_static", space=wide),
+            self._sem(config, "heuristic", space=narrow),
+            self._sem(config, "onestep", space=narrow),
+            self._sem(config, "budgeted_mpc", space=narrow, quota=1.0),
+            self._sem(config, "budgeted_mpc", space=narrow, quota=4.0),
+            self._sem(config, "budgeted_mpc", space=wide, quota=4.0),
+            self._sem(
+                config,
+                "budgeted_mpc",
+                space=narrow,
+                quota=4.0,
+                extra={"execution_mode": "committed"},
+            ),
+            self._sem(
+                config,
+                "budgeted_mpc",
+                space=narrow,
+                quota=4.0,
+                extra={"execution_mode": "shrinking"},
+            ),
+        }
+        assert len(ids) == 9
+
+    def test_code_dirty_is_provenance_not_semantics(self):
+        """git dirty 상태는 실행 의미가 아니다. sweep payload 에만 있다."""
+        config = self._config()
+        assert "code_dirty" not in config.run_semantics_payload(controller="best_static")
+        assert "code_dirty" in config.sweep_payload(controllers=["best_static"])
+
+    def test_same_semantics_run_shared_across_sweeps(self):
+        """같은 semantics run 은 sweep 이 달라도 한 번만 실행되고 양쪽에서 참조된다."""
+        from rl_newton.benchmark.store import sweep_id
+
+        a = self._config(fresh_diagnostic_seeds=1)
+        b = self._config(fresh_diagnostic_seeds=3)
+        sweep_a = sweep_id(a.sweep_payload(controllers=["best_static"]))
+        sweep_b = sweep_id(b.sweep_payload(controllers=["best_static"]))
+        assert sweep_a != sweep_b
+        assert self._sem(a, "best_static") == self._sem(b, "best_static")

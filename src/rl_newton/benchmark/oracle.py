@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from rl_newton.benchmark.metrics import (
+    RELATIVE_LOSS_FLOOR,
     GroupSummary,
     PairedComparison,
     PairedDelta,
@@ -56,7 +57,18 @@ from rl_newton.benchmark.metrics import (
     summarize_run,
 )
 from rl_newton.benchmark.paired import SyntheticTask, TaskSpec, make_task
-from rl_newton.benchmark.store import ResultStore, RunKey, experiment_id
+from rl_newton.benchmark.store import (
+    AGGREGATION_VERSION,
+    OPTIMIZER_SEMANTICS_VERSION,
+    PLANNER_SEMANTICS_VERSION,
+    TASK_SEMANTICS_VERSION,
+    ResultStore,
+    RunKey,
+    aggregation_id,
+    experiment_id,
+    run_semantics_id,
+    sweep_id,
+)
 from rl_newton.optimizers.action_space import ActionSpace
 from rl_newton.optimizers.controllers import (
     BudgetedMPCController,
@@ -208,6 +220,120 @@ class HeadroomConfig:
             initial_damping=self.initial_damping,
         )
 
+    def _space_payload(self, space: ActionSpace) -> dict[str, object]:
+        return {
+            "mode": space.damping_mode,
+            "damping_values": [float(v) for v in space.damping_values],
+            "cg_budgets": list(space.cg_budgets),
+            "step_sizes": [float(s) for s in space.step_sizes],
+        }
+
+    def _core_payload(self) -> dict[str, object]:
+        """모든 컨트롤러가 공유하는 실행 의미. optimizer 루프 자체의 설정이다."""
+        optimizer = self.optimizer_config()
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "optimizer_semantics": OPTIMIZER_SEMANTICS_VERSION,
+            "task_semantics": TASK_SEMANTICS_VERSION,
+            "device": self.device,
+            "cost_budget_ge": self.cost_budget_ge,
+            "max_steps": self.max_steps,
+            "initial_damping": self.initial_damping,
+            "min_damping": optimizer.min_damping,
+            "max_damping": optimizer.max_damping,
+            "cg_tolerance": optimizer.cg_tolerance,
+            "pap_eps": optimizer.pap_eps,
+            "max_loss_increase_ratio": optimizer.max_loss_increase_ratio,
+            "safe_fallback": optimizer.safe_fallback,
+            "compute_trust_ratio": optimizer.compute_trust_ratio,
+        }
+
+    def run_semantics_payload(
+        self,
+        *,
+        controller: str,
+        space: ActionSpace | None = None,
+        quota: float | None = None,
+        uses_target: bool = False,
+        extra: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        """**이 컨트롤러가 실제 쓰는 설정만** 담는다 (프로토콜 D13).
+
+        무관한 설정 변경으로 baseline 이 무효화되지 않게 한다.
+
+        ```text
+        best_static / open_loop / heuristic   beam, quota, planner 정책 제외
+        one-step efficiency                   quota, suffix 정책 제외
+        planner 계열                          quota, beam, max_plan_depth 포함
+        Track E                               평가용 target 제외
+        Track T                               target 포함
+        ```
+
+        Args:
+            controller: 컨트롤러 종류 라벨. 튜닝으로 선택된 개별 설정
+                (``static[3]`` 등)이 아니라 종류를 넣는다.
+            space: 그 컨트롤러가 쓰는 행동 공간. ``None`` 이면 넣지 않는다.
+            quota: planner 쿼터 배수. ``None`` 이면 planner 가 아니다.
+            uses_target: target 이 **종료 조건**으로 쓰이는가. Track E 는 ``False``.
+            extra: 컨트롤러별 추가 의미 (예: ``execution_mode``).
+        """
+        payload = self._core_payload()
+        payload["controller"] = controller
+        if space is not None:
+            payload["space"] = self._space_payload(space)
+        if quota is not None:
+            payload["planner_semantics"] = PLANNER_SEMANTICS_VERSION
+            payload["quota"] = float(quota)
+            payload["beam_width"] = self.beam_width
+            payload["max_plan_depth"] = self.max_plan_depth
+        if uses_target:
+            payload["targets"] = {
+                kind: {level: spec.label for level, spec in levels.items()}
+                for kind, levels in self.targets.items()
+            }
+        if extra:
+            payload.update(dict(extra))
+        return payload
+
+    def sweep_payload(
+        self, *, controllers: Sequence[str], code_dirty: bool = False
+    ) -> dict[str, object]:
+        """이번 실행이 어떤 run 집합을 요청했는지 (프로토콜 D13).
+
+        ``run_semantics_id`` 와 분리되므로 여기가 바뀌어도 기존 run 을 재사용한다.
+        ``code_dirty`` 와 git commit 은 provenance 이고 실행 의미가 아니다.
+        """
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "phase": self.phase,
+            "controllers": sorted(controllers),
+            "specs": [str(s) for s in self.specs],
+            "seeds": list(self.seeds),
+            "quotas": [float(q) for q in self.quotas],
+            "beam_width": self.beam_width,
+            "fresh_diagnostic_seeds": self.fresh_diagnostic_seeds,
+            "run_fresh_wide": self.run_fresh_wide,
+            "tuning_budget": self.tuning_budget,
+            "n_schedule_segments": self.n_schedule_segments,
+            "tuning_seed": self.tuning_seed,
+            "primary_difficulty": self.primary_difficulty,
+            "code_dirty": code_dirty,
+        }
+
+    def aggregation_payload(self) -> dict[str, object]:
+        """집계 규칙 정체성. 바뀌면 재집계만 한다 (프로토콜 D13/D14)."""
+        return {
+            "aggregation_version": AGGREGATION_VERSION,
+            "relative_loss_floor": RELATIVE_LOSS_FLOOR,
+            "utility_tolerance": UTILITY_TOLERANCE,
+            "utility_epsilon": UTILITY_EPSILON,
+            "deep_fraction_tolerance": DEEP_FRACTION_TOLERANCE,
+            "targets": {
+                kind: {level: spec.label for level, spec in levels.items()}
+                for kind, levels in self.targets.items()
+            },
+        }
+
     def identity_payload(
         self,
         spaces: Mapping[str, ActionSpace],
@@ -215,7 +341,10 @@ class HeadroomConfig:
         code_dirty: bool = False,
         extra: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
-        """실험 정체성 payload (``store.experiment_id`` 입력).
+        """**구판 통합 정체성.** 신규 코드는 ``run_semantics_payload`` 를 쓴다.
+
+        D13 이전 결과와의 호환 확인용으로만 남긴다. 이 payload 는 sweep 커버리지와
+        집계 정책까지 섞여 있어서, 무관한 변경이 모든 run 을 무효화한다.
 
         **여기에 빠진 항목은 재개 시 낡은 결과를 재사용하게 만든다.**
         beam, horizon, GE 예산, action space 정의(damping 값, CG budget,
@@ -614,6 +743,10 @@ class HeadroomReport:
     experiment_id: str = ""
     identity: dict[str, object] = field(default_factory=dict)
     """실험 정체성 payload. 재개 판단과 결과 추적의 기준이다."""
+    sweep_id: str = ""
+    """이번 실행이 요청한 run 집합의 정체성 (프로토콜 D13)."""
+    aggregation_id: str = ""
+    """집계 규칙 정체성. 바뀌면 재집계만 하고 재실행하지 않는다 (프로토콜 D13)."""
 
     def summary_table(self) -> str:
         header = (
@@ -768,24 +901,31 @@ def calibrate_beam_width(
                 label = f"cal_budgeted_Q{quota:g}_{space_label}_b{beam}"
                 if verbose:
                     print(f"  {label}", flush=True)
-                # beam 과 쿼터가 실험 정체성에 들어가야 재개가 안전하다.
-                exp_id = experiment_id(
-                    config.identity_payload(
-                        {space_label: space},
-                        code_dirty=code_dirty,
+                # beam 과 쿼터가 정체성에 들어가야 재개가 안전하다. 단
+                # code_dirty 는 넣지 않는다 (프로토콜 D13). 실행 의미가 아니다.
+                exp_id = run_semantics_id(
+                    config.run_semantics_payload(
+                        controller="budgeted_mpc",
+                        space=space,
+                        quota=float(quota),
                         extra={
-                            "mode": "beam_calibration",
-                            "cal_beam": beam,
-                            "cal_quota": float(quota),
-                            "cal_space": space_label,
+                            "execution_mode": "shrinking",
+                            "beam_width_override": beam,
                         },
                     )
                 )
                 started = time.perf_counter()
                 runs = run_controller(
                     config,
-                    lambda _t, _g, s=space, q=quota, b=beam: BudgetedMPCController(
-                        s, quota_multiplier=q, beam_width=b, track="fixed_budget"
+                    # 주 컨트롤러가 shrinking 이므로 beam 도 그것으로 고른다
+                    # (프로토콜 D12). fresh 는 진단 baseline 이라 beam 선택
+                    # 근거로 쓰지 않는다.
+                    lambda _t, _g, s=space, q=quota, b=beam: ShrinkingQuotaMPCController(
+                        s,
+                        quota_multiplier=q,
+                        beam_width=b,
+                        max_depth=config.max_plan_depth,
+                        track="fixed_budget",
                     ),
                     label=label,
                     exp_id=exp_id,
@@ -906,6 +1046,45 @@ def run_headroom(
     report.experiment_id = exp_id
     report.identity = identity
 
+    # --- 3계층 정체성 (프로토콜 D13) ---
+    #
+    # 컨트롤러마다 **그 컨트롤러가 실제 쓰는 설정만**으로 semantics id 를 만든다.
+    # beam 을 바꿔도 best_static / heuristic / one-step 의 id 는 유지되고,
+    # 집계 정책을 바꿔도 어떤 run 도 무효화되지 않는다.
+    def sem(
+        controller: str,
+        *,
+        space: ActionSpace | None = None,
+        quota: float | None = None,
+        uses_target: bool = False,
+        extra: Mapping[str, object] | None = None,
+    ) -> str:
+        return run_semantics_id(
+            config.run_semantics_payload(
+                controller=controller,
+                space=space,
+                quota=quota,
+                uses_target=uses_target,
+                extra=extra,
+            )
+        )
+
+    report.sweep_id = sweep_id(
+        config.sweep_payload(
+            controllers=[
+                "best_static",
+                "best_open_loop",
+                "heuristic",
+                "onestep",
+                "shrinking",
+                "committed",
+                "fresh",
+            ],
+            code_dirty=code_dirty,
+        )
+    )
+    report.aggregation_id = aggregation_id(config.aggregation_payload())
+
     def log(message: str) -> None:
         if verbose:
             print(message, flush=True)
@@ -918,7 +1097,11 @@ def run_headroom(
     # --- baseline ---
     log(f"best_static (탐색 {n_tune}회)")
     best_action, static_group = search_best_static(
-        config, narrow, n_tune=n_tune, exp_id=exp_id, store=store
+        config,
+        narrow,
+        n_tune=n_tune,
+        exp_id=sem("best_static", space=narrow),
+        store=store,
     )
     static_group = _relabel(static_group, "best_static")
     static_runs = static_group.runs
@@ -928,7 +1111,17 @@ def run_headroom(
 
     log(f"best_open_loop (탐색 {n_tune}회)")
     open_group = _relabel(
-        search_best_open_loop(config, narrow, n_tune=n_tune, exp_id=exp_id, store=store),
+        search_best_open_loop(
+            config,
+            narrow,
+            n_tune=n_tune,
+            exp_id=sem(
+                "best_open_loop",
+                space=narrow,
+                extra={"n_schedule_segments": config.n_schedule_segments},
+            ),
+            store=store,
+        ),
         "best_open_loop",
     )
     report.groups["best_open_loop"] = open_group
@@ -939,7 +1132,7 @@ def run_headroom(
         config,
         lambda _t, _g: HeuristicController(narrow),
         label="heuristic",
-        exp_id=exp_id,
+        exp_id=sem("heuristic", space=narrow),
         store=store,
     )
     report.groups["heuristic"] = summarize_group(heuristic_runs, controller="heuristic")
@@ -963,7 +1156,8 @@ def run_headroom(
             config,
             lambda _t, _g, s=space: OneStepEfficiencyController(s),
             label=label,
-            exp_id=exp_id,
+            # one-step 은 quota / beam / suffix 정책을 쓰지 않는다.
+            exp_id=sem("onestep", space=space),
             store=store,
         )
         onestep_runs[label] = runs
@@ -1013,7 +1207,14 @@ def run_headroom(
                         track="fixed_budget",
                     ),
                     label=label,
-                    exp_id=exp_id,
+                    # planner 는 quota / beam / max_plan_depth / 실행 방식이
+                    # 모두 결과를 바꾼다. Track E 이므로 target 은 넣지 않는다.
+                    exp_id=sem(
+                        "budgeted_mpc",
+                        space=space,
+                        quota=quota,
+                        extra={"execution_mode": mode},
+                    ),
                     store=store,
                     seeds=seeds,
                 )
@@ -1061,7 +1262,8 @@ def run_headroom(
             lambda _t, _g, a=best_action: FixedController(a),
             label=f"best_static@{level}",
             difficulty=level,
-            exp_id=exp_id,
+            # Track T 는 target 이 종료 조건이므로 정체성에 포함한다.
+            exp_id=sem("best_static", space=narrow, uses_target=True),
             store=store,
         )
         # planner 는 task 별 **절대** target loss 를 받아야 한다. 상대 target
@@ -1079,7 +1281,13 @@ def run_headroom(
             ),
             label=f"shrinking_Q{max_q:g}@{level}",
             difficulty=level,
-            exp_id=exp_id,
+            exp_id=sem(
+                "budgeted_mpc",
+                space=narrow,
+                quota=max_q,
+                uses_target=True,
+                extra={"execution_mode": "shrinking", "track": "cost_to_target"},
+            ),
             store=store,
         )
         report.groups[f"best_static@{level}"] = summarize_group(
