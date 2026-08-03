@@ -61,12 +61,16 @@ from rl_newton.benchmark.store import (
     AGGREGATION_VERSION,
     OPTIMIZER_SEMANTICS_VERSION,
     PLANNER_SEMANTICS_VERSION,
+    SELECTION_SEMANTICS_VERSION,
     TASK_SEMANTICS_VERSION,
     ResultStore,
     RunKey,
+    SelectionManifest,
     aggregation_id,
+    execution_provenance,
     experiment_id,
     run_semantics_id,
+    selection_id,
     sweep_id,
 )
 from rl_newton.optimizers.action_space import ActionSpace
@@ -295,13 +299,14 @@ class HeadroomConfig:
             payload.update(dict(extra))
         return payload
 
-    def sweep_payload(
-        self, *, controllers: Sequence[str], code_dirty: bool = False
-    ) -> dict[str, object]:
-        """이번 실행이 어떤 run 집합을 요청했는지 (프로토콜 D13).
+    def sweep_payload(self, *, controllers: Sequence[str]) -> dict[str, object]:
+        """이번 실행이 **어떤 run 집합을 요청했는지** (프로토콜 D13).
 
         ``run_semantics_id`` 와 분리되므로 여기가 바뀌어도 기존 run 을 재사용한다.
-        ``code_dirty`` 와 git commit 은 provenance 이고 실행 의미가 아니다.
+
+        **git commit 과 code_dirty 는 넣지 않는다.** 같은 run 집합을 요청했는데
+        문서만 수정해도 ``sweep_id`` 가 달라지면 "어떤 집합을 요청했는가" 라는
+        의미가 깨진다. 그것들은 ``execution_provenance`` 로 분리한다.
         """
         return {
             "protocol_version": PROTOCOL_VERSION,
@@ -317,8 +322,34 @@ class HeadroomConfig:
             "n_schedule_segments": self.n_schedule_segments,
             "tuning_seed": self.tuning_seed,
             "primary_difficulty": self.primary_difficulty,
-            "code_dirty": code_dirty,
         }
+
+    def selection_payload(
+        self, *, family: str, space: ActionSpace, n_tune: int
+    ) -> dict[str, object]:
+        """baseline 선택(튜닝) 과정의 정체성 (프로토콜 D16).
+
+        ``best_static`` / ``best_open_loop`` 는 컨트롤러가 아니라 **튜닝 결과**다.
+        같은 후보 집합·같은 지표·같은 tie-break 면 선택도 결정론적이므로, 이 해시가
+        같으면 저장된 선택 결과를 재사용할 수 있다.
+        """
+        payload = self._core_payload()
+        payload.update(
+            {
+                "selection_family": family,
+                "selection_semantics_version": SELECTION_SEMANTICS_VERSION,
+                "space": self._space_payload(space),
+                "n_tune": n_tune,
+                "tuning_seed": self.tuning_seed,
+                "tuning_specs": [str(s) for s in self.specs],
+                "tuning_seeds": list(self.seeds),
+                "selection_metric": "median_log_improvement",
+                "tie_break": "lowest_flat_index",
+            }
+        )
+        if family == "open_loop":
+            payload["n_schedule_segments"] = self.n_schedule_segments
+        return payload
 
     def aggregation_payload(self) -> dict[str, object]:
         """집계 규칙 정체성. 바뀌면 재집계만 한다 (프로토콜 D13/D14)."""
@@ -612,12 +643,16 @@ def search_best_static(
     n_tune: int,
     exp_id: str,
     store: ResultStore | None = None,
-) -> tuple[ControllerAction, GroupSummary]:
+) -> tuple[ControllerAction, GroupSummary, SelectionManifest]:
     """행동 공간 조합을 고정으로 돌려 Track E 기준 최고를 고른다.
 
     탐색 횟수를 ``n_tune`` 으로 제한한다. 프로토콜 D5의 "모든 컨트롤러에
     동일한 탐색 예산" 원칙을 지키기 위해서다. 행동 공간이 ``n_tune`` 보다
     크면 균등 간격으로 부분집합을 뽑는다.
+
+    ``SelectionManifest`` 를 함께 반환한다 (프로토콜 D16). 후보 점수와 tie-break
+    를 남기지 않으면 선택 근거가 사라지고, 나중에 evaluation 결과를 보고
+    역추정하게 되어 사후 선택이 된다.
     """
     total = len(space)
     if total <= n_tune:
@@ -628,6 +663,9 @@ def search_best_static(
 
     best_group: GroupSummary | None = None
     best_flat = indices[0]
+    best_label = f"static[{indices[0]}]"
+    scores: dict[str, float] = {}
+    labels: list[str] = []
     for flat in indices:
         action = space.action_from_flat(flat)
         label = f"static[{flat}]"
@@ -639,12 +677,35 @@ def search_best_static(
             store=store,
         )
         group = summarize_group(runs, controller=label)
+        scores[label] = group.median_log_improvement
+        labels.append(label)
         if best_group is None or _rank_key_track_e(group) < _rank_key_track_e(best_group):
             best_group = group
             best_flat = flat
+            best_label = label
 
     assert best_group is not None
-    return space.action_from_flat(best_flat), best_group
+    action = space.action_from_flat(best_flat)
+    manifest = SelectionManifest(
+        selection_id=selection_id(
+            config.selection_payload(family="static", space=space, n_tune=n_tune)
+        ),
+        family="static",
+        candidate_labels=labels,
+        candidate_scores=scores,
+        selected_label=best_label,
+        selected_config={
+            "flat_index": best_flat,
+            "damping_multiplier": action.damping_multiplier,
+            "cg_budget": action.cg_budget,
+            "step_size": action.step_size,
+            "damping_absolute": action.damping_absolute,
+        },
+        tuning_specs=[str(s) for s in config.specs],
+        tuning_seeds=list(config.seeds),
+        n_tune=n_tune,
+    )
+    return action, best_group, manifest
 
 
 def search_best_open_loop(
@@ -654,17 +715,25 @@ def search_best_open_loop(
     n_tune: int,
     exp_id: str,
     store: ResultStore | None = None,
-) -> GroupSummary:
+) -> tuple[GroupSummary, SelectionManifest]:
     """progress 만 보는 스케줄을 랜덤 서치한다 (프로토콜 D4).
 
     탐색 횟수는 ``best_static`` 과 **동일한** ``n_tune`` 이다. 파일럿에서 이
     예산이 12회였는데 우승자가 static 과 완전히 같은 결과를 냈다. 스케줄
     공간을 사실상 탐색하지 못한 것이므로 ``n_tune`` 을 충분히 크게 준다.
+
+    ``SelectionManifest.is_constant_schedule`` 로 open-loop 이 static 으로
+    퇴화했는지 확인할 수 있다 (프로토콜 D16).
     """
     rng = random.Random(config.tuning_seed)
     n_seg = config.n_schedule_segments
 
     best_group: GroupSummary | None = None
+    best_label = ""
+    best_flats: tuple[int, ...] = ()
+    best_breaks: tuple[float, ...] = ()
+    scores: dict[str, float] = {}
+    labels: list[str] = []
     for trial in range(n_tune):
         flats = tuple(rng.randrange(len(space)) for _ in range(n_seg))
         cuts = sorted(rng.uniform(0.05, 0.95) for _ in range(n_seg - 1))
@@ -678,11 +747,47 @@ def search_best_open_loop(
             store=store,
         )
         group = summarize_group(runs, controller=label)
+        scores[label] = group.median_log_improvement
+        labels.append(label)
         if best_group is None or _rank_key_track_e(group) < _rank_key_track_e(best_group):
             best_group = group
+            best_label = label
+            best_flats = flats
+            best_breaks = breakpoints
 
     assert best_group is not None
-    return best_group
+    # 선택된 스케줄 전체를 기록한다. 라벨만 바꾸면 어떤 스케줄이 왜 골라졌는지
+    # 사라지고, 모든 구간이 같아 static 으로 퇴화했는지도 알 수 없다 (D16).
+    schedule = [
+        {
+            "until": float(b),
+            "flat_index": int(f),
+            "damping_multiplier": space.action_from_flat(int(f)).damping_multiplier,
+            "cg_budget": space.action_from_flat(int(f)).cg_budget,
+            "step_size": space.action_from_flat(int(f)).step_size,
+        }
+        for f, b in zip(best_flats, best_breaks, strict=True)
+    ]
+    manifest = SelectionManifest(
+        selection_id=selection_id(
+            config.selection_payload(family="open_loop", space=space, n_tune=n_tune)
+        ),
+        family="open_loop",
+        candidate_labels=labels,
+        candidate_scores=scores,
+        selected_label=best_label,
+        selected_config={
+            "schedule": [
+                {k: v for k, v in seg.items() if k != "until"} for seg in schedule
+            ],
+            "breakpoints": [seg["until"] for seg in schedule],
+            "n_segments": n_seg,
+        },
+        tuning_specs=[str(s) for s in config.specs],
+        tuning_seeds=list(config.seeds),
+        n_tune=n_tune,
+    )
+    return best_group, manifest
 
 
 @dataclass(slots=True)
@@ -747,6 +852,10 @@ class HeadroomReport:
     """이번 실행이 요청한 run 집합의 정체성 (프로토콜 D13)."""
     aggregation_id: str = ""
     """집계 규칙 정체성. 바뀌면 재집계만 하고 재실행하지 않는다 (프로토콜 D13)."""
+    provenance: dict[str, object] = field(default_factory=dict)
+    """실행 흔적 (git commit, dirty, hostname, 시각). 어떤 ID 에도 안 들어간다."""
+    selections: dict[str, SelectionManifest] = field(default_factory=dict)
+    """baseline 튜닝 근거 (프로토콜 D16). ``static`` / ``open_loop``."""
 
     def summary_table(self) -> str:
         header = (
@@ -1080,10 +1189,11 @@ def run_headroom(
                 "committed",
                 "fresh",
             ],
-            code_dirty=code_dirty,
         )
     )
     report.aggregation_id = aggregation_id(config.aggregation_payload())
+    # git commit 과 dirty 는 어떤 ID 에도 들어가지 않는다 (프로토콜 D13).
+    report.provenance = execution_provenance(code_dirty=code_dirty)
 
     def log(message: str) -> None:
         if verbose:
@@ -1096,13 +1206,14 @@ def run_headroom(
 
     # --- baseline ---
     log(f"best_static (탐색 {n_tune}회)")
-    best_action, static_group = search_best_static(
+    best_action, static_group, static_manifest = search_best_static(
         config,
         narrow,
         n_tune=n_tune,
         exp_id=sem("best_static", space=narrow),
         store=store,
     )
+    report.selections["static"] = static_manifest
     static_group = _relabel(static_group, "best_static")
     static_runs = static_group.runs
     report.best_static_action = best_action
@@ -1110,22 +1221,26 @@ def run_headroom(
     report.tuning_runs["best_static"] = n_tune
 
     log(f"best_open_loop (탐색 {n_tune}회)")
-    open_group = _relabel(
-        search_best_open_loop(
-            config,
-            narrow,
-            n_tune=n_tune,
-            exp_id=sem(
-                "best_open_loop",
-                space=narrow,
-                extra={"n_schedule_segments": config.n_schedule_segments},
-            ),
-            store=store,
+    open_raw, open_manifest = search_best_open_loop(
+        config,
+        narrow,
+        n_tune=n_tune,
+        exp_id=sem(
+            "best_open_loop",
+            space=narrow,
+            extra={"n_schedule_segments": config.n_schedule_segments},
         ),
-        "best_open_loop",
+        store=store,
     )
+    report.selections["open_loop"] = open_manifest
+    open_group = _relabel(open_raw, "best_open_loop")
     report.groups["best_open_loop"] = open_group
     report.tuning_runs["best_open_loop"] = n_tune
+    if open_manifest.is_constant_schedule:
+        log(
+            "  주의: 선택된 open-loop 스케줄이 constant 다. static 으로 퇴화했으므로 "
+            "P2 에서 best_static 과 독립적인 baseline 으로 세지 않는다 (D16)."
+        )
 
     log("heuristic")
     heuristic_runs = run_controller(

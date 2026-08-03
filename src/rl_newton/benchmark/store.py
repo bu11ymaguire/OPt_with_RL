@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -54,7 +54,11 @@ __all__ = [
     "OPTIMIZER_SEMANTICS_VERSION",
     "PLANNER_SEMANTICS_VERSION",
     "TASK_SEMANTICS_VERSION",
+    "SELECTION_SEMANTICS_VERSION",
     "AGGREGATION_VERSION",
+    "SelectionManifest",
+    "selection_id",
+    "execution_provenance",
     "environment_fingerprint",
 ]
 
@@ -81,6 +85,14 @@ PLANNER_SEMANTICS_VERSION = 1
 
 TASK_SEMANTICS_VERSION = 1
 """task 생성 의미 버전. 초기점, Hessian 구성, instance_id 규칙 등."""
+
+SELECTION_SEMANTICS_VERSION = 1
+"""baseline 선택(튜닝) 의미 버전 (프로토콜 D16).
+
+후보 집합 생성, 선택 지표, tie-break 규칙이 바뀌면 올린다. ``best_static`` 과
+``best_open_loop`` 는 컨트롤러가 아니라 튜닝 결과이므로 선택 과정 자체가
+재현 가능해야 한다.
+"""
 
 AGGREGATION_VERSION = 2
 """집계 의미 버전 (프로토콜 D13/D14).
@@ -134,6 +146,99 @@ def sweep_id(payload: Mapping[str, Any]) -> str:
 def aggregation_id(payload: Mapping[str, Any]) -> str:
     """집계 규칙 정체성 (프로토콜 D13). 바뀌면 재집계만 하고 재실행하지 않는다."""
     return config_hash(dict(payload))
+
+
+def selection_id(payload: Mapping[str, Any]) -> str:
+    """baseline 선택(튜닝) 과정의 정체성 (프로토콜 D16)."""
+    return config_hash(dict(payload))
+
+
+def execution_provenance(*, git_commit: str = "", code_dirty: bool = False) -> dict[str, Any]:
+    """실행 흔적. **어떤 ID 에도 들어가지 않는다** (프로토콜 D13).
+
+    git commit 이나 code-dirty 를 ``sweep_id`` 에 넣으면, 같은 run 집합을
+    요청했는데 문서만 수정해도 ID 가 달라진다. "어떤 집합을 요청했는가" 라는
+    의미가 깨지므로 provenance 로 분리한다.
+    """
+    import platform
+    import socket
+    from datetime import UTC, datetime
+
+    return {
+        "git_commit": git_commit,
+        "code_dirty": code_dirty,
+        "hostname": socket.gethostname(),
+        "platform": f"{platform.system()} {platform.release()}",
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@dataclass(slots=True)
+class SelectionManifest:
+    """baseline 튜닝이 **무엇을 근거로 무엇을 골랐는지** (프로토콜 D16).
+
+    ``best_static`` 과 ``best_open_loop`` 는 컨트롤러가 아니라 튜닝 결과다. 라벨만
+    ``static[7]`` → ``best_static`` 으로 바꾸면 어떤 설정이 왜 선택됐는지 사라진다.
+
+    **evaluation 결과를 보고 선택을 역추정하면 사후 선택이다.** 당시 tuning 후보
+    점수와 tie-break 만으로 결정론적으로 재현되어야 한다. 재현할 수 없으면
+    ``legacy_unresolved`` 로 두고 해당 게이트를 미판정으로 남긴다.
+
+    Attributes:
+        selection_id: 선택 과정 정체성 해시.
+        family: ``static`` 또는 ``open_loop``.
+        candidate_labels: 후보 라벨 (``static[0]`` ...).
+        candidate_scores: 라벨 → 선택 지표 값.
+        selection_metric: 선택 지표 이름.
+        tie_break_rule: 동률 처리 규칙.
+        selected_label: 선택된 후보 라벨.
+        selected_config: 선택된 실제 설정. static 은 action, open_loop 은 schedule.
+        tuning_specs: 튜닝에 쓴 task spec.
+        tuning_seeds: 튜닝에 쓴 seed.
+        n_tune: 후보 수 (``N_tune``).
+        semantics_version: 선택 규칙 버전.
+        resolved: ``False`` 면 ``legacy_unresolved``. 게이트를 미판정으로 둔다.
+    """
+
+    selection_id: str
+    family: str
+    candidate_labels: list[str] = field(default_factory=list)
+    candidate_scores: dict[str, float] = field(default_factory=dict)
+    selection_metric: str = "median_log_improvement"
+    tie_break_rule: str = "lowest_flat_index"
+    selected_label: str = ""
+    selected_config: dict[str, Any] = field(default_factory=dict)
+    tuning_specs: list[str] = field(default_factory=list)
+    tuning_seeds: list[int] = field(default_factory=list)
+    n_tune: int = 0
+    semantics_version: int = SELECTION_SEMANTICS_VERSION
+    resolved: bool = True
+
+    def to_json(self) -> dict[str, Any]:
+        return sanitize_for_json(asdict(self))
+
+    def describe(self) -> str:
+        if not self.resolved:
+            return f"{self.family}: legacy_unresolved (선택 근거 복원 불가)"
+        best = self.candidate_scores.get(self.selected_label, float("nan"))
+        return (
+            f"{self.family}: {self.selected_label} 선택 "
+            f"({self.selection_metric}={best:.4f}, 후보 {len(self.candidate_labels)}개, "
+            f"tie-break={self.tie_break_rule})\n    설정 {self.selected_config}"
+        )
+
+    @property
+    def is_constant_schedule(self) -> bool:
+        """open_loop 이 static 으로 퇴화했는가 (프로토콜 D16).
+
+        모든 구간의 action 이 같으면 튜닝된 open-loop 가 비정적 스케줄의 이점을
+        찾지 못하고 최적 static 설정으로 퇴화한 것이다. 버그가 아니라 결과다.
+        단 **P2 에서 두 개의 독립적인 강한 baseline 으로 세면 안 된다.**
+        """
+        actions = self.selected_config.get("schedule")
+        if not isinstance(actions, list) or not actions:
+            return False
+        return all(a == actions[0] for a in actions)
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,13 +373,13 @@ def _restore_summary(raw: dict[str, Any]) -> RunSummary:
         if "None" in annotation
     }
     kwargs: dict[str, Any] = {}
-    for field in fields(RunSummary):
-        value = raw.get(field.name)
-        if value is None and str(field.type) == "float":
+    for spec in fields(RunSummary):
+        value = raw.get(spec.name)
+        if value is None and str(spec.type) == "float":
             value = float("nan")
-        elif value is None and field.name in optional_fields:
+        elif value is None and spec.name in optional_fields:
             value = None
-        kwargs[field.name] = value
+        kwargs[spec.name] = value
     # 필수 필드 타입 보정
     kwargs["reached"] = bool(kwargs.get("reached"))
     kwargs["seed"] = int(kwargs.get("seed") or 0)

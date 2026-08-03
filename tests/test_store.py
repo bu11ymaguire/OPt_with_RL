@@ -19,6 +19,7 @@ from rl_newton.benchmark.metrics import RunSummary
 from rl_newton.benchmark.store import (
     OPTIMIZER_SEMANTICS_VERSION,
     PLANNER_SEMANTICS_VERSION,
+    SELECTION_SEMANTICS_VERSION,
     ResultStore,
     RunKey,
     RunRecord,
@@ -516,11 +517,30 @@ class TestThreeLayerIdentity:
         }
         assert len(ids) == 9
 
-    def test_code_dirty_is_provenance_not_semantics(self):
-        """git dirty 상태는 실행 의미가 아니다. sweep payload 에만 있다."""
+    def test_code_dirty_is_provenance_only(self):
+        """git dirty 는 **어떤 ID 에도** 들어가지 않는다 (프로토콜 D13).
+
+        ``sweep_id`` 가 "어떤 run 집합을 요청했는가" 를 뜻한다면, 문서만 수정해도
+        ID 가 달라지는 것은 의미가 어긋난다.
+        """
+        from rl_newton.benchmark.store import execution_provenance
+
         config = self._config()
         assert "code_dirty" not in config.run_semantics_payload(controller="best_static")
-        assert "code_dirty" in config.sweep_payload(controllers=["best_static"])
+        assert "code_dirty" not in config.sweep_payload(controllers=["best_static"])
+        assert "code_dirty" not in config.aggregation_payload()
+        prov = execution_provenance(git_commit="abc123", code_dirty=True)
+        assert prov["code_dirty"] is True
+        assert prov["git_commit"] == "abc123"
+
+    def test_same_request_gives_same_sweep_id_across_commits(self):
+        """같은 run 집합 요청이면 commit 이 달라도 ``sweep_id`` 가 같다."""
+        from rl_newton.benchmark.store import sweep_id
+
+        config = self._config()
+        a = sweep_id(config.sweep_payload(controllers=["best_static", "onestep"]))
+        b = sweep_id(config.sweep_payload(controllers=["onestep", "best_static"]))
+        assert a == b
 
     def test_same_semantics_run_shared_across_sweeps(self):
         """같은 semantics run 은 sweep 이 달라도 한 번만 실행되고 양쪽에서 참조된다."""
@@ -532,3 +552,96 @@ class TestThreeLayerIdentity:
         sweep_b = sweep_id(b.sweep_payload(controllers=["best_static"]))
         assert sweep_a != sweep_b
         assert self._sem(a, "best_static") == self._sem(b, "best_static")
+
+
+# ---------------------------------------------------------------------------
+# baseline 선택 manifest (프로토콜 D16)
+# ---------------------------------------------------------------------------
+
+
+class TestSelectionManifest:
+    """``best_static`` / ``best_open_loop`` 는 컨트롤러가 아니라 튜닝 결과다.
+
+    라벨만 ``static[7]`` -> ``best_static`` 으로 바꾸면 어떤 설정이 왜 선택됐는지
+    사라진다. evaluation 결과를 보고 역추정하면 사후 선택이다.
+    """
+
+    def _manifest(self, **kwargs):
+        from rl_newton.benchmark.store import SelectionManifest
+
+        params = {
+            "selection_id": "sel0001",
+            "family": "static",
+            "candidate_labels": ["static[0]", "static[3]", "static[7]"],
+            "candidate_scores": {"static[0]": 6.8, "static[3]": 9.3, "static[7]": 9.3},
+            "selected_label": "static[3]",
+            "selected_config": {"flat_index": 3, "cg_budget": 5},
+            "n_tune": 3,
+        }
+        params.update(kwargs)
+        return SelectionManifest(**params)
+
+    def test_manifest_records_candidates_and_tie_break(self):
+        m = self._manifest()
+        assert m.resolved
+        assert len(m.candidate_labels) == 3
+        assert m.selected_label in m.candidate_scores
+        assert m.tie_break_rule == "lowest_flat_index"
+        # 동률이면 낮은 인덱스. static[3] 과 static[7] 이 같은 점수다.
+        assert m.candidate_scores["static[3]"] == m.candidate_scores["static[7]"]
+        assert m.selected_label == "static[3]"
+
+    def test_manifest_roundtrips_to_json(self):
+        m = self._manifest()
+        payload = m.to_json()
+        assert payload["selected_label"] == "static[3]"
+        assert payload["selected_config"]["flat_index"] == 3
+        assert payload["semantics_version"] == SELECTION_SEMANTICS_VERSION
+
+    def test_constant_open_loop_schedule_is_detected(self):
+        """모든 구간 action 이 같으면 open-loop 이 static 으로 퇴화한 것이다."""
+        action = {"flat_index": 4, "cg_budget": 5, "step_size": 1.0}
+        m = self._manifest(
+            family="open_loop",
+            selected_label="open_loop[4]",
+            selected_config={"schedule": [action, action, action, action]},
+        )
+        assert m.is_constant_schedule
+
+    def test_varying_open_loop_schedule_is_not_constant(self):
+        m = self._manifest(
+            family="open_loop",
+            selected_label="open_loop[4]",
+            selected_config={
+                "schedule": [
+                    {"flat_index": 4, "cg_budget": 5},
+                    {"flat_index": 9, "cg_budget": 20},
+                ]
+            },
+        )
+        assert not m.is_constant_schedule
+
+    def test_static_family_is_never_constant_schedule(self):
+        assert not self._manifest().is_constant_schedule
+
+    def test_unresolved_manifest_is_marked(self):
+        """튜닝 기록이 없으면 추측하지 않고 legacy_unresolved 로 둔다."""
+        m = self._manifest(resolved=False, candidate_scores={}, selected_label="")
+        assert not m.resolved
+        assert "legacy_unresolved" in m.describe()
+
+    def test_selection_id_changes_with_tuning_scope(self):
+        """튜닝 범위가 달라지면 선택 정체성도 달라진다."""
+        from rl_newton.benchmark.store import selection_id
+        from rl_newton.optimizers.action_space import NARROW
+
+        space = NARROW.with_fixed_step_size(1.0)
+        base = {
+            "selection_family": "static",
+            "selection_semantics_version": SELECTION_SEMANTICS_VERSION,
+            "n_tune": 12,
+            "tuning_seeds": [0, 1, 2],
+            "space": {"cg_budgets": list(space.cg_budgets)},
+        }
+        changed = dict(base, n_tune=24)
+        assert selection_id(base) != selection_id(changed)

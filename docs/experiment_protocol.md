@@ -527,6 +527,69 @@ Track T 지표(`cost_to_target_ge`, `reached`)는 목표 도달 시점으로 정
 `B ≤ A` 였다. **고정 예산 비교에서는 "예산"과 "실제 소모량"을 항상 함께
 확인한다.**
 
+### D16. baseline 선택 과정을 manifest로 남긴다
+
+`best_static` 과 `best_open_loop` 는 컨트롤러가 아니라 **튜닝을 통해 선택된
+결과**다. 그런데 raw 기록에는 `static[3]`, `open_loop[4]` 같은 후보 라벨만 남고
+어느 것이 선택됐는지가 없어서, 재집계에서 A1·A2를 계산할 수 없었다.
+
+**라벨만 `static[7]` → `best_static` 으로 바꾸면 안 된다.** 어떤 설정이 왜
+선택됐는지가 사라지고, 나중에 evaluation 결과를 보고 역추정하게 되어 사후 선택이
+된다.
+
+#### SelectionManifest
+
+```text
+selection_id                 선택 과정 정체성 해시
+family                       static / open_loop
+candidate_labels             후보 라벨
+candidate_scores             라벨 -> 선택 지표 값
+selection_metric             median_log_improvement
+tie_break_rule               lowest_flat_index
+selected_label               선택된 후보
+selected_config              선택된 **실제 설정**
+tuning_specs / tuning_seeds  튜닝 범위
+n_tune                       후보 수
+selection_semantics_version  선택 규칙 버전
+resolved                     False 면 legacy_unresolved
+```
+
+`static` 은 action 을, `open_loop` 은 **schedule 전체**를 기록한다.
+
+#### 정체성 규칙
+
+evaluation run 의 `run_semantics_id` 에 `"best_static"` 만 들어가면 안 된다.
+선택 결과가 달라졌는데 generic label 때문에 같은 ID 가 나오면 낡은 결과를
+재사용한다. 실제 선택된 설정이 semantics 에 들어가야 한다.
+
+#### 복원은 당시 tuning 결과만으로 한다
+
+```text
+당시 tuning 후보 점수 + selection metric + tie-break 가 남아 있음
+    -> 선택 결과를 결정론적으로 재현. selection_id 를 붙인다
+
+evaluation 결과만 있음
+    -> best_static = legacy_unresolved
+       best_open_loop = legacy_unresolved
+       A1·A2 는 미판정으로 유지하고 새 프로토콜로 다시 실행한다
+```
+
+"`static[7]` 이 좋아 보이니 그게 best_static 이었을 것" 이라고 정하면 사후 선택이다.
+
+#### open-loop이 static으로 퇴화하는 경우
+
+최종 성능이 같다는 것만으로는 부족하다. 실제 schedule 을 출력해 모든 구간의
+action 이 같은지 본다 (`SelectionManifest.is_constant_schedule`). 같으면
+
+> 튜닝된 open-loop baseline 은 비정적 스케줄의 이점을 발견하지 못하고 최적 static
+> configuration 으로 퇴화했다.
+
+이는 버그가 아니라 결과다. 단 **P2 에서 `best_static` 과 `best_open_loop` 를 서로
+다른 두 개의 강한 증거처럼 세면 안 된다.** 사실상 같은 baseline 이다.
+
+추가로 같은 task·seed 에서 action sequence, damping trajectory, CG budget
+trajectory, object GE, terminal loss 를 bitwise 비교해 확인한다.
+
 ### D14. log improvement의 수치 하한을 사전 고정한다
 
 초판 `RunSummary.log_improvement` 는 `final_loss <= 0` 이면 NaN 을 반환했고,
@@ -1539,6 +1602,10 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-03 | `fresh` 를 seed 부분집합 + narrow 로 제한 (`fresh_diagnostic_seeds=1`, `run_fresh_wide=False`). beam 8 단계에서는 전체 제외 | 진단 baseline이고 P1~P3 판정에 쓰지 않는데 탐색 비용이 가장 크다 (`Q=4` wide 인스턴스당 1.4M GE). 시간 불일치는 이미 여러 조건에서 확인됐다. C1의 표본이 작아지는 것은 판정에 영향이 없다 |
 | 2026-08-03 | **D13 신설: 실험 정체성을 `run_semantics_id` 와 `sweep_id` 로 분리** | D8의 단일 해시가 두 역할을 겸하고 있었다. diagnostic arm의 커버리지만 바꿨는데 baseline 320 run이 무효화됐다. sweep 설정이 바뀌어도 run semantics가 같으면 재사용해야 한다. beam 8 실행 전에 적용 |
 | 2026-08-03 | 게이트 C1과 C2·C3의 표본 크기를 분리 보고하도록 명시 | `fresh` 가 seed 부분집합에만 있으므로 C1의 paired n이 작다. 한 표에 넣으면 같은 신뢰구간처럼 보인다 |
+| 2026-08-03 | **D14 신설: log improvement에 상대 수치 하한. `final_loss <= 0` 을 조용히 제외하지 않는다** | `rosen_d2` 에서 `onestep_absolute` / `heuristic` 이 `final_loss = 0.0` 이라 각 3쌍이 기록 없이 빠졌고 게이트 A1·B가 낮게 잡혔다. `finfo.tiny` 를 floor 로 쓰면 최대 logΔ 가 708 nat 이 되어 underflow 여부가 통계를 지배하므로 `100 x eps` 상대 floor 를 쓴다. 재집계에서 세 게이트의 결론이 포화 처리에 따라 뒤집혔다 |
+| 2026-08-03 | **D15 신설: 재계획이 계획을 실제로 바꿨는지 행동 내용으로 계측** | `Q1` 에서 `shrinking` 과 `committed` 가 bitwise 같은 결과를 냈다. alias 가 아니라 실제 동률이며, `suffix_retention_rate` 로 확인한다. `chosen_depth` 히스토그램만으로는 깊이만 같고 내용이 다를 수 있다 |
+| 2026-08-03 | **D16 신설: baseline 선택 과정을 `SelectionManifest` 로 기록** | `best_static` / `best_open_loop` 는 컨트롤러가 아니라 튜닝 결과인데 raw 에 후보 라벨만 남아 A1·A2를 재집계할 수 없었다. 라벨만 바꾸면 선택 근거가 사라지고 evaluation 결과로 역추정하게 되어 사후 선택이 된다 |
+| 2026-08-03 | `git_commit` 과 `code_dirty` 를 `sweep_id` 에서 제거해 `execution_provenance` 로 분리 | `sweep_id` 가 "어떤 run 집합을 요청했는가" 를 뜻한다면 문서 수정으로 ID 가 달라지는 것은 의미가 어긋난다. 어떤 ID 에도 넣지 않는다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |
