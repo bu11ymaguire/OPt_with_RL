@@ -4,11 +4,17 @@
 
 ```text
 A1  현재 상태에서 좋은 damping 이 존재하는가          absolute, H=1
-A2  현실적 multiplier 로 접근 가능한가                narrow/wide, H=1/3/5
+A2  현실적 multiplier 로 접근 가능한가                narrow/wide, shrinking Q_max
 B   행동 범위 제한의 손해                             absolute vs wide vs narrow, H=1
-C   여러 step planning 이 필요한가 (PPO 착수 조건)     narrow/wide H=1 vs 3 vs 5
+C1  쿼터 초기화의 시간 불일치                          shrinking vs fresh
+C2  다단계 계획의 가치 (주 판정)                       shrinking vs one-step
+C3  상태 피드백의 추가 가치                            shrinking vs committed
 D   cost-to-target 헤드룸                             target 난이도별
 ```
+
+주 컨트롤러는 ``shrinking-quota MPC`` 다 (프로토콜 D12). ``fresh`` 는 시간
+불일치가 확인된 진단 baseline 이므로 판정에 쓰지 않는다. PPO 착수는 게이트 C
+하나가 아니라 P1~P4 로 판단한다.
 
 디바이스
 --------
@@ -144,6 +150,7 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         max_steps=args.max_steps,
         quotas=tuple(args.quotas),
         beam_width=args.beam,
+        max_plan_depth=args.max_plan_depth,
         tuning_budget=args.tuning_budget,
         phase=phase,  # type: ignore[arg-type]
         primary_difficulty=args.difficulty,
@@ -184,6 +191,12 @@ def main() -> int:
         nargs="+",
         default=[1.0, 2.0, 4.0],
         help="게이트 C 쿼터 사다리 (c_max 배수)",
+    )
+    parser.add_argument(
+        "--max-plan-depth",
+        type=int,
+        default=24,
+        help="계획 길이 상한. 쿼터가 아니라 이것에 걸리면 사다리 비교가 훼손된다",
     )
     parser.add_argument(
         "--beams",

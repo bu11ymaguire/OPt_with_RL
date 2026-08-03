@@ -596,8 +596,25 @@ horizon을 연장하지 않으면(shrinking) 피드백 재계획은 committed �
 `beam 4 → 8` 에서 `Q=4` 결과가 SPD에서 8 nat 이상 움직인다. **`Q=4` 조건은 아직
 탐색 한계에 걸려 있으므로, 그 수치를 planning 가치의 하한으로만 읽는다.**
 
-탐색 비용은 실제 최적화 비용의 500~2,600배다 (committed 80,311 GE vs fresh
-389,245 GE, 본문 150 GE). 이들은 오라클이며 실용 optimizer가 아니다.
+#### 두 종류의 비용을 항상 구분한다
+
+탐색 비용이 실제 최적화 비용의 500~2,600배다 (committed 80,311 GE vs fresh
+389,245 GE, 본문 150 GE). **planner를 실용 optimizer로 제시하면 안 된다.**
+
+```text
+object-level cost     실제 모델을 최적화하는 데 쓴 GE          (total_cost_ge)
+decision-search cost  oracle/planner 가 action 을 고르려고
+                      쓴 분석 GE                              (search_cost_ge)
+```
+
+이 구분이 연구 서술의 핵심이다. planner는 **헤드룸 측정 장치**이고, PPO 단계의
+질문은 다음이다.
+
+> 더 좋은 optimizer를 무에서 발명하는 것이 아니라, 비싼 shrinking planner가
+> 발견한 계산 배분 전략을 저비용 정책으로 amortize 할 수 있는가?
+
+주장 범위도 여기에 맞춘다. "우리 optimizer가 더 빠르다"가 아니라 "시간 일관적인
+계산 배분에 헤드룸이 있고, 그것을 정책으로 근사할 수 있는지 측정했다"다.
 
 ---
 
@@ -908,9 +925,71 @@ ABSOLUTE  {3^-16 .. 3^16}   33점
 4. 마지막 수단으로 CG budget 축 축소            (하지 않음)
 ```
 
-**Gate C — Temporal planning value (미래 GE 쿼터 사다리)**
+**Gate C — 세 부분으로 분리 (D12에 따라 재정의)**
 
-D10에 따라 재정의됐다. `H = 1, 3, 5` 비교는 폐기했다. 이유는 D10 참조.
+`H = 1, 3, 5` 비교는 D10에서 폐기했고, D10의 `C3 − C1` 단일 통계도 **중심
+게이트에서 내렸다.** 그 통계는 fresh-quota MPC라는 **결함이 확인된 실행 방식**을
+포함하고 있어서, 무엇을 재는지가 불분명하다.
+
+주 컨트롤러는 `shrinking-quota MPC` 다. 세 컨트롤러의 역할이 다르다.
+
+```text
+fresh       시간 불일치가 확인된 진단 baseline. 주 결과에 쓰지 않는다
+committed   계획 상한 / open-loop oracle. 초기 상태에 조건화된 oracle 이다
+shrinking   실제 adaptive planning 후보. 주 컨트롤러
+```
+
+**Gate C1 — Time-consistency diagnostic**
+
+```text
+J_E(shrinking) − J_E(fresh)      같은 Q, beam, action space
+```
+
+> 쿼터를 매 step 초기화하는 것이 실제 성능을 떨어뜨리는가?
+
+**연구 결과이지만 PPO 착수 게이트는 아니다.** 실측에서 크게 양수였다 (D12).
+
+**Gate C2 — Sequential planning value**
+
+```text
+J_E(shrinking, Q>1) − J_E(C0)
+```
+
+> 시간 일관적인 다단계 재계획이 one-step 효율 제어보다 나은가?
+
+GO 0.3 nat, 재설계 0.05 nat. **primary controller 는 `shrinking` 이다.**
+
+**Gate C3 — Feedback value**
+
+```text
+J_E(shrinking) − J_E(committed)
+```
+
+> 계획을 고정 실행하는 것보다 상태를 관찰하며 재계획하는 것이 추가 이득인가?
+
+| 결과 | 의미 |
+|---|---|
+| `shrinking ≈ committed` | 좋은 sequence는 존재하지만 feedback 자체의 추가 가치는 작다 |
+| `shrinking > committed` | 재계획에 실질적 가치가 있다 |
+| `shrinking < committed` | approximate replanning이 계획을 훼손한다 |
+
+D12 실측은 대체로 첫 번째와 두 번째 사이였다.
+
+**committed와 `open_loop`를 혼동하지 않는다.**
+
+```text
+committed planner   각 task의 현재 상태를 보고 비싼 탐색으로 sequence 생성
+open_loop           상태 피드백 없이 미리 정한 schedule 실행
+```
+
+committed가 `open_loop`보다 좋다고 해서 feedback이 필요하다는 뜻이 **아니다.**
+committed는 초기 상태에 조건화된 oracle에 가깝다. PPO 필요성은
+`shrinking` vs `dev에서 튜닝한 open_loop` vs `현재 상태를 쓰는 heuristic` 으로
+보아야 하고, 튜닝 비용(`N_tune`)을 동일하게 맞춰야 한다.
+
+---
+
+이하는 D10 쿼터 사다리 설명이다. 사다리 자체는 유지한다.
 
 `c_max` 를 단일 action 최대 비용이라 할 때, planner마다 동일한 미래 GE 쿼터
 `Q` 를 준다. `narrow` / `wide` 만 쓰고 `absolute` 는 제외한다 (A1 참조).
@@ -925,14 +1004,12 @@ C3  budgeted MPC  Q = 4 × c_max
 각 planner는 쿼터 안에서 여러 action을 선택할 수 있다. `Q = 1 × c_max` 는
 "비싼 action 한 번"과 "싼 action 여러 번"을 같은 예산에서 겨루게 한다.
 
-| 결과 | 판단 |
-|---|---|
-| `J_E(C3) − J_E(C1) ≥ 0.3 nat` **그리고** `depth > 1` 이 실제로 채택됨 | 순차적 의사결정에 가치가 있다. RL 진행 근거 |
-| < 0.05 nat | contextual bandit이나 heuristic이 적절하다. **PPO를 시작하지 않는다** |
+쿼터는 `shrinking` / `committed` / `fresh` 세 실행 방식에 **동일하게** 부여한다.
+판정 통계는 위 C1 / C2 / C3 이며, `J_E(C3) − J_E(C1)` 형태의 단일 사다리 통계는
+쓰지 않는다 (D12).
 
-**두 조건이 모두 필요하다.** 쿼터를 늘려 개선이 나왔지만 `chosen_depth` 가 계속
-1이면, 기여한 것은 planning이 아니라 늘어난 탐색량이다. 그 경우 GO 판정을 내리지
-않는다.
+**개선이 있어도 `chosen_depth` 가 계속 1이면 GO 판정을 내리지 않는다.** 기여한
+것이 planning이 아니라 늘어난 탐색량이기 때문이다.
 
 함께 보고할 것:
 
@@ -954,6 +1031,13 @@ action sequence 분포
 `C0 → C1` 차이도 별도로 보고한다. 이것은 "목적함수를 비율에서 고정 예산으로
 바꾼 효과"이고 "예산을 늘린 효과"와 다르다. 섞으면 어느 쪽이 기여했는지
 알 수 없다.
+
+**beam 8을 planner 성능의 하한으로 명시한다.** D12 실측에서 SPD `Q=4` 결과가
+beam 4↔8 사이에서 8 nat 이상 움직였다. 따라서 `Q=4` 수치는 안정된 효과 크기가
+아니라 하한이다. beam을 더 키우는 것은 게이트 판정용이 아니라 **일회성 민감도
+진단**으로만 하고, 범위를 `Q=4`, seed 1개, task 2개, `shrinking`/`committed`,
+narrow로 제한한다. "좋은 결과가 나올 때까지 탐색폭을 늘렸다"는 인상을 피하고,
+분석 성능보다 deployable controller 비교에 자원을 쓴다.
 
 **실현 성능의 단조성을 가정하지 않는다.** MPC는 매 step 재계획하므로 큰 쿼터가
 항상 좋다는 보장이 없다. 쿼터가 커지면 탐색 가능 집합이 포함관계로 커지므로
@@ -1180,7 +1264,10 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-02 | **D11 신설: Track E를 예산 초과 step 절단 후 평가** | `spent >= budget` 종료 규칙 때문에 마지막 step이 예산을 넘고, 초과량이 action 크기에 비례한다. 150 GE 예산에서 C0는 171 GE, Q=4는 154 GE를 썼다. 큰 step을 고르는 컨트롤러가 공짜로 11% 예산을 더 쓰는 편향이 게이트 C 결론과 같은 방향으로 섞여 있었다 |
 | 2026-08-02 | **D12 신설: 계획의 가치와 실행 방식을 분리. committed / fresh-quota / shrinking-quota 3종 비교** | D10 쿼터 사다리의 음성 결과가 목적함수나 탐색 때문이 아니라 **fresh-quota 실행 방식의 시간 불일치** 때문임이 확인됐다. `committed > C0`, `shrinking ≈ committed`, `fresh < committed`. 최선 조건에서 planning이 C0를 SPD +4.59 nat, ill +0.91 nat 앞선다 |
 | 2026-08-02 | shrinking 쿼터 차감을 예측 비용 → `context.previous.cost_ge` 실제 비용으로 교체 | 예측 비용은 CG 조기 수렴을 반영하지 못해 window가 일찍 닫힌다. SPD beam8 Q=4에서 shrinking이 48.90 → 56.73으로 바뀌었다 |
-| 2026-08-02 | 게이트 C 통계는 **아직 변경하지 않음**. 위 진단은 pilot 기록으로만 보존 | 사전 등록된 `C3 − C1` 을 결과를 본 뒤 바꾸면 사후 선택이 된다. protocol freeze 전에 공식 재정의한다 |
+| 2026-08-02 | **게이트 C를 C1(time-consistency) / C2(sequential planning value) / C3(feedback value)로 분리. 주 컨트롤러를 `shrinking-quota MPC`로 지정** | 기존 `C3 − C1` 단일 통계는 결함이 확인된 fresh-quota 실행 방식을 포함하므로 무엇을 재는지 불분명하다. protocol freeze 전 pilot 단계이므로 사후 조작이 아니다. D12 결과는 pilot diagnostic으로 보존 |
+| 2026-08-02 | **PPO 착수 조건을 Gate C에서 분리해 P1~P4로 신설** | Gate C는 planner 오라클 간 비교이고, PPO는 그 오라클을 저비용 정책으로 amortize 할 수 있는지를 묻는 별도 질문이다. P2(baseline superiority)와 P4(micro-neural)가 없으면 open-loop schedule로 설명되는 이득을 RL 성과로 오인할 수 있다 |
+| 2026-08-02 | object-level cost와 decision-search cost를 용어로 분리 | planner 탐색비가 본문의 500~2,600배다. planner를 실용 optimizer로 제시할 수 없고, 헤드룸 측정 장치로 위치를 명시해야 한다 |
+| 2026-08-02 | beam 16 전체 실행 보류. beam 8을 planner 성능의 **하한**으로 명시 | SPD `Q=4` 가 beam 4↔8 사이에서 8 nat 이상 움직였다. 그러나 탐색폭을 계속 늘리면 deployable controller 비교가 늦어지고 "좋은 결과가 나올 때까지 늘렸다"는 인상을 준다. 민감도 진단은 `Q=4`·seed 1개·task 2개로 제한 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |
@@ -1190,11 +1277,63 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 
 ### PPO 착수 조건 (명시)
 
-다음이 모두 성립할 때만 Stage 4를 시작한다.
+**PPO 착수는 Gate C 하나로 결정하지 않는다** (D12). Gate C는 planner 오라클
+사이의 비교이고, PPO는 "그 오라클을 저비용 정책으로 amortize 할 수 있는가"를
+묻는 별도 단계다. 아래 P1~P4를 **모두** 통과할 때만 Stage 4를 시작한다.
 
-1. Gate C에서 `H` 증가에 따른 단조 개선이 확인된다 (순차 의사결정의 가치)
-2. Gate E에서 micro-neural 헤드룸이 남아 있다 (synthetic 전용 현상이 아니다)
-3. Gate B로 행동 공간이 병목이 아님을 확인했거나, 병목을 고친 공간을 확정했다
+주 컨트롤러는 `shrinking-quota MPC` 다. `fresh-quota` 는 진단 baseline이므로
+어떤 P 게이트에도 쓰지 않는다.
+
+**P1. Sequential headroom**
+
+dev subset에서 `shrinking` 이 `C0` 보다 개선한다.
+
+```text
+median[ J_E(shrinking) − J_E(C0) ] >= 0.3 nat
+```
+
+그리고 paired bootstrap CI가 심하게 음수 영역을 포함하지 않아야 한다.
+
+**P2. Baseline superiority**
+
+```text
+J_E(shrinking) > max( J_E(best_static), J_E(open_loop),
+                      J_E(heuristic),   J_E(C0) )
+```
+
+전부를 크게 이길 필요는 없지만, **적어도 단순 open-loop schedule로 같은 이득이
+설명되지 않아야 한다.** `open_loop` 와 `heuristic` 의 튜닝 예산(`N_tune`)을
+`shrinking` 과 동일하게 맞춘다.
+
+**P3. Multi-step usage**
+
+```text
+chosen_depth > 1 이 의미 있는 비율로 발생
+Q=1 보다 Q>1 에서 개선
+채택된 action sequence 가 단순 반복 패턴만은 아님
+```
+
+`Q=1` 은 depth 1만 가능하므로 여기서 이득이 없어야 "다단계"가 원인이라고 말할 수
+있다.
+
+**P4. Micro-neural transfer**
+
+작은 MLP에서도 measurable headroom이 있어야 한다. **synthetic quadratic에서만
+통과하면 PPO 구현을 연구의 핵심으로 밀지 않는다.**
+
+---
+
+행동 공간 전제로 Gate B를 함께 확인한다. 병목이면 고친 공간을 먼저 확정한다.
 
 하나라도 실패하면 contextual bandit 또는 supervised policy imitation으로 축소하고,
-그 판단 근거를 결과로 보고한다.
+그 판단 근거를 결과로 보고한다. 특히 `committed` 만 좋고 `shrinking` 도 실패하면,
+연구 질문은 RL보다 다음에 가깝다.
+
+> 좋은 계산 배분 schedule이 존재하지만, 상태 피드백을 이용한 재계획은 이를
+> 안정적으로 실행하지 못한다.
+
+#### 효과 크기의 안정성을 먼저 확인한다
+
+D12 진단은 task 2개, seed 1개다. 그 결과는 **"P1·P2 충족 가능성을 관측했다"**
+이며 "충족했다"가 아니다. dev subset 전체에서 paired 통계로 확인한 뒤에만
+P 게이트 판정을 기록한다.

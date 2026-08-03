@@ -21,7 +21,9 @@ Track T  min Σ c             s.t.  L ≤ τ        헤드룸 = 비율 [배수]
 ```text
 A  Track E  absolute planner vs best_static      적응 제어의 내재적 여지
 B  Track E  absolute vs wide vs narrow           도달성/행동범위 손실
-C  Track E  H=1 vs H=3 vs H=5                    장기 의사결정의 가치 (PPO 착수 조건)
+C1 Track E  shrinking vs fresh quota MPC         쿼터 초기화의 시간 불일치
+C2 Track E  shrinking vs one-step efficiency     다단계 계획의 가치 (주 판정)
+C3 Track E  shrinking vs committed plan          상태 피드백의 추가 가치
 D  Track T  best_static vs planner (target별)     cost-to-target 헤드룸
 ```
 
@@ -57,9 +59,11 @@ from rl_newton.benchmark.store import ResultStore, RunKey, experiment_id
 from rl_newton.optimizers.action_space import ActionSpace
 from rl_newton.optimizers.controllers import (
     BudgetedMPCController,
+    CommittedPlanController,
     FixedController,
     HeuristicController,
     OneStepEfficiencyController,
+    ShrinkingQuotaMPCController,
     make_open_loop_controller,
 )
 from rl_newton.optimizers.newton_cg import (
@@ -153,6 +157,12 @@ class HeadroomConfig:
     필요 없다.
     """
     beam_width: int = 4
+    max_plan_depth: int = 24
+    """계획 길이 상한. 계산량 안전장치다.
+
+    쿼터가 아니라 이 값에 걸리면 계획이 쿼터를 다 쓰지 못하므로 사다리 비교가
+    훼손된다. ``planner_stats["depth_cap_hit"]`` 로 감시한다 (프로토콜 D10).
+    """
     tuning_seed: int = 0
     n_schedule_segments: int = 4
     phase: Phase = "pilot"
@@ -925,26 +935,39 @@ def run_headroom(
     # damping ramp-up 과 temporal credit assignment 를 **제거해 버린다.**
     # 장기 계획의 필요성을 묻는 게이트 C에 넣을 이유가 없고, 비용도
     # 감당할 수 없다 (실제 step 당 약 1,200회 시뮬레이션).
+    # 실행 방식 3종 (프로토콜 D12). 탐색은 완전히 동일하고 실행만 다르므로
+    # 차이가 탐색 품질 차이와 섞이지 않는다.
+    #
+    #   shrinking  주 컨트롤러. 쓴 비용을 차감하고 horizon 을 연장하지 않는다
+    #   committed  계획 상한 / open-loop oracle. 초기 상태에 조건화됨
+    #   fresh      시간 불일치가 확인된 진단 baseline. 주 결과에 쓰지 않는다
+    modes: dict[str, type[BudgetedMPCController]] = {
+        "shrinking": ShrinkingQuotaMPCController,
+        "committed": CommittedPlanController,
+        "fresh": BudgetedMPCController,
+    }
     planner_runs: dict[str, list[RunSummary]] = {}
     for space_label, space in (("narrow", narrow), ("wide", wide)):
         for quota in config.quotas:
-            label = f"budgeted_Q{quota:g}_{space_label}"
-            log(f"{label} ({len(space)} actions, beam {config.beam_width})")
-            runs = run_controller(
-                config,
-                lambda _t, _g, s=space, q=quota: BudgetedMPCController(
-                    s,
-                    quota_multiplier=q,
-                    beam_width=config.beam_width,
-                    track="fixed_budget",
-                ),
-                label=label,
-                exp_id=exp_id,
-                store=store,
-            )
-            planner_runs[label] = runs
-            report.groups[label] = summarize_group(runs, controller=label)
-            report.tuning_runs[label] = 0
+            for mode, factory in modes.items():
+                label = f"{mode}_Q{quota:g}_{space_label}"
+                log(f"{label} ({len(space)} actions, beam {config.beam_width})")
+                runs = run_controller(
+                    config,
+                    lambda _t, _g, s=space, q=quota, f=factory: f(
+                        s,
+                        quota_multiplier=q,
+                        beam_width=config.beam_width,
+                        max_depth=config.max_plan_depth,
+                        track="fixed_budget",
+                    ),
+                    label=label,
+                    exp_id=exp_id,
+                    store=store,
+                )
+                planner_runs[label] = runs
+                report.groups[label] = summarize_group(runs, controller=label)
+                report.tuning_runs[label] = 0
 
     # --- Track E 쌍별 차이 ---
     def delta(base: Sequence[RunSummary], treat: Sequence[RunSummary]) -> PairedDelta:
@@ -955,20 +978,23 @@ def run_headroom(
     e_pairs = [
         # 게이트 A1: 순간적 absolute headroom (도달성 제약 제거, H=1)
         (static_runs, onestep_runs["onestep_absolute"]),
-        # 게이트 A2: 도달 가능한 sequential headroom
-        (static_runs, planner_runs[f"budgeted_Q{max_q:g}_narrow"]),
-        (static_runs, planner_runs[f"budgeted_Q{max_q:g}_wide"]),
+        # 게이트 A2: 도달 가능한 sequential headroom (주 컨트롤러 shrinking)
+        (static_runs, planner_runs[f"shrinking_Q{max_q:g}_narrow"]),
+        (static_runs, planner_runs[f"shrinking_Q{max_q:g}_wide"]),
         # 게이트 B: action-space restriction (모두 H=1, 같은 조건)
         (onestep_runs["onestep_narrow"], onestep_runs["onestep_absolute"]),
         (onestep_runs["onestep_narrow"], onestep_runs["onestep_wide"]),
-        # 게이트 C: 쿼터 사다리. C0 -> C_min -> C_max (프로토콜 D10)
-        #
-        # C0 은 비율 baseline 이다. C0 -> C1 은 "목적함수를 고정 예산 형태로
-        # 바꾼 것" 의 효과이고, C_min -> C_max 는 "예산을 늘린 것" 의 효과다.
-        # 둘을 분리해야 어느 쪽이 기여했는지 알 수 있다.
-        (onestep_runs["onestep_narrow"], planner_runs[f"budgeted_Q{min_q:g}_narrow"]),
-        (planner_runs[f"budgeted_Q{min_q:g}_narrow"], planner_runs[f"budgeted_Q{max_q:g}_narrow"]),
-        (planner_runs[f"budgeted_Q{min_q:g}_wide"], planner_runs[f"budgeted_Q{max_q:g}_wide"]),
+        # 게이트 C1: time-consistency. 쿼터 초기화가 성능을 떨어뜨리는가
+        (planner_runs[f"fresh_Q{max_q:g}_narrow"], planner_runs[f"shrinking_Q{max_q:g}_narrow"]),
+        # 게이트 C2: sequential planning value. 주 판정 통계다
+        (onestep_runs["onestep_narrow"], planner_runs[f"shrinking_Q{max_q:g}_narrow"]),
+        # 게이트 C3: feedback value. committed 대비 추가 이득
+        (
+            planner_runs[f"committed_Q{max_q:g}_narrow"],
+            planner_runs[f"shrinking_Q{max_q:g}_narrow"],
+        ),
+        # 참고: Q=1 (depth 1만 가능). 여기서 이득이 없어야 다단계가 원인이다 (P3)
+        (onestep_runs["onestep_narrow"], planner_runs[f"shrinking_Q{min_q:g}_narrow"]),
         # 참고 baseline
         (static_runs, open_group.runs),
         (static_runs, heuristic_runs),
@@ -991,14 +1017,15 @@ def run_headroom(
         # cost-to-go 추정이 무의미해진다.
         planner_t = run_controller(
             config,
-            lambda task, target, s=narrow: BudgetedMPCController(
+            lambda task, target, s=narrow: ShrinkingQuotaMPCController(
                 s,
                 quota_multiplier=max_q,
                 beam_width=config.beam_width,
+                max_depth=config.max_plan_depth,
                 track="cost_to_target",
                 target_loss=absolute_target_loss(task, target),
             ),
-            label=f"budgeted_Q{max_q:g}@{level}",
+            label=f"shrinking_Q{max_q:g}@{level}",
             difficulty=level,
             exp_id=exp_id,
             store=store,
@@ -1006,8 +1033,8 @@ def run_headroom(
         report.groups[f"best_static@{level}"] = summarize_group(
             static_t, controller=f"best_static@{level}"
         )
-        report.groups[f"budgeted_Q{max_q:g}@{level}"] = summarize_group(
-            planner_t, controller=f"budgeted_Q{max_q:g}@{level}"
+        report.groups[f"shrinking_Q{max_q:g}@{level}"] = summarize_group(
+            planner_t, controller=f"shrinking_Q{max_q:g}@{level}"
         )
         report.track_t_ratios[level] = compare_paired(
             static_t, planner_t, metric="cost_to_target_ge"
@@ -1041,8 +1068,8 @@ def run_headroom(
         )
     )
 
-    gate_a2_narrow = e_delta("best_static", f"budgeted_Q{max_q:g}_narrow")
-    gate_a2_wide = e_delta("best_static", f"budgeted_Q{max_q:g}_wide")
+    gate_a2_narrow = e_delta("best_static", f"shrinking_Q{max_q:g}_narrow")
+    gate_a2_wide = e_delta("best_static", f"shrinking_Q{max_q:g}_wide")
     gate_a2 = (
         max(v for v in (gate_a2_narrow, gate_a2_wide) if math.isfinite(v))
         if any(math.isfinite(v) for v in (gate_a2_narrow, gate_a2_wide))
@@ -1054,7 +1081,7 @@ def run_headroom(
             track="Track E",
             question=(
                 "현실적인 multiplier action 으로 그 이득에 접근할 수 있는가 "
-                f"(narrow/wide Q={max_q:g}xc_max vs best_static)"
+                f"(shrinking Q={max_q:g}xc_max, narrow/wide vs best_static)"
             ),
             statistic=gate_a2,
             unit="nat",
@@ -1082,53 +1109,83 @@ def run_headroom(
         )
     )
 
-    gate_c_narrow = e_delta(f"budgeted_Q{min_q:g}_narrow", f"budgeted_Q{max_q:g}_narrow")
-    gate_c_wide = e_delta(f"budgeted_Q{min_q:g}_wide", f"budgeted_Q{max_q:g}_wide")
-    gate_c = (
-        max(v for v in (gate_c_narrow, gate_c_wide) if math.isfinite(v))
-        if any(math.isfinite(v) for v in (gate_c_narrow, gate_c_wide))
-        else float("nan")
-    )
-    # C0 -> C1: 목적함수를 비율에서 고정 예산으로 바꾼 효과. 쿼터 증가 효과와
-    # 분리해서 보고해야 한다 (프로토콜 D10).
-    objective_gain = e_delta("onestep_narrow", f"budgeted_Q{min_q:g}_narrow")
+    # --- 게이트 C1/C2/C3 (프로토콜 D12) ---
+    #
+    # 주 컨트롤러는 shrinking 이다. fresh 는 시간 불일치가 확인된 진단
+    # baseline 이므로 판정에 쓰지 않는다.
+    shrink = f"shrinking_Q{max_q:g}_narrow"
+    commit = f"committed_Q{max_q:g}_narrow"
+    fresh = f"fresh_Q{max_q:g}_narrow"
+
     curves = []
     depth_notes = []
-    for label in ("narrow", "wide"):
+    for mode in ("shrinking", "committed", "fresh"):
         points = " → ".join(
-            f"Q{q:g}:{report.groups[f'budgeted_Q{q:g}_{label}'].median_log_improvement:.3f}"
+            f"Q{q:g}:{report.groups[f'{mode}_Q{q:g}_narrow'].median_log_improvement:.3f}"
             for q in config.quotas
         )
-        curves.append(f"{label} {points}")
-        deep_bits = []
-        for q in config.quotas:
-            deep, cap = _depth_stats(store, f"budgeted_Q{q:g}_{label}")
-            deep_bits.append(f"Q{q:g}:d>1={deep:.2f},cap={cap:.2f}")
-        depth_notes.append(f"{label} {' '.join(deep_bits)}")
+        curves.append(f"{mode} {points}")
+    for q in config.quotas:
+        deep, cap = _depth_stats(store, f"shrinking_Q{q:g}_narrow")
+        depth_notes.append(f"Q{q:g}:d>1={deep:.2f},cap={cap:.2f}")
+
     report.gates.append(
         GateVerdict(
-            name="C",
+            name="C1",
             track="Track E",
-            question=(
-                f"같은 미래 예산에서 여러 step planning 이 필요한가 "
-                f"(Q={max_q:g} vs Q={min_q:g}, 단위 c_max)"
-            ),
-            statistic=gate_c,
+            question="쿼터를 매 step 초기화하는 것이 실제 성능을 떨어뜨리는가 (shrinking - fresh)",
+            statistic=e_delta(fresh, shrink),
             unit="nat",
             go_threshold=0.3,
             pivot_threshold=0.05,
             detail=(
-                f"쿼터 곡선: {' | '.join(curves)}. "
-                f"깊이/상한: {' | '.join(depth_notes)}. "
-                f"참고 C0->C1 (목적함수 교체 효과, 쿼터 증가와 별개): "
-                f"{objective_gain:+.3f} nat. "
-                "**GO 판정에는 두 조건이 모두 필요하다.** 쿼터 증가로 유의미한 "
-                "개선이 있고, 동시에 depth>1 이 실제로 채택돼야 한다. 개선만 있고 "
-                "depth 가 계속 1 이면 planning 이 아니라 탐색량이 기여한 것이다. "
+                f"쿼터 곡선(narrow): {' | '.join(curves)}. "
+                "**연구 결과이지만 PPO 착수 게이트가 아니다.** 양수면 receding "
+                "horizon 이 준비 행동만 반복하며 payoff 를 뒤로 미룬다는 증거다."
+            ),
+        )
+    )
+    gate_c2 = e_delta("onestep_narrow", shrink)
+    q1_gain = e_delta("onestep_narrow", f"shrinking_Q{min_q:g}_narrow")
+    report.gates.append(
+        GateVerdict(
+            name="C2",
+            track="Track E",
+            question=(
+                f"시간 일관적인 다단계 재계획이 one-step 효율 제어보다 나은가 "
+                f"(shrinking Q={max_q:g} - C0)"
+            ),
+            statistic=gate_c2,
+            unit="nat",
+            go_threshold=0.3,
+            pivot_threshold=0.05,
+            detail=(
+                f"깊이/상한(shrinking): {' '.join(depth_notes)}. "
+                f"참고 Q={min_q:g}(depth 1만 가능) - C0 = {q1_gain:+.3f} nat. "
+                "**GO 판정에는 두 조건이 모두 필요하다** (P3). 개선이 있고, "
+                "동시에 depth>1 이 실제로 채택돼야 한다. 개선만 있고 depth 가 "
+                "계속 1 이면 planning 이 아니라 탐색량이 기여한 것이다. "
                 "``cap`` 이 0 이 아니면 계산 상한 때문에 쿼터를 다 쓰지 못한 "
-                "step 이 있으므로 사다리 비교가 훼손된 것으로 보고해야 한다. "
-                "재설계 판정이면 contextual bandit / heuristic 으로 충분하며 "
-                "PPO 를 시작하지 않는다 (프로토콜 PPO 착수 조건 1)."
+                "step 이 있으므로 사다리 비교가 훼손된 것으로 보고한다. "
+                "이 게이트만으로 PPO 를 시작하지 않는다. P1~P4 를 함께 본다."
+            ),
+        )
+    )
+    report.gates.append(
+        GateVerdict(
+            name="C3",
+            track="Track E",
+            question="상태를 관찰하며 재계획하는 것이 고정 실행보다 추가 이득인가 (shrinking - committed)",
+            statistic=e_delta(commit, shrink),
+            unit="nat",
+            go_threshold=0.3,
+            pivot_threshold=0.05,
+            detail=(
+                "약 0 이면 좋은 sequence 는 존재하지만 feedback 자체의 추가 "
+                "가치는 작다. 음수면 approximate replanning 이 계획을 훼손한다. "
+                "**committed 는 초기 상태에 조건화된 oracle 이므로 open_loop "
+                "baseline 과 다르다.** committed 가 open_loop 보다 좋다고 해서 "
+                "feedback 이 필요하다는 뜻이 아니다."
             ),
         )
     )
