@@ -29,8 +29,11 @@ def main(argv: list[str]) -> int:
             records.append(json.loads(line))
 
     by_controller: dict[str, list[dict]] = {}
+    by_experiment: dict[str, int] = {}
     n_failed = 0
     for rec in records:
+        exp = rec["key"].get("experiment_id", "?")
+        by_experiment[exp] = by_experiment.get(exp, 0) + 1
         if rec.get("status") != "completed":
             n_failed += 1
             continue
@@ -38,6 +41,10 @@ def main(argv: list[str]) -> int:
 
     print(f"{path.name}")
     print(f"  기록 {len(records)}개, 실패 {n_failed}개, 컨트롤러 {len(by_controller)}종")
+    # 한 파일에 여러 experiment_id 가 섞일 수 있다. RunKey 가 experiment_id 를
+    # 포함하므로 재사용은 안전하지만, 몇 개 정체성이 섞였는지는 봐야 한다.
+    print(f"  experiment_id {len(by_experiment)}종: ", end="")
+    print(", ".join(f"{e[:12]}={n}" for e, n in sorted(by_experiment.items())))
     print()
     print(f"  {'controller':<28} {'run':>4} {'object GE':>10} {'search GE':>12} {'wall(s)':>8}")
     print(f"  {'-' * 28} {'-' * 4} {'-' * 10} {'-' * 12} {'-' * 8}")
