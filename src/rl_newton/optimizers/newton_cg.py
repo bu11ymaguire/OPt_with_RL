@@ -246,10 +246,28 @@ class NewtonCGConfig:
     fallback_grad_clip: float = 1.0
     compute_trust_ratio: bool = True
     """``True`` 면 ``p^T H p`` 계산에 HVP 1회를 더 쓴다. 비용에 포함된다."""
+    acceptance_loss: str = "control"
+    """``control`` | ``fixed_eval``. 수락 판정을 어떤 목적함수로 하는가 (D28).
+
+    ```text
+    control     gradient / HVP 와 같은 표본. 결정론적 task 에서는 유일한 선택
+    fixed_eval  step 마다 바뀌지 않는 목적함수. task 가 acceptance_loss() 를
+                제공할 때만 유효하다
+    ```
+
+    `_accept` 는 단조 감소를 요구한다. minibatch 목적함수에서는 참 목적함수를
+    개선하는 step 도 표본 잡음 때문에 거절될 수 있다. `fixed_eval` 은 그 교란을
+    분리하는 ablation 이다. gradient 와 HVP 는 계속 minibatch 를 쓴다.
+
+    **비용을 숨기지 않는다.** 고정 평가 forward 는 `acceptance_forward_units` 배로
+    회계에 들어간다.
+    """
 
     def __post_init__(self) -> None:
         if self.total_steps < 1:
             raise ValueError(f"total_steps must be >= 1, got {self.total_steps}")
+        if self.acceptance_loss not in ("control", "fixed_eval"):
+            raise ValueError(f"unknown acceptance_loss: {self.acceptance_loss!r}")
         if self.cost_budget_ge is not None and self.cost_budget_ge <= 0.0:
             raise ValueError(f"cost_budget_ge must be > 0 when given, got {self.cost_budget_ge}")
         if self.min_damping <= 0.0:
@@ -468,9 +486,20 @@ class NewtonCGOptimizer:
         self._flat = ParameterFlattener(task.params)
         self._damping_log10 = self.config.initial_damping_log10
         self._operator: DampedHessianOperator | None = None
+
+        # D28. task 가 고정 평가 목적함수를 제공하지 않으면 조용히 `control` 로
+        # 되돌린다. 결정론적 task 에서는 두 목적함수가 같으므로 차이가 없다.
+        self._fixed_eval = self.config.acceptance_loss == "fixed_eval" and hasattr(
+            task, "acceptance_loss"
+        )
+        self._accept_units = (
+            float(getattr(task, "acceptance_forward_units", 1.0))
+            if self._fixed_eval
+            else 1.0
+        )
         self._base_params: Tensor | None = None
         self._search_hvp = 0
-        self._search_forward = 0
+        self._search_forward: float = 0.0
         self._search_graph_count = 0
         self._graph_dirty = False
         """파라미터가 in-place 로 변경되어 현재 HVP 그래프가 무효한지 여부."""
@@ -498,8 +527,12 @@ class NewtonCGOptimizer:
 
     # --- 비용 회계 --------------------------------------------------------
 
-    def step_cost_ge(self, hvp: int, forward: int, *, with_graph: bool = True) -> float:
-        """GE 환산 비용. cost_model 이 없으면 HVP 를 단위로 쓴다."""
+    def step_cost_ge(self, hvp: int, forward: float, *, with_graph: bool = True) -> float:
+        """GE 환산 비용. cost_model 이 없으면 HVP 를 단위로 쓴다.
+
+        ``forward`` 는 실수다. 고정 평가 목적함수 forward 는 control forward 보다
+        비싸므로 배수로 센다 (D28).
+        """
         if self.cost_model is None:
             # synthetic task 에서는 "HVP 등가 횟수" 로 해석한다.
             # forward 는 HVP 보다 훨씬 싸므로 0.3 상당으로 근사한다.
@@ -565,6 +598,22 @@ class NewtonCGOptimizer:
         with torch.no_grad():
             return float(self.task.curvature_loss().detach())
 
+    @property
+    def uses_fixed_eval_acceptance(self) -> bool:
+        """수락 판정이 고정 평가 목적함수를 쓰는가 (D28)."""
+        return self._fixed_eval
+
+    def step_objective(self) -> float:
+        """**수락 판정에 쓰는 목적함수 값.**
+
+        `control` 모드에서는 `control_loss()` 와 같다. `fixed_eval` 모드에서만
+        `task.acceptance_loss()` 로 갈린다 (D28).
+        """
+        if not self._fixed_eval:
+            return self.control_loss()
+        with torch.no_grad():
+            return float(self.task.acceptance_loss().detach())  # type: ignore[attr-defined]
+
     def evaluate_loss_at(self, direction: Tensor, step_size: float) -> float:
         """``L(theta + step_size * direction)``. 파라미터는 값으로 복원한다.
 
@@ -576,14 +625,14 @@ class NewtonCGOptimizer:
         그래서 ``_graph_dirty`` 를 세운다. 이후 curvature 가 필요한 연산은
         새 그래프를 만들어야 한다.
 
-        **control loss 를 쓴다.** 수락 판정이 `operator.loss` 와 비교되므로 같은
-        표본이어야 한다.
+        **수락 판정에 쓰는 목적함수를 쓴다.** `loss_before` 와 같은 목적함수여야
+        비교가 성립한다 (D28).
         """
         assert self._base_params is not None
         self._flat.add_(direction, alpha=step_size)
         self._graph_dirty = True
         try:
-            return self.control_loss()
+            return self.step_objective()
         finally:
             self._flat.copy_from_(self._base_params)
 
@@ -630,7 +679,7 @@ class NewtonCGOptimizer:
                     damping_absolute=representative.damping_absolute,
                 )
                 candidate_loss = self.evaluate_loss_at(cg.solution, step_size)
-                self._search_forward += 1
+                self._search_forward += self._accept_units
                 candidates.append(
                     Candidate(
                         action=action,
@@ -677,7 +726,7 @@ class NewtonCGOptimizer:
         self.controller.reset()
         self._damping_log10 = self.config.initial_damping_log10
         self._search_hvp = 0
-        self._search_forward = 0
+        self._search_forward = 0.0
         self._search_graph_count = 0
         self._graph_dirty = False
 
@@ -740,9 +789,9 @@ class NewtonCGOptimizer:
         return trace
 
     def _run_step(self, step: int, trace: OptimizationTrace) -> StepRecord:
-        # 컨트롤러가 보는 loss 는 control loss 다. 자신이 행동할 수 있는 표본이어야
-        # 한다. 결정론적 task 에서는 `loss()` 와 동일하다.
-        loss_before = self.control_loss()
+        # 컨트롤러가 보는 loss 는 수락 판정에 쓰는 목적함수와 같아야 한다. 자신이
+        # 판정받는 기준을 봐야 하기 때문이다. 결정론적 task 에서는 `loss()` 와 동일하다.
+        loss_before = self.step_objective()
         if not math.isfinite(loss_before):
             return self._failed_record(step, loss_before, loss_before, "nan")
 
@@ -802,7 +851,9 @@ class NewtonCGOptimizer:
         cfg = self.config
         with _StepScope(self, force_new=not reuse_operator) as ok:
             operator = self.operator
-            loss_before = operator.loss
+            # `control` 모드에서는 그래프가 이미 계산한 값을 쓴다 (추가 비용 0).
+            # `fixed_eval` 모드에서는 별도 forward 가 필요하고 그 비용을 센다 (D28).
+            loss_before = operator.loss if not self._fixed_eval else self.step_objective()
             if not ok or not math.isfinite(loss_before):
                 return _Outcome(
                     loss_after=float("nan"),
@@ -818,7 +869,12 @@ class NewtonCGOptimizer:
             grad = operator.grad
             grad_norm = float(grad.norm())
             hvp_before = operator.hvp_count
-            forward_count = 0
+            # **호출 횟수와 비용 단위를 분리한다** (D28).
+            #   forward_calls  기록용 정수. `StepRecord.forward_count` 계약을 지킨다
+            #   forward_units  GE 회계용 실수. 고정 평가 forward 는 더 비싸다
+            # `control` 모드에서는 두 값이 같으므로 기존 기록이 그대로 보존된다.
+            forward_calls = 1 if self._fixed_eval else 0
+            forward_units: float = self._accept_units if self._fixed_eval else 0.0
 
             # --- damping 갱신 (지속 상태) ---
             self._damping_log10 = apply_damping_action(
@@ -855,7 +911,8 @@ class NewtonCGOptimizer:
 
             # --- candidate 평가와 수락 판정 ---
             candidate_loss = self.evaluate_loss_at(direction, action.step_size)
-            forward_count += 1
+            forward_calls += 1
+            forward_units += self._accept_units
             accepted, failure_tag = self._accept(loss_before, candidate_loss, cg)
 
             if accepted:
@@ -863,14 +920,15 @@ class NewtonCGOptimizer:
                 loss_after = candidate_loss
             else:
                 loss_after = self._handle_rejection(grad, failure_tag)
-                forward_count += 1
+                forward_calls += 1
+                forward_units += self._accept_units
 
             hvp_used = operator.hvp_count - hvp_before
-            cost_ge = self.step_cost_ge(hvp_used, forward_count)
+            cost_ge = self.step_cost_ge(hvp_used, forward_units)
 
             if not record:
                 self._search_hvp += hvp_used
-                self._search_forward += forward_count
+                self._search_forward += forward_units
                 return _Outcome(loss_after=loss_after, cost_ge=cost_ge, accepted=accepted)
 
             actual = loss_before - loss_after
@@ -897,7 +955,7 @@ class NewtonCGOptimizer:
                 predicted_reduction=predicted,
                 actual_reduction=actual,
                 hvp_count=hvp_used,
-                forward_count=forward_count,
+                forward_count=forward_calls,
                 backward_count=1,
                 cost_ge=cost_ge,
                 step_accepted=accepted,
@@ -970,18 +1028,18 @@ class NewtonCGOptimizer:
         )
 
         if cfg.safe_fallback == "none":
-            return self.control_loss()
+            return self.step_objective()
 
         norm = float(grad.norm())
         if not math.isfinite(norm) or norm == 0.0:
-            return self.control_loss()
+            return self.step_objective()
         scale = min(1.0, cfg.fallback_grad_clip / norm)
         assert self._base_params is not None
         self._flat.add_(grad, alpha=-cfg.fallback_step_size * scale)
-        value = self.control_loss()
+        value = self.step_objective()
         if not math.isfinite(value):
             self._flat.copy_from_(self._base_params)
-            return self.control_loss()
+            return self.step_objective()
         return value
 
     def _failed_record(

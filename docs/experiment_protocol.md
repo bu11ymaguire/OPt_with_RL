@@ -700,6 +700,105 @@ rosen_d5
 > Rosenbrock 결과는 configuration selection 에 사용하지 않고 비선형 행동 분석에만
 > 사용한다.
 
+### D28. `fixed_eval` 수락 규칙 ablation. R2 의 교란을 닫는다
+
+D27 의 R2 결과에는 두 효과가 섞여 있다.
+
+```text
+[1] minibatch 가 바뀌어 committed plan 이 낡아지는 현상
+[2] noisy loss 에서 엄격한 단조 감소를 요구해 step 이 거절되는 현상
+```
+
+`newton_cg.py` 의 `_accept` 주석이 이미 [2] 를 경고했다. 따라서 R2 의
+`C3 = +1.666` 크기를 그대로 주장할 수 없다.
+
+#### ablation 설계 (범위를 하나로 제한한다)
+
+**optimizer 를 재설계하거나 기존 실험을 무효화하지 않는다.**
+
+```text
+gradient 와 HVP    계속 minibatch 에서 계산
+accept / reject    step 마다 바뀌지 않는 목적함수로 판정
+평가 forward 비용   object-level GE 회계에 포함
+설정              이미 freeze 한 Q4 narrow 그대로
+비교 대상          static / C0 / committed / shrinking
+정체성            새 semantics 키 아래 별도 결과로 보존
+```
+
+고정 평가 목적함수는 **전체 데이터**를 쓴다. `batch_size` 크기의 고정 부분집합보다
+참 목적함수에 가깝고, 이 ablation 의 목적이 표본 잡음 제거이므로 그쪽이 맞다.
+
+#### 비용을 숨기지 않는다
+
+전체 데이터 forward 는 minibatch forward 보다 `n_samples / batch_size` 배 비싸다.
+
+```text
+acceptance_forward_units = n_samples / batch_size     (full_batch 면 1.0)
+```
+
+이 배수가 GE 회계에 들어간다. `step_cost_ge(hvp, forward)` 의 `forward` 를 실수로
+바꿨다. **`StepRecord.forward_count` 는 호출 횟수(정수)로 유지**하고 비용 단위와
+분리했다. 기존 기록이 그대로 보존된다.
+
+#### 기본값은 해시를 바꾸지 않는다
+
+새 옵션을 무조건 `_core_payload` 에 넣으면 기존 run 전체의 `run_semantics_id` 가
+바뀌어 재실행된다. 기본값은 이전과 같은 의미이므로 해시도 같아야 한다.
+
+```text
+acceptance_loss == "control"     키를 넣지 않는다.  해시 불변
+acceptance_loss == "fixed_eval"  키를 넣는다.      해시 변경
+```
+
+`OPTIMIZER_SEMANTICS_VERSION` 을 올리지 않는다. 결정론적 task 는
+`acceptance_loss()` 를 제공하지 않으므로 조용히 `control` 로 되돌아가고 결과가
+bitwise 동일하다. `tests/test_control_vs_eval_loss.py::TestFixedEvalAcceptance` 가
+검증한다.
+
+#### 결과 해석 시나리오 (사전 등록)
+
+```text
+C3 가 여전히 크지만 shrinking 이 C0 보다 나쁨
+  -> stale-plan 방지일 뿐이다. RL 근거 없음
+
+C3 가 작아짐
+  -> 기존 feedback 효과 대부분이 acceptance artifact 였다
+
+shrinking 이 C0 까지 이김
+  -> feedback 연구를 재검토할 근거가 생긴다
+```
+
+현재 증거상 마지막 경우의 가능성은 높지 않다. 어느 쪽이든 **결과를 본 뒤 해석을
+만들지 않기 위해** 여기에 미리 적는다.
+
+### D29. `batch_size` 축은 **중간 한 점만** 추가한다
+
+`batch_size ∈ {16, 32, 64, 128, ...}` 를 전면 스캔하면 프로젝트가 끝없이 늘어난다.
+이미 두 끝점이 있다.
+
+```text
+full batch   planning 가치 큼, feedback 가치 없음
+batch 64     planning 붕괴, myopic controller 우세
+```
+
+중간 한 점(`batch_size=128`, `n_samples=512` 이므로 epoch 당 4 batch)만 추가해 세
+점의 전이 방향을 본다.
+
+```text
+full batch  ->  batch 128  ->  batch 64
+```
+
+관심 지표를 사전에 고정한다.
+
+```text
+planning − C0            (C2)
+shrinking − committed    (C3)
+거절률
+suffix retention / 계획 변경률
+```
+
+**전이 방향만 탐색적으로 보고한다.** 세 점으로 함수 형태를 주장하지 않는다.
+
 ### D27. micro-neural 두 regime. **모델 정확도가 축이다.** `C3 > 0` 의 원인은 feedback 이 아니다
 
 `shrinking_Q4_narrow` 를 micro-neural 두 regime × seeds 2/3/4 에 적용했다. 144 run,
@@ -828,14 +927,17 @@ A1=GO  A2=GO  B=재설계  C1=판정불가  C2=GO  C3=재설계  D=GO
 ```
 
 ```text
-A2   shrinking − best_static   +1.690  CI +1.462~+2.368  p=0.0000  40/40 양수
-C2   shrinking − onestep       +0.456  CI +0.254~+0.720  p=0.0000  35 양수 / 5 음수
-C3   shrinking − committed     +0.010  CI −0.033~+0.053  p=0.9725  21 양 / 1 영 / 18 음
+A2   shrinking − best_static   +1.690  CI +1.462~+2.368  p<0.0001  40/40 양수
+C2   shrinking − onestep       +0.456  CI +0.254~+0.720  p<0.0001  35 양수 / 5 음수
+C3   shrinking − committed     +0.010  CI −0.033~+0.053  p=0.97    21 양 / 1 영 / 18 음
 B    absolute − narrow (H=1)   +0.005
-ref  open_loop − best_static   +0.395  CI +0.350~+0.476  p=0.0000
-ref  heuristic − best_static   −0.000  p=0.7750
+ref  open_loop − best_static   +0.395  CI +0.350~+0.476  p<0.0001
+ref  heuristic − best_static   −0.000  p=0.78
 D    cost-to-target (medium)   1.706배  절감 41.4%  p=0.0004  도달 16/40
 ```
+
+**`p` 값을 `0.0000` 으로 쓰지 않는다.** 부트스트랩/순열 기반이므로 `p<0.0001` 이
+정확하다.
 
 #### dev 대비 변화
 
@@ -852,18 +954,25 @@ CI 하한이 `+0.254` 다. `depth>1` 채택률 `0.84`, `cap 0.00` 이므로 P3 �
 
 #### `C3` 의 성격이 바뀌었다
 
-dev 에서는 `p=0.38` 로 "검출하지 못했다" 였다. held-out 에서는 다르다.
+dev 에서는 `p=0.38` 로 "검출하지 못했다" 였다. held-out 에서는 CI 가 좁다.
 
 ```text
-C3 = +0.010 nat,  95% CI [−0.033, +0.053],  n=40
+C3 = +0.010 nat,  95% CI [−0.033, +0.053],  n=40,  21승 1무 18패
 ```
 
-**CI 가 `±0.05 nat` 안에 들어온다.** 즉 "표본이 작아 못 봤다" 가 아니라
+##### 주장할 수 있는 문장과 할 수 없는 문장
 
-> feedback replanning 의 추가 효과는 `0.053 nat` 보다 작다.
+**equivalence margin 을 사전 등록하지 않았다.** 따라서 "효과가 0 이다" 나 "효과가
+`0.053 nat` 보다 작다" 를 검정 결과로 주장할 수 없다. 정확한 표현은 이것이다.
 
-를 95% 신뢰수준으로 말할 수 있다. 21승 1무 18패로 부호도 균형이다. **좁은 귀무
-결과다.**
+> held-out 결과에서 feedback 효과는 `+0.010 nat` 였으며, 95% CI 가
+> `[−0.033, +0.053]` 으로 좁게 0 을 포함했다. 따라서 **실용적으로 큰 feedback
+> 이득은 관측되지 않았다.**
+
+`p=0.0000` 이라고 쓰지 않는다. `p<0.0001` 로 쓴다.
+
+부호가 21승 1무 18패로 균형인 것과 CI 폭이 `0.086 nat` 인 것을 함께 보고한다.
+`A2` 의 CI 폭이 `0.906 nat` 인 것과 대비하면 정밀도의 차이가 드러난다.
 
 #### 총 헤드룸의 정확한 분해
 

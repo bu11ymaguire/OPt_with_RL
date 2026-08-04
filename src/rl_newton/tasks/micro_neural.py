@@ -395,6 +395,32 @@ class MicroNeuralTask:
         index = self._batch_stream[self._step_index % len(self._batch_stream)]
         return self._cross_entropy(index)
 
+    def acceptance_loss(self) -> Tensor:
+        """**고정 평가 목적함수.** `fixed_eval` 수락 규칙에서 쓴다 (D28).
+
+        R2 에서 `_accept` 가 minibatch loss 의 단조 감소를 요구하면, 참 목적함수를
+        개선하는 step 도 표본 잡음 때문에 거절될 수 있다. 그 교란을 분리하려고
+        수락 판정만 **step 마다 바뀌지 않는** 목적함수로 옮긴다.
+
+        gradient 와 HVP 는 계속 minibatch 에서 나온다. 바뀌는 것은 수락 판정뿐이다.
+
+        전체 데이터를 쓴다. `batch_size` 크기의 고정 부분집합보다 참 목적함수에
+        가깝고, 이 ablation 의 목적이 "표본 잡음 제거" 이므로 그쪽이 맞다.
+        """
+        return self._cross_entropy(None)
+
+    @property
+    def acceptance_forward_units(self) -> float:
+        """`acceptance_loss` 한 번이 control forward 몇 개에 상당하는가.
+
+        **비용을 숨기지 않는다.** 전체 데이터 forward 는 minibatch forward 보다
+        `n_samples / batch_size` 배 비싸고, 그 값이 GE 회계에 들어가야 공정한
+        비교가 된다.
+        """
+        if self._spec.regime == "full_batch":
+            return 1.0
+        return float(self._spec.n_samples) / float(self._spec.batch_size)
+
     def advance_batch(self) -> None:
         """다음 step 의 batch 로 넘어간다.
 

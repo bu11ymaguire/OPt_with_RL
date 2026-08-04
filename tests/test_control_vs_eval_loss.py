@@ -208,3 +208,144 @@ class TestMicroNeuralStochastic:
             values.append(float(task.curvature_loss()))
             task.advance_batch()
         assert len(set(values)) > 1
+
+
+class TestFixedEvalAcceptance:
+    """`fixed_eval` 수락 규칙이 기존 결과를 바꾸지 않아야 한다 (D28).
+
+    `_accept` 는 단조 감소를 요구한다. minibatch 목적함수에서는 참 목적함수를
+    개선하는 step 도 표본 잡음 때문에 거절될 수 있다. 그 교란을 분리하는
+    ablation 이지만, **기본값 경로는 bitwise 보존**되어야 한다.
+    """
+
+    def _optimize(self, task, controller, *, acceptance: str):
+        config = NewtonCGConfig(
+            total_steps=40,
+            cost_budget_ge=60.0,
+            initial_damping=1.0e-2,
+            acceptance_loss=acceptance,
+        )
+        return NewtonCGOptimizer(task, controller, config, run_id="t", seed=0).run()
+
+    def test_invalid_mode_rejected(self):
+        with pytest.raises(ValueError):
+            NewtonCGConfig(acceptance_loss="full_batch")
+
+    @pytest.mark.parametrize("factory", [quad, rosen])
+    def test_deterministic_tasks_are_unaffected(self, factory):
+        """결정론적 task 는 `acceptance_loss` 를 제공하지 않으므로 무시된다."""
+        a = self._optimize(factory(), CONTROLLERS["shrinking"](), acceptance="control")
+        b = self._optimize(
+            factory(), CONTROLLERS["shrinking"](), acceptance="fixed_eval"
+        )
+        assert a.final_loss == b.final_loss
+        assert a.total_cost_ge == b.total_cost_ge
+        assert a.search_cost_ge == b.search_cost_ge
+        assert len(a.records) == len(b.records)
+
+    def test_fallback_when_task_lacks_hook(self):
+        opt = NewtonCGOptimizer(
+            quad(),
+            CONTROLLERS["fixed"](),
+            NewtonCGConfig(total_steps=3, acceptance_loss="fixed_eval"),
+            run_id="t",
+            seed=0,
+        )
+        assert not opt.uses_fixed_eval_acceptance
+
+    def test_enabled_for_micro_neural(self):
+        opt = NewtonCGOptimizer(
+            micro("controlled_stochastic"),
+            CONTROLLERS["fixed"](),
+            NewtonCGConfig(total_steps=3, acceptance_loss="fixed_eval"),
+            run_id="t",
+            seed=0,
+        )
+        assert opt.uses_fixed_eval_acceptance
+
+    def test_forward_count_stays_integer(self):
+        """`StepRecord.forward_count` 는 호출 횟수다. 비용 단위와 섞지 않는다."""
+        trace = self._optimize(
+            micro("controlled_stochastic"), CONTROLLERS["fixed"](), acceptance="fixed_eval"
+        )
+        for record in trace.records:
+            assert isinstance(record.forward_count, int)
+            assert record.forward_count >= 1
+
+    def test_acceptance_forward_cost_is_charged(self):
+        """평가 forward 비용을 숨기지 않는다. 같은 step 수라면 GE 가 더 커야 한다."""
+        task = micro("controlled_stochastic")
+        # 테스트 헬퍼는 n_samples=64, batch_size=16 이다.
+        assert task.acceptance_forward_units == pytest.approx(64 / 16)
+        cheap = self._optimize(
+            micro("controlled_stochastic"), CONTROLLERS["fixed"](), acceptance="control"
+        )
+        dear = self._optimize(
+            micro("controlled_stochastic"), CONTROLLERS["fixed"](), acceptance="fixed_eval"
+        )
+        per_step_cheap = cheap.total_cost_ge / len(cheap.records)
+        per_step_dear = dear.total_cost_ge / len(dear.records)
+        assert per_step_dear > per_step_cheap
+
+    def test_full_batch_units_are_one(self):
+        assert micro("full_batch").acceptance_forward_units == 1.0
+
+    def test_acceptance_loss_equals_full_data_loss(self):
+        task = micro("controlled_stochastic")
+        assert float(task.acceptance_loss().detach()) == float(task.loss().detach())
+        assert float(task.acceptance_loss().detach()) != float(task.curvature_loss().detach())
+
+    def test_gradient_still_comes_from_minibatch(self):
+        """수락 판정만 바꾼다. gradient / HVP 는 계속 minibatch 다."""
+        task = micro("controlled_stochastic")
+        opt = NewtonCGOptimizer(
+            task,
+            CONTROLLERS["fixed"](),
+            NewtonCGConfig(total_steps=3, acceptance_loss="fixed_eval"),
+            run_id="t",
+            seed=0,
+        )
+        assert opt.control_loss() != opt.step_objective()
+
+
+class TestAcceptanceIdentity:
+    """`acceptance_loss` 기본값은 `run_semantics_id` 를 바꾸지 않아야 한다 (D28)."""
+
+    def _config(self, **kwargs):
+        from rl_newton.benchmark.metrics import TargetSpec as _TargetSpec
+        from rl_newton.benchmark.oracle import HeadroomConfig
+        from rl_newton.tasks.quadratics import QuadraticSpec as _QSpec
+
+        params = {
+            "specs": [_QSpec(kind="spd", dimension=8, condition_number=10.0)],
+            "seeds": [0],
+            "targets": {"spd": {"medium": _TargetSpec("relative_loss", 1.0e-4)}},
+            "cost_budget_ge": 150.0,
+        }
+        params.update(kwargs)
+        return HeadroomConfig(**params)  # type: ignore[arg-type]
+
+    def test_default_keeps_hash_stable(self):
+        from rl_newton.benchmark.store import run_semantics_id
+
+        base = self._config()
+        payload = base.run_semantics_payload(controller="best_static")
+        assert "acceptance_loss" not in payload
+        explicit = self._config(acceptance_loss="control")
+        assert run_semantics_id(payload) == run_semantics_id(
+            explicit.run_semantics_payload(controller="best_static")
+        )
+
+    def test_fixed_eval_changes_hash(self):
+        from rl_newton.benchmark.store import run_semantics_id
+
+        a = self._config().run_semantics_payload(controller="best_static")
+        b = self._config(acceptance_loss="fixed_eval").run_semantics_payload(
+            controller="best_static"
+        )
+        assert "acceptance_loss" in b
+        assert run_semantics_id(a) != run_semantics_id(b)
+
+    def test_invalid_value_rejected_at_optimizer_config(self):
+        with pytest.raises(ValueError):
+            self._config(acceptance_loss="nonsense").optimizer_config()

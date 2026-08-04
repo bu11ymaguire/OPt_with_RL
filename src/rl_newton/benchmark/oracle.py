@@ -241,6 +241,11 @@ class HeadroomConfig:
     """
     tuning_seed: int = 0
     n_schedule_segments: int = 4
+    acceptance_loss: str = "control"
+    """``control`` | ``fixed_eval``. 수락 판정 목적함수 (D28).
+
+    기본값이 아닐 때만 ``run_semantics_id`` 에 들어간다. 기존 결과를 보존한다.
+    """
     phase: Phase = "pilot"
     primary_difficulty: str = "medium"
     """게이트 D의 주 target 난이도."""
@@ -266,6 +271,7 @@ class HeadroomConfig:
             total_steps=self.max_steps,
             cost_budget_ge=self.cost_budget_ge,
             initial_damping=self.initial_damping,
+            acceptance_loss=self.acceptance_loss,
         )
 
     def _space_payload(self, space: ActionSpace) -> dict[str, object]:
@@ -277,9 +283,14 @@ class HeadroomConfig:
         }
 
     def _core_payload(self) -> dict[str, object]:
-        """모든 컨트롤러가 공유하는 실행 의미. optimizer 루프 자체의 설정이다."""
+        """모든 컨트롤러가 공유하는 실행 의미. optimizer 루프 자체의 설정이다.
+
+        **기본값인 설정은 키를 넣지 않는다.** 새 옵션을 추가할 때 무조건 키를 넣으면
+        기존 run 전체의 ``run_semantics_id`` 가 바뀌어 재실행된다. 기본값은 이전과
+        같은 의미이므로 해시도 같아야 한다 (D28).
+        """
         optimizer = self.optimizer_config()
-        return {
+        payload: dict[str, object] = {
             "protocol_version": PROTOCOL_VERSION,
             "optimizer_semantics": OPTIMIZER_SEMANTICS_VERSION,
             "task_semantics": TASK_SEMANTICS_VERSION,
@@ -295,6 +306,9 @@ class HeadroomConfig:
             "safe_fallback": optimizer.safe_fallback,
             "compute_trust_ratio": optimizer.compute_trust_ratio,
         }
+        if optimizer.acceptance_loss != "control":
+            payload["acceptance_loss"] = optimizer.acceptance_loss
+        return payload
 
     def run_semantics_payload(
         self,

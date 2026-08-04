@@ -162,8 +162,12 @@ def micro_neural_specs() -> list:
         teacher_hidden_dim=256,
         label_noise=0.05,
     )
+    # 중간 batch 하나만 추가한다 (D29). 축을 전면 스캔하면 프로젝트가 끝없이
+    # 늘어난다. 세 점이면 "모델 오차가 커질수록 planning 가치가 사라지는가" 라는
+    # 전이 방향을 탐색적으로 볼 수 있다.
     return [
         base,
+        replace(base, regime="controlled_stochastic", batch_size=128),
         replace(base, regime="controlled_stochastic", batch_size=64),
     ]
 
@@ -282,6 +286,7 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         planner_spaces=tuple(args.planner_spaces),
         run_track_t=not args.skip_track_t,
         tuning_budget=args.tuning_budget,
+        acceptance_loss=args.acceptance_loss,
         phase=phase,  # type: ignore[arg-type]
         primary_difficulty=args.difficulty,
         device="cpu",
@@ -297,6 +302,7 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         "difficulty": args.difficulty,
         "n_specs": len(specs),
         "narrow_only": bool(args.narrow_only),
+        "acceptance_loss": args.acceptance_loss,
     }
     return config, meta | {"spaces": (narrow, wide, absolute)}
 
@@ -409,6 +415,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--control-step-size",
         action="store_true",
         help="step_size 축을 제어에 포함. 기본은 1.0 고정 (aliasing 회피)",
+    )
+    parser.add_argument(
+        "--acceptance-loss",
+        choices=["control", "fixed_eval"],
+        default="control",
+        help=(
+            "수락 판정 목적함수 (D28). fixed_eval 은 step 마다 바뀌지 않는 목적함수로 "
+            "판정한다. gradient/HVP 는 계속 minibatch 를 쓴다. 평가 forward 비용을 "
+            "GE 회계에 포함한다"
+        ),
     )
     parser.add_argument(
         "--threads",
