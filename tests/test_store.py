@@ -645,3 +645,88 @@ class TestSelectionManifest:
         }
         changed = dict(base, n_tune=24)
         assert selection_id(base) != selection_id(changed)
+
+
+class TestSweepCoverageCli:
+    """``--modes`` 생략과 빈 목록을 구별해야 한다 (프로토콜 D13).
+
+    재현 명령을 잘못 입력해 planner 전체가 조용히 빠지는 사고를 막는다.
+    """
+
+    def _parse(self, argv):
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import run_headroom
+
+        parser = run_headroom.build_parser()
+        return parser.parse_args(argv)
+
+    def test_omitted_modes_gives_all_three(self):
+        args = self._parse([])
+        assert set(args.modes) == {"shrinking", "committed", "fresh"}
+
+    def test_empty_modes_disables_planner(self):
+        args = self._parse(["--modes"])
+        assert args.modes == []
+
+    def test_explicit_subset_is_respected(self):
+        args = self._parse(["--modes", "shrinking", "committed"])
+        assert args.modes == ["shrinking", "committed"]
+
+    def test_planner_spaces_default_and_subset(self):
+        assert set(self._parse([]).planner_spaces) == {"narrow", "wide"}
+        assert self._parse(["--planner-spaces", "narrow"]).planner_spaces == ["narrow"]
+
+    def test_track_t_default_on(self):
+        assert not self._parse([]).skip_track_t
+        assert self._parse(["--skip-track-t"]).skip_track_t
+
+    def test_coverage_options_are_sweep_only(self):
+        """커버리지 옵션은 run 정체성에 들어가지 않는다."""
+        helper = TestThreeLayerIdentity()
+        a = helper._config(execution_modes=("shrinking",), run_track_t=False)
+        b = helper._config(
+            execution_modes=("shrinking", "committed", "fresh"), run_track_t=True
+        )
+        assert run_semantics_id(
+            a.run_semantics_payload(controller="best_static")
+        ) == run_semantics_id(b.run_semantics_payload(controller="best_static"))
+        assert "execution_modes" not in a.run_semantics_payload(controller="best_static")
+
+
+class TestRealizedSegmentReporting:
+    """구간 미계측(캐시 재사용)과 구간 미실행을 구별해야 한다 (프로토콜 D17)."""
+
+    def _manifest(self, **kwargs):
+        from rl_newton.benchmark.store import SelectionManifest
+
+        action = {"flat_index": 4, "cg_budget": 5}
+        params = {
+            "selection_id": "sel0002",
+            "family": "open_loop",
+            "selected_label": "open_loop[7]",
+            "selected_config": {"schedule": [action, action, action, action]},
+            "progress_clock": "object_ge_fraction",
+        }
+        params.update(kwargs)
+        return SelectionManifest(**params)
+
+    def test_uncounted_is_not_reported_as_unused(self):
+        text = self._manifest(realized_segment_counts={}).describe()
+        assert "미계측" in text
+        assert "실행되지 않았다" not in text
+
+    def test_partial_usage_is_warned(self):
+        text = self._manifest(realized_segment_counts={"0": 4, "1": 20}).describe()
+        assert "실행된 구간 2/4" in text
+        assert "실행되지 않았다" in text
+
+    def test_full_usage_has_no_warning(self):
+        text = self._manifest(
+            realized_segment_counts={"0": 4, "1": 20, "2": 1, "3": 11}
+        ).describe()
+        assert "실행된 구간 4/4" in text
+        assert "실행되지 않았다" not in text
+        assert "36 step" in text

@@ -313,6 +313,9 @@ class OpenLoopController:
         True
     """
 
+    _CLOCK = "object_ge_fraction"
+    """시계 정의 (프로토콜 D17). ``run_semantics_id`` 에 들어간다."""
+
     def __init__(self, segments: Sequence[ScheduleSegment], *, name: str = "open_loop") -> None:
         if not segments:
             raise ValueError("segments must not be empty")
@@ -323,10 +326,16 @@ class OpenLoopController:
             raise ValueError(f"last segment must cover progress 1.0, got {uppers[-1]}")
         self._segments = tuple(segments)
         self._name = name
+        self._realized_counts: dict[int, int] = {}
+        self._realized_ge: dict[int, float] = {}
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def clock(self) -> str:
+        return self._CLOCK
 
     @property
     def segments(self) -> tuple[ScheduleSegment, ...]:
@@ -338,14 +347,46 @@ class OpenLoopController:
                 return segment.action
         return self._segments[-1].action
 
+    def segment_index_at(self, progress: float) -> int:
+        for i, segment in enumerate(self._segments):
+            if progress <= segment.until:
+                return i
+        return len(self._segments) - 1
+
     def select(self, context: StepContext, optimizer: NewtonCGOptimizer) -> ControllerAction:
-        return self.action_at(context.progress)
+        # resource clock (프로토콜 D17). progress 는 소모 GE 비율이다.
+        index = self.segment_index_at(context.progress)
+        self._realized_counts[index] = self._realized_counts.get(index, 0) + 1
+        self._realized_ge[index] = self._realized_ge.get(index, 0.0) + (
+            context.previous.cost_ge
+            if context.previous is not None and math.isfinite(context.previous.cost_ge)
+            else 0.0
+        )
+        return self._segments[index].action
+
+    @property
+    def realized_segment_counts(self) -> dict[int, int]:
+        """구간별 실행 step 수 (프로토콜 D17).
+
+        비싼 action 하나가 breakpoint 를 건너뛰면 특정 구간이 실행되지 않을 수
+        있다. 오류는 아니지만 **스케줄이 실제로 얼마나 쓰였는지** 보여야 한다.
+        """
+        return dict(self._realized_counts)
+
+    @property
+    def realized_ge_by_segment(self) -> dict[int, float]:
+        """구간별 소모 GE. 직전 step 비용을 누적하므로 마지막 step 은 빠진다."""
+        return dict(self._realized_ge)
 
     def reset(self) -> None:
-        return None
+        self._realized_counts = {}
+        self._realized_ge = {}
 
     def __repr__(self) -> str:
-        return f"OpenLoopController(n_segments={len(self._segments)})"
+        return (
+            f"OpenLoopController(n_segments={len(self._segments)}, "
+            f"clock=object_ge_fraction)"
+        )
 
 
 class HeuristicController:

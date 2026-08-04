@@ -54,6 +54,7 @@ __all__ = [
     "OPTIMIZER_SEMANTICS_VERSION",
     "PLANNER_SEMANTICS_VERSION",
     "TASK_SEMANTICS_VERSION",
+    "OPEN_LOOP_SEMANTICS_VERSION",
     "SELECTION_SEMANTICS_VERSION",
     "AGGREGATION_VERSION",
     "SelectionManifest",
@@ -85,6 +86,15 @@ PLANNER_SEMANTICS_VERSION = 1
 
 TASK_SEMANTICS_VERSION = 1
 """task 생성 의미 버전. 초기점, Hessian 구성, instance_id 규칙 등."""
+
+OPEN_LOOP_SEMANTICS_VERSION = 2
+"""open-loop 스케줄 의미 버전 (프로토콜 D17). **open-loop 만 영향받는다.**
+
+2: ``progress`` 를 ``step / total_steps`` 에서 **소모 GE 비율**로 교체.
+   초판은 GE 예산으로 종료하는데 breakpoint 가 step 비율이어서 스케줄의 첫
+   구간만 실행됐다. static / heuristic / one-step / planner 는 ``progress`` 를
+   쓰지 않으므로 이 버전을 정체성에 넣지 않는다.
+"""
 
 SELECTION_SEMANTICS_VERSION = 1
 """baseline 선택(튜닝) 의미 버전 (프로토콜 D16).
@@ -214,6 +224,35 @@ class SelectionManifest:
     semantics_version: int = SELECTION_SEMANTICS_VERSION
     resolved: bool = True
 
+    # --- 튜닝 비용. planner 의 decision-search GE 와 성격이 다르므로 분리한다 ---
+    n_candidates: int = 0
+    n_tuning_instances: int = 0
+    tuning_object_ge: float = 0.0
+    """baseline 선택에 투입한 **object-level** GE 총합.
+
+    P2 에서 최종 성능만 보여주면 baseline 이 얼마나 튜닝됐는지 숨겨진다.
+    planner 의 ``search_cost_ge`` 와는 별개 열로 보고한다 (프로토콜 D16).
+    """
+    tuning_wall_clock_sec: float = 0.0
+    """운영 기록. CPU 공유 영향을 받으므로 성능 비교에 쓰지 않는다."""
+
+    # --- open_loop 이 static 으로 퇴화한 경우 ---
+    equivalent_static_action: dict[str, Any] | None = None
+    """constant schedule 이면 그와 동일한 action. **label 이 아니라 실제 값**이다.
+
+    open_loop 과 static 의 후보 grid 가 다를 수 있으므로 라벨 비교는 무의미하다.
+    """
+    progress_clock: str = ""
+    """스케줄 시계 정의 (프로토콜 D17). ``object_ge_fraction`` 이어야 한다."""
+    progress_evaluated_at: str = "before_step"
+    realized_segment_counts: dict[str, int] = field(default_factory=dict)
+    """구간별 실행 step 수. 스케줄이 실제로 얼마나 쓰였는지 보여준다 (D17).
+
+    비싼 action 하나가 breakpoint 를 건너뛰면 특정 구간이 실행되지 않을 수 있다.
+    오류는 아니지만 기록해야 한다.
+    """
+    realized_ge_by_segment: dict[str, float] = field(default_factory=dict)
+
     def to_json(self) -> dict[str, Any]:
         return sanitize_for_json(asdict(self))
 
@@ -221,11 +260,50 @@ class SelectionManifest:
         if not self.resolved:
             return f"{self.family}: legacy_unresolved (선택 근거 복원 불가)"
         best = self.candidate_scores.get(self.selected_label, float("nan"))
-        return (
+        # 동점 후보를 명시한다. tie-break 가 실제로 작동했는지 보여야 한다.
+        ties = [
+            label
+            for label, score in self.candidate_scores.items()
+            if label != self.selected_label and score == best
+        ]
+        lines = [
             f"{self.family}: {self.selected_label} 선택 "
-            f"({self.selection_metric}={best:.4f}, 후보 {len(self.candidate_labels)}개, "
-            f"tie-break={self.tie_break_rule})\n    설정 {self.selected_config}"
-        )
+            f"({self.selection_metric}={best:.4f}, 후보 {self.n_candidates}개, "
+            f"tie-break={self.tie_break_rule})",
+            f"    설정 {self.selected_config}",
+            f"    튜닝 비용 object-level {self.tuning_object_ge:.0f} GE "
+            f"(인스턴스 {self.n_tuning_instances}개), selection_id={self.selection_id[:12]}",
+        ]
+        if ties:
+            lines.append(f"    동점 후보 {ties} -> {self.tie_break_rule} 로 선택")
+        if self.progress_clock:
+            n_seg = len(self.selected_config.get("schedule", []) or [])
+            if not self.realized_segment_counts:
+                # 캐시 재사용 시 컨트롤러가 생성되지 않아 계측값이 없다.
+                # "구간이 실행되지 않았다" 와 구별해야 한다.
+                lines.append(
+                    f"    시계={self.progress_clock}, 구간 {n_seg}개. "
+                    "구간 사용량 미계측 (캐시 재사용)"
+                )
+            else:
+                used = sum(self.realized_segment_counts.values())
+                reached = len(self.realized_segment_counts)
+                lines.append(
+                    f"    시계={self.progress_clock}, 실행된 구간 {reached}/{n_seg} "
+                    f"(총 {used} step) {self.realized_segment_counts}"
+                )
+                if n_seg and reached < n_seg:
+                    lines.append(
+                        "    주의: 일부 구간이 실행되지 않았다. 비싼 action 이 "
+                        "breakpoint 를 건너뛴 것이며 오류는 아니다."
+                    )
+        if self.equivalent_static_action is not None:
+            lines.append(
+                f"    **constant schedule 이다. static 으로 퇴화했다.** "
+                f"등가 action {self.equivalent_static_action}. "
+                f"P2 에서 best_static 과 독립 baseline 으로 세지 않는다 (D16)."
+            )
+        return "\n".join(lines)
 
     @property
     def is_constant_schedule(self) -> bool:

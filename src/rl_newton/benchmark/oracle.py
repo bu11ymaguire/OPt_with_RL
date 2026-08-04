@@ -59,6 +59,7 @@ from rl_newton.benchmark.metrics import (
 from rl_newton.benchmark.paired import SyntheticTask, TaskSpec, make_task
 from rl_newton.benchmark.store import (
     AGGREGATION_VERSION,
+    OPEN_LOOP_SEMANTICS_VERSION,
     OPTIMIZER_SEMANTICS_VERSION,
     PLANNER_SEMANTICS_VERSION,
     SELECTION_SEMANTICS_VERSION,
@@ -80,6 +81,7 @@ from rl_newton.optimizers.controllers import (
     FixedController,
     HeuristicController,
     OneStepEfficiencyController,
+    OpenLoopController,
     ShrinkingQuotaMPCController,
     make_open_loop_controller,
 )
@@ -189,6 +191,15 @@ class HeadroomConfig:
 
     가장 비싼 조합이고 진단 목적에는 narrow 만으로 충분하다.
     """
+    execution_modes: Sequence[str] = ("shrinking", "committed", "fresh")
+    """돌릴 실행 방식 (프로토콜 D12). **sweep 커버리지이므로 run 정체성이 아니다.**
+
+    단계별 실행에 쓴다. baseline 만 먼저 확보하려면 빈 튜플을 준다.
+    """
+    planner_spaces: Sequence[str] = ("narrow", "wide")
+    """planner 를 돌릴 행동 공간. sweep 커버리지다."""
+    run_track_t: bool = True
+    """Track T (cost-to-target) 를 돌릴지. sweep 커버리지다."""
     max_plan_depth: int = 24
     """계획 길이 상한. 계산량 안전장치다.
 
@@ -290,6 +301,10 @@ class HeadroomConfig:
             payload["quota"] = float(quota)
             payload["beam_width"] = self.beam_width
             payload["max_plan_depth"] = self.max_plan_depth
+        if controller == "best_open_loop":
+            # open-loop 만 progress 시계를 쓴다. 다른 컨트롤러는 영향받지 않는다 (D17).
+            payload["open_loop_semantics"] = OPEN_LOOP_SEMANTICS_VERSION
+            payload["progress_clock"] = OpenLoopController._CLOCK
         if uses_target:
             payload["targets"] = {
                 kind: {level: spec.label for level, spec in levels.items()}
@@ -318,6 +333,9 @@ class HeadroomConfig:
             "beam_width": self.beam_width,
             "fresh_diagnostic_seeds": self.fresh_diagnostic_seeds,
             "run_fresh_wide": self.run_fresh_wide,
+            "execution_modes": sorted(self.execution_modes),
+            "planner_spaces": sorted(self.planner_spaces),
+            "run_track_t": self.run_track_t,
             "tuning_budget": self.tuning_budget,
             "n_schedule_segments": self.n_schedule_segments,
             "tuning_seed": self.tuning_seed,
@@ -349,6 +367,8 @@ class HeadroomConfig:
         )
         if family == "open_loop":
             payload["n_schedule_segments"] = self.n_schedule_segments
+            payload["open_loop_semantics"] = OPEN_LOOP_SEMANTICS_VERSION
+            payload["progress_clock"] = OpenLoopController._CLOCK
         return payload
 
     def aggregation_payload(self) -> dict[str, object]:
@@ -666,6 +686,8 @@ def search_best_static(
     best_label = f"static[{indices[0]}]"
     scores: dict[str, float] = {}
     labels: list[str] = []
+    tuning_ge = 0.0
+    n_instances = 0
     for flat in indices:
         action = space.action_from_flat(flat)
         label = f"static[{flat}]"
@@ -679,6 +701,8 @@ def search_best_static(
         group = summarize_group(runs, controller=label)
         scores[label] = group.median_log_improvement
         labels.append(label)
+        tuning_ge += sum(r.total_cost_ge for r in runs if math.isfinite(r.total_cost_ge))
+        n_instances = max(n_instances, len(runs))
         if best_group is None or _rank_key_track_e(group) < _rank_key_track_e(best_group):
             best_group = group
             best_flat = flat
@@ -704,6 +728,9 @@ def search_best_static(
         tuning_specs=[str(s) for s in config.specs],
         tuning_seeds=list(config.seeds),
         n_tune=n_tune,
+        n_candidates=len(indices),
+        n_tuning_instances=n_instances,
+        tuning_object_ge=tuning_ge,
     )
     return action, best_group, manifest
 
@@ -734,26 +761,37 @@ def search_best_open_loop(
     best_breaks: tuple[float, ...] = ()
     scores: dict[str, float] = {}
     labels: list[str] = []
+    tuning_ge = 0.0
+    n_instances = 0
+    best_realized: OpenLoopController | None = None
     for trial in range(n_tune):
         flats = tuple(rng.randrange(len(space)) for _ in range(n_seg))
         cuts = sorted(rng.uniform(0.05, 0.95) for _ in range(n_seg - 1))
         breakpoints = (*cuts, 1.0)
         label = f"open_loop[{trial}]"
+        made: list[OpenLoopController] = []
+
+        def _factory(_t, _g, f=flats, b=breakpoints, sink=made):
+            ctrl = make_open_loop_controller(space, f, b)
+            sink.append(ctrl)
+            return ctrl
+
         runs = run_controller(
-            config,
-            lambda _t, _g, f=flats, b=breakpoints: make_open_loop_controller(space, f, b),
-            label=label,
-            exp_id=exp_id,
-            store=store,
+            config, _factory, label=label, exp_id=exp_id, store=store
         )
         group = summarize_group(runs, controller=label)
         scores[label] = group.median_log_improvement
         labels.append(label)
+        tuning_ge += sum(r.total_cost_ge for r in runs if math.isfinite(r.total_cost_ge))
+        n_instances = max(n_instances, len(runs))
         if best_group is None or _rank_key_track_e(group) < _rank_key_track_e(best_group):
             best_group = group
             best_label = label
             best_flats = flats
             best_breaks = breakpoints
+            # 스케줄이 실제로 몇 구간까지 실행됐는지 (D17). 캐시 재사용 시
+            # 컨트롤러가 생성되지 않으므로 빈 dict 가 될 수 있다.
+            best_realized = made[-1] if made else None
 
     assert best_group is not None
     # 선택된 스케줄 전체를 기록한다. 라벨만 바꾸면 어떤 스케줄이 왜 골라졌는지
@@ -786,7 +824,25 @@ def search_best_open_loop(
         tuning_specs=[str(s) for s in config.specs],
         tuning_seeds=list(config.seeds),
         n_tune=n_tune,
+        n_candidates=len(labels),
+        n_tuning_instances=n_instances,
+        tuning_object_ge=tuning_ge,
+        progress_clock=OpenLoopController._CLOCK,
+        realized_segment_counts=(
+            {str(k): v for k, v in best_realized.realized_segment_counts.items()}
+            if best_realized is not None
+            else {}
+        ),
+        realized_ge_by_segment=(
+            {str(k): v for k, v in best_realized.realized_ge_by_segment.items()}
+            if best_realized is not None
+            else {}
+        ),
     )
+    # constant 로 퇴화했으면 등가 static action 을 실제 값으로 기록한다.
+    # open_loop 과 static 의 후보 grid 가 다를 수 있어 라벨 비교는 무의미하다.
+    if manifest.is_constant_schedule:
+        manifest.equivalent_static_action = dict(manifest.selected_config["schedule"][0])
     return best_group, manifest
 
 
@@ -1214,6 +1270,7 @@ def run_headroom(
         store=store,
     )
     report.selections["static"] = static_manifest
+    log(f"  {static_manifest.describe()}")
     static_group = _relabel(static_group, "best_static")
     static_runs = static_group.runs
     report.best_static_action = best_action
@@ -1233,6 +1290,7 @@ def run_headroom(
         store=store,
     )
     report.selections["open_loop"] = open_manifest
+    log(f"  {open_manifest.describe()}")
     open_group = _relabel(open_raw, "best_open_loop")
     report.groups["best_open_loop"] = open_group
     report.tuning_runs["best_open_loop"] = n_tune
@@ -1298,9 +1356,16 @@ def run_headroom(
     }
     planner_runs: dict[str, list[RunSummary]] = {}
     fresh_seeds = tuple(config.seeds[: config.fresh_diagnostic_seeds])
-    for space_label, space in (("narrow", narrow), ("wide", wide)):
+    spaces_to_run = [
+        (name, sp)
+        for name, sp in (("narrow", narrow), ("wide", wide))
+        if name in config.planner_spaces
+    ]
+    for space_label, space in spaces_to_run:
         for quota in config.quotas:
             for mode, factory in modes.items():
+                if mode not in config.execution_modes:
+                    continue
                 # fresh 는 진단 baseline 이므로 계산을 줄인다 (프로토콜 D12).
                 # P1~P3 판정에 쓰지 않으므로 seed 집합이 달라도 문제가 없다.
                 if mode == "fresh":
@@ -1343,35 +1408,39 @@ def run_headroom(
 
     max_q = max(config.quotas)
     min_q = min(config.quotas)
-    e_pairs = [
+
+    # 단계별 실행에서는 일부 arm 이 없다. 없는 라벨은 조용히 건너뛰고
+    # 해당 게이트를 판정불가로 남긴다 (프로토콜 D13 sweep 커버리지).
+    def pr(label: str) -> list[RunSummary] | None:
+        return planner_runs.get(label)
+
+    _candidate_pairs: list[tuple[Sequence[RunSummary] | None, Sequence[RunSummary] | None]] = [
         # 게이트 A1: 순간적 absolute headroom (도달성 제약 제거, H=1)
         (static_runs, onestep_runs["onestep_absolute"]),
         # 게이트 A2: 도달 가능한 sequential headroom (주 컨트롤러 shrinking)
-        (static_runs, planner_runs[f"shrinking_Q{max_q:g}_narrow"]),
-        (static_runs, planner_runs[f"shrinking_Q{max_q:g}_wide"]),
+        (static_runs, pr(f"shrinking_Q{max_q:g}_narrow")),
+        (static_runs, pr(f"shrinking_Q{max_q:g}_wide")),
         # 게이트 B: action-space restriction (모두 H=1, 같은 조건)
         (onestep_runs["onestep_narrow"], onestep_runs["onestep_absolute"]),
         (onestep_runs["onestep_narrow"], onestep_runs["onestep_wide"]),
         # 게이트 C1: time-consistency. 쿼터 초기화가 성능을 떨어뜨리는가
-        (planner_runs[f"fresh_Q{max_q:g}_narrow"], planner_runs[f"shrinking_Q{max_q:g}_narrow"]),
+        (pr(f"fresh_Q{max_q:g}_narrow"), pr(f"shrinking_Q{max_q:g}_narrow")),
         # 게이트 C2: sequential planning value. 주 판정 통계다
-        (onestep_runs["onestep_narrow"], planner_runs[f"shrinking_Q{max_q:g}_narrow"]),
+        (onestep_runs["onestep_narrow"], pr(f"shrinking_Q{max_q:g}_narrow")),
         # 게이트 C3: feedback value. committed 대비 추가 이득
-        (
-            planner_runs[f"committed_Q{max_q:g}_narrow"],
-            planner_runs[f"shrinking_Q{max_q:g}_narrow"],
-        ),
-        # 참고: Q=1 (depth 1만 가능). 여기서 이득이 없어야 다단계가 원인이다 (P3)
-        (onestep_runs["onestep_narrow"], planner_runs[f"shrinking_Q{min_q:g}_narrow"]),
+        (pr(f"committed_Q{max_q:g}_narrow"), pr(f"shrinking_Q{max_q:g}_narrow")),
+        # 참고: 최소 쿼터. quota scale 이지 planning depth 가 아니다 (D15)
+        (onestep_runs["onestep_narrow"], pr(f"shrinking_Q{min_q:g}_narrow")),
         # 참고 baseline
         (static_runs, open_group.runs),
         (static_runs, heuristic_runs),
     ]
+    e_pairs = [(b, t) for b, t in _candidate_pairs if b and t]
     report.track_e_deltas = [delta(b, t) for b, t in e_pairs]
 
     # --- Track T: target 난이도별 cost-to-target ---
-    log("Track T: target 난이도별 재집계")
-    for level in config.difficulties():
+    log("Track T: target 난이도별 재집계" if config.run_track_t else "Track T: 건너뜀")
+    for level in config.difficulties() if config.run_track_t else ():
         static_t = run_controller(
             config,
             lambda _t, _g, a=best_action: FixedController(a),
@@ -1515,9 +1584,13 @@ def run_headroom(
         points = " → ".join(
             f"Q{q:g}:{report.groups[f'{mode}_Q{q:g}_narrow'].median_log_improvement:.3f}"
             for q in config.quotas
+            if f"{mode}_Q{q:g}_narrow" in report.groups
         )
-        curves.append(f"{mode} {points}")
+        if points:
+            curves.append(f"{mode} {points}")
     for q in config.quotas:
+        if f"shrinking_Q{q:g}_narrow" not in report.groups:
+            continue
         deep, cap = _depth_stats(store, f"shrinking_Q{q:g}_narrow")
         depth_notes.append(f"Q{q:g}:d>1={deep:.2f},cap={cap:.2f}")
 

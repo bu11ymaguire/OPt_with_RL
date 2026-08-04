@@ -527,6 +527,92 @@ Track T 지표(`cost_to_target_ge`, `reached`)는 목표 도달 시점으로 정
 `B ≤ A` 였다. **고정 예산 비교에서는 "예산"과 "실제 소모량"을 항상 함께
 확인한다.**
 
+### D17. open-loop 스케줄의 시계를 GE 예산으로 바꾼다
+
+#### 기존 결함
+
+```text
+step-indexed progress = step / total_steps
+```
+
+가 실제 종료 조건인 **GE 예산과 불일치**했다 (D1). `total_steps = 200`, 예산
+150 GE, `cg_budget = 20` 이면 약 7 step 만에 끝나므로 `progress` 가 0.035 를
+넘지 못한다. 따라서 **스케줄의 첫 구간만 실행됐고, 뒤쪽 구간은 도달 불가였다.**
+
+실측 (beam 4 pilot, dev 9 인스턴스):
+
+```text
+best_open_loop = open_loop[4]   4구간 스케줄을 선택
+결과가 best_static 과 9쌍 전부 bitwise 동일
+paired delta +0.000 nat,  CI +0.000~+0.000
+```
+
+이것은 "비정적 스케줄이 static 으로 퇴화했다" 는 과학적 결과가 **아니다.**
+baseline 구현 결함이다. D4 의 목적이 적응 정책과 사전 스케줄을 비교하는 것이므로
+이 상태를 유지하면 P2 에서 "스케줄 baseline 을 이겼다" 는 주장을 검증할 수 없다.
+
+#### 수정된 정의
+
+```text
+progress_t = min(1, spent_object_ge_t / cost_budget_ge)
+progress_clock = object_ge_fraction
+progress_evaluated_at = before_step
+OPEN_LOOP_SEMANTICS_VERSION = 2
+```
+
+이것을 **budget-indexed open-loop schedule** (resource-clock schedule) 이라
+부른다. 실제 GE 소비는 CG 조기 종료 등으로 변하지만, 컨트롤러가 loss / gradient /
+Hessian 상태를 **관찰하지 않고** 계산 예산 시계만 쓰므로 적응 제어와 구별되는
+강한 단순 baseline 이다.
+
+#### 수정 후 검증
+
+```text
+open_loop[7] 선택   median logΔ 25.456  (수정 전 9.337)
+schedule 4구간 전부 실행
+  구간 0 [0.000~0.107] x3.0,   K=5    4 step
+  구간 1 [0.107~0.683] x1.0,   K=20  20 step
+  구간 2 [0.683~0.707] x1.0,   K=5    1 step
+  구간 3 [0.707~1.000] x0.333, K=20  11 step
+realized_segment_counts = {0:4, 1:20, 2:1, 3:11}
+is_constant_schedule = False
+```
+
+정체성 격리도 확인됐다. **open-loop 108 run (12 후보 × 9 인스턴스) 만 재실행**되고
+`static` / `heuristic` / `one-step` 의 `run_semantics_id` 와 `selection_id` 는
+유지됐다.
+
+```text
+open_loop selection_id  3ed50a72067a -> 1b6de46d089f   변경
+static    selection_id  649ef8f9878f -> 649ef8f9878f   유지
+```
+
+`realized_segment_counts` 를 기록하는 이유는 비싼 action 하나가 breakpoint 를
+건너뛰면 특정 구간이 실행되지 않을 수 있기 때문이다. 오류는 아니지만 스케줄이
+실제로 얼마나 쓰였는지 보여야 한다.
+
+#### 기존 step-clock 결과의 위치
+
+**confirmatory baseline 으로 사용하지 않는다.** 구현 결함 진단 기록으로만
+보존한다.
+
+> Step-indexed progress 가 실제 GE-budget horizon 과 불일치하여 첫 구간만
+> 실행되는 구조적 결함을 확인했고, confirmatory 분석 전에 resource-clock 방식으로
+> 수정했다.
+
+#### P2 해석에 대한 주의
+
+`best_open_loop` 의 median logΔ 가 9.337 → 25.456 으로 올랐지만 **곧바로 static
+보다 우수하다는 뜻이 아니다.** paired delta 는 −0.137 nat, CI −5.982~+24.346,
+`p = 0.906`, 포화 `one-sided = 6/9` 이다.
+
+> Open-loop 가 강한 baseline 후보가 되었지만, 현재 dev 표본은 baseline 간 순위를
+> 안정적으로 구분하지 못한다.
+
+`onestep_absolute` 와 `heuristic` 이 둘 다 31.438 인 것도 floor ceiling 의 영향을
+받은 값이다. **P2 의 strongest baseline 을 단순 median 최대값 하나로 정하지 않고**,
+confirmatory 에서 paired 비교와 saturation-aware 보고를 함께 쓴다.
+
 ### D16. baseline 선택 과정을 manifest로 남긴다
 
 `best_static` 과 `best_open_loop` 는 컨트롤러가 아니라 **튜닝을 통해 선택된
@@ -1606,6 +1692,9 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-03 | **D15 신설: 재계획이 계획을 실제로 바꿨는지 행동 내용으로 계측** | `Q1` 에서 `shrinking` 과 `committed` 가 bitwise 같은 결과를 냈다. alias 가 아니라 실제 동률이며, `suffix_retention_rate` 로 확인한다. `chosen_depth` 히스토그램만으로는 깊이만 같고 내용이 다를 수 있다 |
 | 2026-08-03 | **D16 신설: baseline 선택 과정을 `SelectionManifest` 로 기록** | `best_static` / `best_open_loop` 는 컨트롤러가 아니라 튜닝 결과인데 raw 에 후보 라벨만 남아 A1·A2를 재집계할 수 없었다. 라벨만 바꾸면 선택 근거가 사라지고 evaluation 결과로 역추정하게 되어 사후 선택이 된다 |
 | 2026-08-03 | `git_commit` 과 `code_dirty` 를 `sweep_id` 에서 제거해 `execution_provenance` 로 분리 | `sweep_id` 가 "어떤 run 집합을 요청했는가" 를 뜻한다면 문서 수정으로 ID 가 달라지는 것은 의미가 어긋난다. 어떤 ID 에도 넣지 않는다 |
+| 2026-08-03 | **D17 신설: open-loop `progress` 를 `step/total_steps` → 소모 GE 비율로 교체** | GE 예산으로 종료하는데 breakpoint 가 step 비율이라 4구간 스케줄의 첫 구간만 실행됐다. `best_open_loop` 이 `best_static` 과 9쌍 전부 bitwise 동일(CI `+0.000~+0.000`)했던 것은 퇴화가 아니라 구현 결함이다. 수정 후 4/4 구간 실행, median logΔ 9.337 → 25.456 |
+| 2026-08-03 | `OPEN_LOOP_SEMANTICS_VERSION` 을 open-loop payload 에만 넣어 격리 | open-loop 108 run 만 재실행되고 static / heuristic / one-step 의 `run_semantics_id` 와 `selection_id` 는 유지됐다. D13 3계층 분리가 의도대로 작동한 사례 |
+| 2026-08-03 | P2 strongest baseline 을 단순 median 최대값으로 정하지 않도록 명시 | `onestep_absolute` 와 `heuristic` 이 둘 다 31.438 인 것은 floor ceiling 영향이다. baseline 간 순위를 현재 dev 표본으로는 안정적으로 구분할 수 없다 (CI −5.982~+24.346, p=0.906) |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |

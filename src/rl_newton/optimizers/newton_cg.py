@@ -149,10 +149,34 @@ class StepContext:
     damping: float
     previous: StepRecord | None = None
     history: Sequence[StepRecord] = ()
+    spent_ge: float = 0.0
+    """이 step 시작 시점까지 소모한 object-level GE."""
+    cost_budget_ge: float | None = None
+    """GE 예산. ``None`` 이면 step 예산으로 종료한다."""
 
     @property
     def progress(self) -> float:
-        """``step / total_steps``. ``open_loop`` 컨트롤러의 유일한 입력이다."""
+        """**소모 GE 비율**. ``open_loop`` 컨트롤러의 유일한 입력이다 (프로토콜 D17).
+
+        초판은 ``step / total_steps`` 였다. 그런데 종료는 GE 예산으로 하므로
+        (D1) 두 시계가 불일치했다. ``total_steps=200``, 예산 150 GE, ``k=20`` 이면
+        약 7 step 만에 끝나서 ``progress`` 가 0.035 를 넘지 못했고, **스케줄의
+        첫 구간만 실행됐다.**
+
+        실측: ``best_open_loop`` 이 4구간 스케줄을 골랐는데 결과가
+        ``best_static`` 과 9쌍 전부 bitwise 동일했다 (delta CI ``+0.000~+0.000``).
+        비정적 스케줄이 static 으로 퇴화한 것이 아니라 **뒤쪽 구간이 실행될 수
+        없었던 baseline 구현 결함**이다.
+
+        지금은 예산 소모 비율을 쓴다. 이것을 **budget-indexed open-loop schedule**
+        (resource-clock schedule) 이라 부른다. 실제 GE 소비는 CG 조기 종료 등으로
+        변하지만, 컨트롤러가 loss / gradient / Hessian 상태를 **관찰하지 않고**
+        계산 예산 시계만 쓰므로 적응 제어와 구별되는 강한 단순 baseline 이다.
+
+        GE 예산이 없으면 step 비율로 되돌아간다.
+        """
+        if self.cost_budget_ge is not None and self.cost_budget_ge > 0.0:
+            return min(1.0, self.spent_ge / self.cost_budget_ge)
         if self.total_steps <= 0:
             return 0.0
         return self.step / self.total_steps
@@ -687,6 +711,11 @@ class NewtonCGOptimizer:
                 damping=self.damping,
                 previous=trace.records[-1] if trace.records else None,
                 history=trace.records,
+                # step 시작 시점의 누적 비용. resource clock 의 분자다 (D17).
+                spent_ge=sum(
+                    r.cost_ge for r in trace.records if math.isfinite(r.cost_ge)
+                ),
+                cost_budget_ge=self.config.cost_budget_ge,
             )
             self._graph_dirty = False
             action = self.controller.select(context, self)

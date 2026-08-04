@@ -1004,3 +1004,96 @@ class TestSuffixRetentionRate:
         else:
             # 계획이 바뀌었다는 것이 계측에 반영돼야 한다.
             assert shrinking.suffix_retention_rate < 1.0
+
+
+# ---------------------------------------------------------------------------
+# open-loop resource clock (프로토콜 D17)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenLoopResourceClock:
+    """``progress`` 는 소모 GE 비율이다. step 비율이 아니다.
+
+    초판은 ``step / total_steps`` 였고, GE 예산으로 종료하므로 두 시계가
+    불일치했다. ``total_steps=200``, 150 GE, ``k=20`` 이면 7 step 만에 끝나서
+    ``progress`` 가 0.035 를 넘지 못했고 **스케줄의 첫 구간만 실행됐다.**
+    """
+
+    def _schedule(self, n_seg=4):
+        # 구간마다 다른 CG budget 을 준다. 실행 여부를 action 으로 구별한다.
+        flats = [0, 3, 6, 9][:n_seg]
+        breaks = [(i + 1) / n_seg for i in range(n_seg)]
+        return make_open_loop_controller(NARROW_F, flats, breaks)
+
+    def test_progress_uses_ge_budget_not_steps(self):
+        ctx = StepContext(
+            step=3,
+            total_steps=200,
+            loss=1.0,
+            grad_norm=1.0,
+            damping=1.0e-2,
+            spent_ge=75.0,
+            cost_budget_ge=150.0,
+        )
+        # step 기준이면 3/200 = 0.015. GE 기준이면 75/150 = 0.5.
+        assert ctx.progress == pytest.approx(0.5)
+
+    def test_progress_is_capped_at_one(self):
+        ctx = StepContext(
+            step=0,
+            total_steps=200,
+            loss=1.0,
+            grad_norm=1.0,
+            damping=1.0e-2,
+            spent_ge=400.0,
+            cost_budget_ge=150.0,
+        )
+        assert ctx.progress == pytest.approx(1.0)
+
+    def test_falls_back_to_step_clock_without_budget(self):
+        ctx = StepContext(
+            step=50, total_steps=200, loss=1.0, grad_norm=1.0, damping=1.0e-2
+        )
+        assert ctx.progress == pytest.approx(0.25)
+
+    def test_multiple_segments_run_within_ge_budget(self):
+        """step 수가 200보다 훨씬 작아도 여러 구간이 실행돼야 한다."""
+        ctrl = self._schedule()
+        trace = make_optimizer(ctrl, budget=150.0, steps=200).run()
+        assert trace.n_steps < 50, "GE 예산이 먼저 끝나는 조건이어야 한다"
+        assert len(ctrl.realized_segment_counts) >= 2
+
+    def test_progress_reaches_near_one_at_budget_end(self):
+        ctrl = self._schedule()
+        trace = make_optimizer(ctrl, budget=150.0, steps=200).run()
+        spent = sum(r.cost_ge for r in trace.records if math.isfinite(r.cost_ge))
+        assert spent / 150.0 > 0.8
+
+    def test_same_clock_gives_same_action_regardless_of_loss(self):
+        """상태를 보지 않는다. 같은 GE 시계면 loss 가 달라도 같은 action 이다."""
+        ctrl = self._schedule()
+        common = {"step": 5, "total_steps": 200, "grad_norm": 1.0, "damping": 1.0e-2}
+        a = ctrl.select(
+            StepContext(loss=1.0, spent_ge=60.0, cost_budget_ge=150.0, **common), None
+        )
+        b = ctrl.select(
+            StepContext(loss=1.0e-9, spent_ge=60.0, cost_budget_ge=150.0, **common), None
+        )
+        assert a is b
+
+    def test_segment_boundary_is_deterministic(self):
+        """breakpoint 직전 / 정확히 일치 / 직후의 선택이 결정적이다."""
+        ctrl = self._schedule(n_seg=2)  # breaks = [0.5, 1.0]
+        assert ctrl.segment_index_at(0.4999) == 0
+        assert ctrl.segment_index_at(0.5) == 0, "`until` 은 이하 포함이다"
+        assert ctrl.segment_index_at(0.5001) == 1
+
+    def test_realized_counts_reset(self):
+        ctrl = self._schedule()
+        make_optimizer(ctrl, budget=150.0, steps=200).run()
+        assert ctrl.realized_segment_counts
+        ctrl.reset()
+        assert ctrl.realized_segment_counts == {}
+
+    def test_clock_label_is_recorded(self):
+        assert self._schedule().clock == "object_ge_fraction"

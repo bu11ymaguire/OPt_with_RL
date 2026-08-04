@@ -43,6 +43,7 @@ run 하나가 끝나는 즉시 ``results/raw/<run>.jsonl`` 에 기록한다. 프
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from dataclasses import asdict
@@ -111,6 +112,17 @@ def confirmatory_specs() -> list:
     ]
 
 
+def _sha256(path: Path) -> str:
+    """raw 결과 파일의 SHA-256. 대용량 raw 는 Git 에 넣지 않으므로 참조용이다."""
+    if not path.exists():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _clean(obj):
     if isinstance(obj, float):
         return obj if math.isfinite(obj) else None
@@ -153,6 +165,9 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         max_plan_depth=args.max_plan_depth,
         fresh_diagnostic_seeds=args.fresh_seeds,
         run_fresh_wide=args.fresh_wide,
+        execution_modes=tuple(args.modes),
+        planner_spaces=tuple(args.planner_spaces),
+        run_track_t=not args.skip_track_t,
         tuning_budget=args.tuning_budget,
         phase=phase,  # type: ignore[arg-type]
         primary_difficulty=args.difficulty,
@@ -173,9 +188,14 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
     return config, meta | {"spaces": (narrow, wide, absolute)}
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """CLI 파서. 테스트에서 sweep 커버리지 기본값을 검증하려고 분리했다.
+
+    ``--modes`` 를 **생략한 경우와 빈 목록으로 준 경우**가 구별되어야 한다.
+    재현 명령을 잘못 입력해 planner 전체가 조용히 빠지는 사고를 막는다.
+    """
     parser = argparse.ArgumentParser(
-        description="Stage 2 헤드룸 측정 (게이트 A1/A2/B/C/D)",
+        description="Stage 2 헤드룸 측정 (게이트 A1/A2/B/C1/C2/C3/D)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -210,6 +230,26 @@ def main() -> int:
         "--fresh-wide",
         action="store_true",
         help="fresh 를 wide 에서도 돌린다. 가장 비싼 조합이므로 기본은 끔",
+    )
+    # --- sweep 커버리지 (프로토콜 D13). run 정체성이 아니므로 기존 결과를 재사용한다.
+    parser.add_argument(
+        "--modes",
+        nargs="*",
+        default=["shrinking", "committed", "fresh"],
+        choices=["shrinking", "committed", "fresh"],
+        help="돌릴 실행 방식. 빈 목록이면 planner 를 건너뛰고 baseline 만 확보한다",
+    )
+    parser.add_argument(
+        "--planner-spaces",
+        nargs="+",
+        default=["narrow", "wide"],
+        choices=["narrow", "wide"],
+        help="planner 를 돌릴 행동 공간",
+    )
+    parser.add_argument(
+        "--skip-track-t",
+        action="store_true",
+        help="Track T 를 건너뛴다. baseline 확보나 bridge 검증 단계에서 쓴다",
     )
     parser.add_argument(
         "--beams",
@@ -258,7 +298,11 @@ def main() -> int:
     parser.add_argument("--raw-dir", type=Path, default=Path("results/raw"))
     parser.add_argument("--out-dir", type=Path, default=Path("results/summaries"))
     parser.add_argument("--fresh", action="store_true", help="캐시를 무시하고 새 파일에 기록")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     config, meta = build_config(args)
     narrow, wide, absolute = meta.pop("spaces")
@@ -381,8 +425,14 @@ def main() -> int:
     path = args.out_dir / f"headroom_{tag}.json"
     payload = {
         "meta": meta,
+        # 3계층 정체성 (프로토콜 D13). experiment_id 는 구판 호환용이다.
         "experiment_id": report.experiment_id,
+        "sweep_id": report.sweep_id,
+        "aggregation_id": report.aggregation_id,
         "identity": report.identity,
+        "execution_provenance": report.provenance,
+        # baseline 선택 근거 (프로토콜 D16). 라벨만 남기면 사후 선택이 된다.
+        "selections": {name: m.to_json() for name, m in report.selections.items()},
         "n_instances": report.n_instances,
         "tuning_budget": report.tuning_budget,
         "tuning_runs": report.tuning_runs,
@@ -405,11 +455,18 @@ def main() -> int:
                 "verdict": g.verdict,
                 "go_threshold": g.go_threshold,
                 "pivot_threshold": g.pivot_threshold,
+                "nonsaturated": g.nonsaturated,
+                "detail": g.detail,
             }
             for g in report.gates
         ],
         "n_failures": len(failures),
         "raw_path": str(raw_path),
+        # raw 는 gitignore 이므로 체크섬으로 참조 가능하게 한다 (프로토콜 D16).
+        "raw_sha256": _sha256(raw_path),
+        "raw_n_lines": (
+            sum(1 for _ in raw_path.open(encoding="utf-8")) if raw_path.exists() else 0
+        ),
         "provenance": collect_provenance(_clean(meta), include_diff=False).to_dict(),
     }
     path.write_text(json.dumps(_clean(payload), indent=2, ensure_ascii=False), encoding="utf-8")
