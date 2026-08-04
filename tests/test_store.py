@@ -696,6 +696,90 @@ class TestSweepCoverageCli:
         assert "execution_modes" not in a.run_semantics_payload(controller="best_static")
 
 
+class TestChallengeSetFreeze:
+    """Challenge set 과 seed 역할을 실행 전에 고정한다 (프로토콜 D20).
+
+    이 목록을 조용히 바꾸면 "사전 등록" 이 무의미해진다.
+    """
+
+    def _module(self):
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import run_headroom
+
+        return run_headroom
+
+    def test_selection_set_is_four_quadratics_even_in_log_kappa(self):
+        import math
+
+        specs = self._module().challenge_specs()
+        assert len(specs) == 4
+        assert {s.kind for s in specs} == {"ill_conditioned"}
+        assert {s.dimension for s in specs} == {100}
+        logs = sorted(math.log10(s.condition_number) for s in specs)
+        assert logs == [3.0, 4.0, 5.0, 6.0]
+        gaps = [b - a for a, b in zip(logs[:-1], logs[1:], strict=True)]
+        assert gaps == [1.0, 1.0, 1.0], "tie-break 은 log10(κ) 균등 포괄이다"
+
+    def test_nonlinear_diagnostic_is_separate_from_selection(self):
+        mod = self._module()
+        diagnostic = mod.nonlinear_diagnostic_specs()
+        assert len(diagnostic) == 1
+        assert diagnostic[0].dimension == 5
+        # 설정 선택 점수에 섞이면 안 된다.
+        assert all(d not in mod.challenge_specs() for d in diagnostic)
+
+    def test_calibration_and_selection_seeds_are_disjoint(self):
+        from rl_newton.benchmark.oracle import (
+            CALIBRATION_SEEDS,
+            HELD_OUT_SEEDS,
+            SELECTION_SEEDS,
+        )
+
+        assert set(CALIBRATION_SEEDS).isdisjoint(SELECTION_SEEDS)
+        assert set(CALIBRATION_SEEDS).isdisjoint(HELD_OUT_SEEDS)
+        assert set(SELECTION_SEEDS).isdisjoint(HELD_OUT_SEEDS)
+
+    def test_challenge_mode_uses_selection_seeds(self):
+        mod = self._module()
+        args = mod.build_parser().parse_args(["--mode", "challenge", "--seeds", "3"])
+        config, meta = mod.build_config(args)
+        meta.pop("spaces")
+        assert config.phase == "challenge"
+        assert list(config.seeds) == [2, 3, 4]
+        assert list(config.specs) == mod.challenge_specs()
+
+    def test_diagnostic_mode_carries_only_rosenbrock(self):
+        mod = self._module()
+        args = mod.build_parser().parse_args(["--mode", "nonlinear-diagnostic"])
+        config, meta = mod.build_config(args)
+        meta.pop("spaces")
+        assert list(config.specs) == mod.nonlinear_diagnostic_specs()
+
+    def test_challenge_and_pilot_are_different_sweeps(self):
+        from rl_newton.benchmark.store import sweep_id
+
+        mod = self._module()
+        ids = set()
+        for mode in ("pilot", "challenge", "nonlinear-diagnostic"):
+            args = mod.build_parser().parse_args(["--mode", mode])
+            config, meta = mod.build_config(args)
+            meta.pop("spaces")
+            ids.add(sweep_id(config.sweep_payload(controllers=["heuristic"])))
+        assert len(ids) == 3
+
+    def test_phase_does_not_change_run_semantics(self):
+        """phase 는 sweep 라벨이다. 저장된 run 을 무효화하면 안 된다."""
+        helper = TestThreeLayerIdentity()
+        a = helper._config(phase="pilot")
+        b = helper._config(phase="challenge")
+        assert run_semantics_id(
+            a.run_semantics_payload(controller="best_static")
+        ) == run_semantics_id(b.run_semantics_payload(controller="best_static"))
+
+
 class TestRealizedSegmentReporting:
     """구간 미계측(캐시 재사용)과 구간 미실행을 구별해야 한다 (프로토콜 D17)."""
 

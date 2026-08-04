@@ -597,9 +597,33 @@ challenge spec 을 고르는 seed 와 beam 8 을 평가하는 seed 가 같으면
 tuning 이 된다.
 
 ```text
-calibration seeds        0, 1        challenge spec 선정에만
-beam-8 dev seeds         2, 3, 4     설정(Q, space, beam) 선택에만
-held-out confirmatory    5 ~ 14      선택된 단일 설정 평가에만
+CALIBRATION_SEEDS   0, 1          challenge spec 선정에만
+SELECTION_SEEDS     2, 3, 4       설정(Q, space, beam) 선택에만
+HELD_OUT_SEEDS      100 ~ 109     선택된 단일 설정 평가에만
+```
+
+held-out 은 권고 범위가 5~14 였으나 **기존에 100~109 로 고정해 둔 것을 유지한다.**
+분리 조건(calibration/selection 과 서로소)을 이미 만족하므로 바꿀 이유가 없고,
+바꾸면 기존 confirmatory 정의가 흔들린다.
+
+##### 남은 중복 하나를 명시한다
+
+`quad_d100_k1e5` 는 **original dev audit 과 challenge set 에 모두 있다.** 따라서
+`(quad_d100_k1e5, seed 2)` 는 두 국면에서 같은 인스턴스다.
+
+```text
+original dev audit   quad_ill k=1e5, seeds 0/1/2, beam 4     이미 실행. planner 결과 공개됨
+challenge selection  quad_ill k=1e5, seeds 2/3/4, beam 8     예정
+```
+
+이것을 숨기지 않고 기록한다. 완전 분리를 원하면 `SELECTION_SEEDS` 를 `(3, 4, 5)`
+로 바꿔야 하지만, 그러면 사전 등록한 권고 범위에서 벗어난다. 현재는 다음 근거로
+`(2, 3, 4)` 를 유지한다.
+
+```text
+설정 선택은 beam 8 결과로 하고, 그 조합은 아직 실행되지 않았다
+겹치는 것은 3개 인스턴스 중 1개, 12개 selection 인스턴스 중 1개다
+spec 선정은 planner 를 보지 않는 calibration seed 0/1 로만 했다
 ```
 
 #### 전체 구조
@@ -2034,6 +2058,9 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-03 | spec 별 보고가 all-task median 과 반대 결론을 냈다 | all-task 는 A2/C2/C3 모두 `+0.000`(재설계)인데, `quad_ill κ=1e5` 만 보면 `+0.494`/`+0.542`/`+0.370` 으로 GO 기준을 넘는다. 측정 가능한 regime 이 하나뿐이라는 것이 핵심 발견이다 |
 | 2026-08-03 | **D20 신설: challenge set 을 측정 가능성 기준으로 사전 등록. quadratic κ∈{1e3,1e4,1e5,1e6} freeze** | dev subset 3개 중 2개가 포화되어 beam 8 을 기존 9쌍만으로 돌리면 seed 하나에 좌우된다. 선정에 planner 결과를 쓰지 않고 baseline-only 로 판정했다. `rosen_d5` 는 tie-break 규칙상 탈락, 비선형 진단 층으로 보존 |
 | 2026-08-03 | `rosen_d5` 에 사후 `baseline spread` 조건을 추가하지 않음 | 임계값 선택이 사후적이 되고, baseline 4종이 동일하다고 planner 도 동일하다는 보장이 없다. 기존 tie-break 규칙만으로 같은 결론에 도달한다 |
+| 2026-08-03 | challenge set 을 `--mode challenge`, 진단 층을 `--mode nonlinear-diagnostic` 으로 코드에 등록. `CALIBRATION_SEEDS`/`SELECTION_SEEDS` 신설 | 목록을 코드 밖에 두면 사전 등록이 무의미해진다. `TestChallengeSetFreeze` 가 spec 4개, `log10(κ)` 간격, seed 서로소, `phase` 가 `run_semantics_id` 를 바꾸지 않음을 검증한다 |
+| 2026-08-03 | `HELD_OUT_SEEDS` 를 권고 범위 5~14 로 바꾸지 않고 100~109 유지 | 이미 calibration(0,1) 및 selection(2,3,4) 과 서로소다. 바꾸면 기존 confirmatory 정의가 흔들린다 |
+| 2026-08-03 | `(quad_d100_k1e5, seed 2)` 가 original dev audit 과 challenge selection 에 모두 포함됨을 명시 | 숨기지 않고 기록한다. 완전 분리에는 `SELECTION_SEEDS=(3,4,5)` 가 필요하지만 사전 등록 범위를 벗어난다. selection 12 인스턴스 중 1개이고 beam 8 조합은 아직 미실행이다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |

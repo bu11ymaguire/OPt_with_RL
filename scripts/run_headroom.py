@@ -53,6 +53,7 @@ from rl_newton.benchmark.metrics import TargetSpec
 from rl_newton.benchmark.oracle import (
     DEV_SEEDS,
     HELD_OUT_SEEDS,
+    SELECTION_SEEDS,
     HeadroomConfig,
     calibrate_beam_width,
     run_headroom,
@@ -100,6 +101,55 @@ def pilot_specs() -> list:
     ]
 
 
+def challenge_specs() -> list:
+    """Challenge **selection** set. 프로토콜 D20 에서 freeze 했다.
+
+    ``scripts/calibrate_challenge.py`` 의 baseline-only 측정 가능성 조건을 통과한
+    spec 이다. **planner 결과를 보지 않고 선정했다.**
+
+    ```text
+    failure_rate = 0                     통과
+    joint floor-hit rate <= 1/3          통과 (0/2)
+    각 baseline median logΔ >= 1 nat     통과 (최소 8.33)
+    median distance-to-ceiling >= 3 nat  통과 (최소 13.71)
+    ```
+
+    후보 5개가 전부 통과해 ``MAX_SPECS=4`` 를 초과했으므로 사전 등록된
+    tie-break("``log10(κ)`` 간격을 가장 고르게 덮는다")를 적용했다. 아래 4개가
+    ``log10(κ)`` 축을 간격 1로 균등하게 덮는다.
+
+    **이 목록은 바꾸지 않는다.** 변경 시 프로토콜 §9 변경이력에 기록한다.
+    """
+    return [
+        QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e3),
+        QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e4),
+        QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e5),
+        QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e6),
+    ]
+
+
+def nonlinear_diagnostic_specs() -> list:
+    """비선형 진단 층. **설정 선택 점수에 넣지 않는다** (프로토콜 D20).
+
+    ``rosen_d5`` 는 calibration 4개 조건을 모두 통과했으나 ``κ`` 축에 없어
+    tie-break 규칙상 challenge selection set 에서 탈락했다.
+
+    관측 사실은 이것이다.
+
+    ```text
+    best_static / best_open_loop / heuristic / C0 가 모두 정확히 1.8175 nat
+    ```
+
+    baseline panel 로는 controller 구분력을 확인하지 못했다. 다만 baseline 4종이
+    같다고 planner 도 같다는 보장이 없으므로 "무가치한 task" 로 판정하지 않는다.
+
+    사용 순서를 지킨다. quadratic 4개에서 설정 하나를 freeze **한 뒤** 그 설정만
+    여기에 적용한다. 그러면 Rosenbrock 결과를 보고 설정을 조정했다는 문제가
+    사라진다.
+    """
+    return [RosenbrockSpec(dimension=5)]
+
+
 def confirmatory_specs() -> list:
     """confirmatory. pilot 과 다른 조건수와 차원을 포함한다."""
     return [
@@ -138,6 +188,17 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         specs = confirmatory_specs()
         seeds = list(HELD_OUT_SEEDS)[: args.seeds]
         phase = "confirmatory"
+    elif args.mode == "challenge":
+        # D20. challenge selection set + selection seed. calibration seed(0,1) 와
+        # 겹치지 않는다.
+        specs = challenge_specs()
+        seeds = list(SELECTION_SEEDS)[: args.seeds]
+        phase = "challenge"
+    elif args.mode == "nonlinear-diagnostic":
+        # D20. 설정 선택 점수에 넣지 않는다. quadratic 에서 freeze 한 설정만 적용한다.
+        specs = nonlinear_diagnostic_specs()
+        seeds = list(SELECTION_SEEDS)[: args.seeds]
+        phase = "challenge"
     else:
         specs = pilot_specs()
         seeds = list(DEV_SEEDS)[: args.seeds]
@@ -200,8 +261,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=["calibrate-beam", "pilot", "confirmatory"],
+        choices=[
+            "calibrate-beam",
+            "pilot",
+            "challenge",
+            "nonlinear-diagnostic",
+            "confirmatory",
+        ],
         default="pilot",
+        help=(
+            "challenge = D20 selection set (quadratic 4, seeds 2/3/4). "
+            "nonlinear-diagnostic = rosen_d5. 설정 선택에 쓰지 않는다"
+        ),
     )
     parser.add_argument("--seeds", type=int, default=3, help="사용할 seed 개수")
     parser.add_argument("--budget", type=float, default=600.0, help="GE 예산")

@@ -139,13 +139,32 @@ Track T planner 는 절대 target loss 를 알아야 한다. 상대 target ``L/L
 task 를 받도록 한다.
 """
 
-Phase = Literal["pilot", "confirmatory"]
+Phase = Literal["pilot", "challenge", "confirmatory"]
 
 DEV_SEEDS = (0, 1, 2)
 """pilot 국면의 dev seed. 예산/target 선정에만 쓴다."""
 
+CALIBRATION_SEEDS = (0, 1)
+"""challenge spec **선정**에만 쓰는 seed (프로토콜 D20).
+
+``scripts/calibrate_challenge.py`` 가 이 seed 로 baseline-only 측정 가능성을
+판정했다. 설정 선택에 재사용하면 benchmark tuning 이 된다.
+"""
+
+SELECTION_SEEDS = (2, 3, 4)
+"""challenge set 에서 **설정(Q, space, beam)을 고르는** seed (프로토콜 D20).
+
+``CALIBRATION_SEEDS`` 와 겹치지 않는다. spec 을 고른 seed 로 설정을 고르면
+같은 표본을 두 번 쓰게 된다.
+"""
+
 HELD_OUT_SEEDS = tuple(range(100, 110))
-"""confirmatory 국면의 held-out seed. 최종 판정에만 쓴다."""
+"""confirmatory 국면의 held-out seed. 최종 판정에만 쓴다.
+
+calibration(0,1) 과 selection(2,3,4) 모두와 겹치지 않는다. 프로토콜 D20 의 권고
+범위는 5~14 였으나 기존에 100~109 로 고정해 두었고 이미 분리 조건을 만족하므로
+그대로 유지한다.
+"""
 
 
 @dataclass(frozen=True, slots=True)
