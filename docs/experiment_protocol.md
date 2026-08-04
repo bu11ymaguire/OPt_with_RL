@@ -700,6 +700,265 @@ rosen_d5
 > Rosenbrock 결과는 configuration selection 에 사용하지 않고 비선형 행동 분석에만
 > 사용한다.
 
+### D23. `rosen_d5` 는 **국소최소점에 갇힌** task 였다. D20 ceiling 공식이 틀렸다
+
+선택된 설정 `shrinking_Q4_narrow` 를 `rosen_d5` 에 적용한 결과, 12개 컨트롤러의
+모든 게이트가 `+0.000 nat` 이었다. 원인을 진단했다.
+
+#### 표면 관측
+
+```text
+A1=재설계  A2=재설계  B=재설계  C1=판정불가  C2=재설계  C3=재설계  D=판정불가
+모든 delta 가 +0.000 또는 −0.000
+target 도달률 0/3  (easy = absolute_loss <= 1e-1 조차 미달)
+```
+
+그런데 planner 는 depth 8 까지 계획을 채택했다 (`chosen_depths {8:1, 7:1, ..., 1:19}`,
+`depth>1` 비율 0.27, `depth_cap_hit 0.00`). 계획이 무력화된 것이 아니다.
+
+#### 원인 1: 표준 시작점의 basin 에 **strict 국소최소점**이 있다
+
+`final_loss` 는 실제로 14개 서로 다른 값이었다. 전부 `3.9308` 근방이다.
+
+```text
+onestep_narrow        3.9308388233
+committed_Q4_narrow   3.9308393002
+shrinking_Q4_narrow   3.9308393002
+best_static           3.9308681488
+open_loop[0]          3.9310777187
+static[2]             4.6165843010   (나쁜 설정은 더 못 갔다)
+```
+
+LBFGS 로 정밀 수렴시켜 임계점을 특정했다.
+
+```text
+x*        (-0.96205102, 0.93573939, 0.88071360, 0.77787767, 0.60509367)
+loss      3.930839434133
+|grad|    1.06e-08
+Hessian   eig min +5.95e-01, eig max +1.44e+03   -> 양정
+```
+
+표준 시작점 `(-1.2, 1, 1, 1, 1)` 에서 LBFGS 를 돌려도 **전역최소점이 아니라 이
+점으로 수렴한다.** `(0.9, ..., 0.9)` 에서 출발하면 `loss=0` 에 도달한다. 즉 시작점의
+basin 이 국소최소점의 basin 이다.
+
+`rosenbrock.py` 모듈 docstring 이 이미 `d >= 4` 에서 국소최소값이 존재한다고
+적어 두었다. **그 경고를 D20 calibration 이 반영하지 못했다.**
+
+#### 원인 2: D20 의 `ceiling` 공식이 이 경우 무의미하다
+
+D20 은 이렇게 계산했다.
+
+```text
+ceiling = log(L0) − log(L0 x RELATIVE_LOSS_FLOOR) = log(1/2.22e-14) = 31.44 nat
+```
+
+이것은 **전역최소점이 0 이고 도달 가능하다**고 가정한다. `rosen_d5` 의 실제
+달성 가능 상한은 국소최소점이 정한다.
+
+```text
+D20 이 쓴 ceiling         31.44 nat   -> "여유 29.62 nat" 으로 통과
+실제 달성 가능 상한        log(24.2 / 3.930839) = 1.8175 nat
+관측된 baseline median     1.8175 nat  -> 여유 0.0000 nat
+```
+
+**모든 baseline 이 정확히 1.8175 였던 이유가 이것이다.** 전부 국소최소점에
+도달했다. `κ` 축 tie-break 로 탈락시킨 것은 결과적으로 옳았지만, 근거가
+`log10(κ)` 균등 포괄이었을 뿐 이 결함을 잡아낸 것이 아니다.
+
+##### 교정된 eligibility 조건 (제안)
+
+사후 임계값이 아니라 **기전 기반**이다. 컨트롤러 비교를 열지 않고 계산할 수 있다.
+
+```text
+achievable_ceiling = log(L0) − log(L_ref)
+  L_ref = 시작점에서 강한 참조 solver 로 정밀 수렴시킨 임계점의 loss
+채택 조건에서 ceiling 을 numerical floor 대신 이 값으로 바꾼다
+추가 조건: achievable_ceiling >= (요구 median logΔ + 여유)
+```
+
+`rosen_d5` 는 `achievable_ceiling = 1.8175` 이므로 `median logΔ >= 1` 과
+`여유 >= 3` 을 **동시에 만족할 수 없다.** 즉 교정된 조건으로는 자동 탈락한다.
+
+#### 원인 3: `randomize_start=False` 라 `n=3` 이 실제로는 `n=1` 이었다
+
+```text
+RosenbrockSpec(dimension=5)  ->  randomize_start=False
+seed 2 / 3 / 4  전부 x0 = (-1.2, 1, 1, 1, 1),  L0 = 24.200000
+```
+
+seed 2 와 seed 4 의 24개 run 이 **모든 컬럼에서 bitwise 동일**했다. 따라서 이
+진단의 `n=3`, CI, p-value 는 전부 무의미하다. **표본은 1개다.**
+
+`confirmatory_specs()` 는 `RosenbrockSpec(dimension=10, randomize_start=True)` 를
+쓰므로 플래그는 존재했다. D20 이 `dimension=5` 만 지정하고 기본값을 확인하지
+않은 것이 원인이다.
+
+##### `randomize_start=True` 로 바꿔도 cap 은 남는다
+
+```text
+seed2  L0=64.88 -> 3.9308394341  국소최소점  달성가능 ceiling 2.804 nat
+seed3  L0=70.51 -> 3.9308394341  국소최소점  달성가능 ceiling 2.887 nat
+seed4  L0=19.00 -> 3.9308394341  국소최소점  달성가능 ceiling 1.575 nat
+```
+
+세 시작점 모두 **같은 국소최소점**으로 수렴한다. `start_noise=0.1` 은 basin 을
+벗어나기에 너무 작다. 따라서 `randomize_start=True` 는 원인 3만 고치고 원인 1을
+고치지 못한다.
+
+#### quadratic challenge set 은 영향이 없다
+
+```text
+spec           seed 별 L0                                  eig min
+d100_k1e+03    6532.47 / 8105.36 / 5409.81                 +1.0
+d100_k1e+04   38955.02 / 50803.88 / 60202.39               +1.0
+d100_k1e+05  347484.25 / 470283.05 / 243511.90             +1.0
+d100_k1e+06  4681346.48 / 6335280.50 / 3146287.74          +1.0
+```
+
+seed 마다 다른 인스턴스이고 전부 SPD 다. 최소점이 유일하므로 국소최소점 cap 이
+없다. **D22 의 `n=12` 결과는 유효하다.**
+
+#### 따라서 비선형 일반성은 아직 미검증이다
+
+D22 의 `C3 ≈ 0` 이 quadratic 의 결정론성 때문인지 일반적 성질인지 구별하려면
+비선형 task 가 필요하다. 그런데 현재 비선형 후보는 다음 상태다.
+
+```text
+rosen_d2   numerical floor 로 포화 (D19)
+rosen_d5   국소최소점으로 cap, 게다가 n=1 (D23)
+```
+
+**둘 다 사용 불가다.** 새 비선형 task 설계는 프로토콜 변경이므로 리뷰 대상이다.
+`start_noise` 를 키워 basin 을 넘게 하거나, `d=10` 처럼 국소최소점이 없는 차원을
+쓰거나, 다른 함수족을 도입하는 선택지가 있다. **이 결정을 코딩 에이전트가 하지
+않는다.**
+
+### D22. beam 8 challenge 결과. 헤드룸은 **feedback 이 아니라 sequence** 에 있다
+
+challenge selection set (quad d=100, κ∈{1e3,1e4,1e5,1e6}) × seeds 2/3/4 = 12
+인스턴스, 150 GE, beam 8, 360 run, 실패 0, floor hit 0.
+
+#### D21 규칙 적용 결과
+
+```text
+configuration          n   median logΔ    search GE
+shrinking_Q4_narrow   12       10.5306     193893.6   <- 선택
+shrinking_Q2_wide     12       10.3691     127609.1
+shrinking_Q2_narrow   12       10.3208      55801.5
+shrinking_Q4_wide     12       10.2508     441612.3
+```
+
+최대값이 2위와 `0.16 nat` 차이로 `TIE_TOLERANCE=0.05` 를 넘으므로 **단독 선택**
+이다. tie-break 사다리를 쓰지 않았다.
+
+`Q4_wide` 가 `Q4_narrow` 보다 낮다. 행동 집합이 커지면 탐색 가능 집합은 포함관계로
+커지지만 **실현 성능은 비감소가 아니다** (§게이트 C 에 이미 명시). beam 8 이
+넓어진 공간을 다 감당하지 못한다.
+
+#### 사다리: 총 헤드룸 `+1.502 nat` 의 분해
+
+```text
+controller             logΔ     vs best_static   비고
+best_static            8.895      —              상수 action, 튜닝됨
+heuristic              8.886      −0.000          static 과 사실상 동일 (p=0.79)
+best_open_loop         9.278      +0.413          4구간 고정 스케줄, 상태 미관측
+onestep_absolute       9.989      +1.263          A1. 1-step, 132 action
+onestep_narrow        10.188      +1.29           1-step, 12 action
+shrinking_Q2_narrow   10.321      +1.43
+shrinking_Q4_narrow   10.531      +1.502          A2. 선택된 설정
+committed_Q4_narrow   10.566      +1.67           초기 상태에서 한 번 계획, 맹목 실행
+committed_Q4_wide     10.574      +1.68
+```
+
+paired median 으로 다시 쓰면 이렇다.
+
+```text
+A2   shrinking − best_static     +1.502  CI +1.160~+4.402  p=0.0005  12/12 양수
+C2   shrinking − onestep         +0.251  CI −0.036~+0.487  p=0.0771  8 양수 / 4 음수
+C3   shrinking − committed       −0.044  CI −0.590~+0.070  p=0.3804  6 양수 / 6 음수
+B    absolute − narrow (H=1)     +0.015  CI −0.070~+0.055  p=0.9097
+ref  open_loop − best_static     +0.413  CI +0.317~+0.754  p=0.0005
+```
+
+게이트: `A1=GO  A2=GO  B=재설계  C1=판정불가  C2=조건부  C3=재설계  D=GO`.
+
+#### 가장 중요한 관측: `C3 ≈ 0`
+
+`committed` 는 **초기 상태에서 한 번 계획하고 그대로 실행하는** oracle 이다. 그것이
+매 step 재계획하는 `shrinking` 과 같거나 약간 낫다.
+
+> 이득은 좋은 **행동 시퀀스**를 찾는 데서 나오고, 상태를 보고 **적응**하는 데서
+> 나오지 않는다.
+
+이것이 PPO 착수 판단에 직접 영향을 준다. PPO 가 학습하는 것은 `π(a|s)` 즉 상태
+조건 feedback 정책이다. feedback 의 추가 가치가 0 이면 PPO 의 상한은 committed
+수준이고, 그 수준은 per-instance 탐색으로 이미 도달 가능하다.
+
+##### 다만 이것을 일반화하면 안 된다
+
+quadratic 은 **결정론적이고 예측 가능하다.** 초기 상태와 행동 시퀀스가 주어지면
+궤적이 완전히 결정된다. 따라서 초기 상태에서 세운 계획이 이미 최적 예측이고
+재계획이 새 정보를 얻을 수 없다.
+
+```text
+가능한 해석 1  feedback 은 원래 가치가 없다
+가능한 해석 2  이 task 족이 결정론적이라 planner 의 모델이 정확했다
+```
+
+**두 해석을 이 실험으로 구별할 수 없다.** 비선형 진단(`rosen_d5`, D20)이 정확히
+이 지점을 시험한다.
+
+#### κ 의존성은 가설과 반대였다
+
+```text
+A2 (shrinking − best_static)  spec 별 median
+κ=1e3   +6.584   [+6.329, +7.152, +6.584]
+κ=1e4   +2.361   [+2.476, +1.523, +2.361]
+κ=1e5   +0.735   [+1.464, +0.735, +0.605]
+κ=1e6   +1.232   [+1.480, +1.232, +1.087]
+```
+
+"adaptive-control headroom 이 condition number 에 따라 증가하는가" 라는 질문의
+답은 **아니오** 다. `κ=1e3` 에서 가장 크고 `κ=1e5` 까지 감소한 뒤 평평해진다.
+
+pilot 의 dev subset 에서는 `quad_ill κ=1e5` 만 측정 가능해 "ill-conditioned 에서만
+헤드룸" 처럼 보였다. **그것은 비교 대상이 포화됐기 때문이었고, κ 축을 채우니
+방향이 뒤집혔다.** D19/D20 의 교정이 이 관측을 가능하게 했다.
+
+#### 행동 공간은 병목이 아니다 (B = 재설계)
+
+```text
+absolute  132 action, log10 범위 15.27   vs   narrow  12 action, log10 범위 0.95
+차이 +0.015 nat, p=0.9097
+wide − narrow = +0.044 nat, p=0.3804
+```
+
+damping 을 자유롭게 고를 수 있게 해도 1-step 성능이 오르지 않는다. **좁은 multiplier
+공간으로 충분하다.** 이것은 음의 결과지만 유용하다. 값싼 행동 공간을 정당화한다.
+
+#### planning 이 실제로 일어났다 (P3 두 번째 조건)
+
+```text
+Q4  depth>1 채택률 0.85   plan-depth 상한에 걸린 비율 0.00
+Q2  depth>1 채택률 0.68   상한 0.00
+```
+
+개선이 탐색량만으로 생긴 것이 아니다. 다만 `C2 = +0.251, p=0.0771` 은 GO 임계값
+`0.3` 에 못 미치므로 **조건부**다.
+
+#### 탐색 비용을 숨기지 않는다
+
+```text
+shrinking_Q4_narrow  decision-search 193,894 GE   /   object budget 150 GE  =  1,293배
+committed_Q4_narrow   69,336 GE  =  462배
+onestep_narrow         1,186 GE  =  7.9배
+best_open_loop 튜닝   10,531 GE (12 인스턴스 전체) = 인스턴스당 878 GE
+```
+
+`+1.502 nat` 은 인스턴스당 예산의 **1,293배**를 쓴 oracle 값이다. amortize 질문
+(P4)이 남는다.
+
 ### D21. 설정 선택 통계를 실행 전에 하나로 못박는다
 
 §게이트 C 의 "설정(Q, action space) 선택은 beam 8 dev 결과의 median 으로 한 번만
@@ -2133,6 +2392,16 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-03 | **D21 신설: 설정 선택 통계를 `shrinking` 자신의 median logΔ 최대화로 확정** | 기존 규칙("beam 8 dev median")이 무엇의 median 인지 미지정이었다. D19 에서 all-task 와 spec별 median 이 반대 결론을 냈으므로 남겨두면 사후 선택이 된다. baseline delta 로 고르지 않는 이유는 strongest baseline 순위가 불안정하기 때문이다 (p=0.906) |
 | 2026-08-03 | D21 tie-break 사다리 고정: `decision-search GE` → `작은 Q` → `narrow` | median 이 `0.05 nat` 이내면 적용한다. 결정론적이어야 재현 가능하다 |
 | 2026-08-03 | beam 8 전체 실행 전에 1 인스턴스 dry run 을 먼저 돌렸음을 공개 | 비용 측정 목적(`quad_d100_k1e3`, seed 2, 30 run, 약 8분). `Q × space` 별 planner 순위는 열지 않았으나 순서가 `dry run → 규칙 확정 → 전체 실행` 이었다는 사실을 기록한다 |
+| 2026-08-04 | **D22 신설: beam 8 challenge 결과. `shrinking_Q4_narrow` 선택 (median logΔ 10.5306, 단독)** | 360 run, 실패 0, floor hit 0. `A2=+1.502 nat, p=0.0005, 12/12 양수`. `Q4_wide` 가 `Q4_narrow` 보다 낮다 (탐색 가능 집합 포함관계 ≠ 실현 성능 비감소) |
+| 2026-08-04 | **`C3 = −0.044 nat (p=0.38)`. 헤드룸은 feedback 이 아니라 sequence 에 있다** | 초기 상태에서 한 번 계획하고 맹목 실행하는 `committed` 가 매 step 재계획과 같거나 낫다. PPO 가 학습하는 `π(a|s)` 의 추가 가치가 이 task 족에서는 0 이다. 다만 quadratic 이 결정론적이라 planner 모델이 정확했던 것과 구별할 수 없다 |
+| 2026-08-04 | κ 의존성이 가설과 반대. `κ=1e3` 에서 헤드룸 최대(+6.584), `κ=1e5` 까지 감소(+0.735) | pilot 의 "ill-conditioned 에서만 헤드룸" 은 비교 대상이 포화됐기 때문이었다. κ 축을 채우니 방향이 뒤집혔다. D19/D20 교정이 이 관측을 가능하게 했다 |
+| 2026-08-04 | `B = 재설계 (+0.015 nat, p=0.91)`. 행동 공간은 병목이 아니다 | `absolute` 132 action(log10 범위 15.27)이 `narrow` 12 action(범위 0.95) 대비 이득이 없다. 값싼 좁은 multiplier 공간을 정당화하는 음의 결과다 |
+| 2026-08-04 | **D23 신설: `rosen_d5` 는 국소최소점에 갇힌 task. D20 ceiling 공식이 틀렸다** | 표준 시작점 basin 에 strict 국소최소점(`loss=3.930839434`, `\|grad\|=1e-8`, PSD)이 있다. D20 이 쓴 `ceiling=log(L0/numerical_floor)=31.44` 는 전역최소점 도달을 가정한다. 실제 달성 가능 상한은 `1.8175 nat` 이고 모든 baseline 이 정확히 거기 도달했다 |
+| 2026-08-04 | `rosen_d5` 의 `n=3` 이 실제로는 `n=1` 이었다 | `RosenbrockSpec(dimension=5)` 의 `randomize_start` 기본값이 `False` 다. seed 2/3/4 의 24개 run 이 모든 컬럼에서 bitwise 동일했다. 이 진단의 CI 와 p-value 는 무의미하다 |
+| 2026-08-04 | `randomize_start=True` 로 바꿔도 cap 은 남는다 | 세 randomized 시작점 모두 같은 국소최소점으로 수렴한다 (`start_noise=0.1` 이 basin 을 벗어나기에 작다). 달성 가능 ceiling 이 1.575~2.887 nat 에 불과하다 |
+| 2026-08-04 | 교정된 eligibility 조건을 **제안만** 하고 적용하지 않음 | `achievable_ceiling = log(L0) − log(L_ref)`, `L_ref` 는 강한 참조 solver 의 수렴점. 기전 기반이고 컨트롤러 비교를 열지 않고 계산 가능하다. 다만 새 비선형 task 설계는 프로토콜 변경이므로 리뷰 대상이다 |
+| 2026-08-04 | quadratic challenge set 은 D23 의 영향을 받지 않음 | seed 마다 다른 인스턴스이고 전부 SPD(`eig min = +1.0`)로 최소점이 유일하다. D22 의 `n=12` 결과는 유효하다 |
+| 2026-08-04 | 비선형 진단 실행 시 git 이 dirty 였음을 기록 | 프로토콜 문서를 수정한 상태에서 돌렸다. D13 에 따라 `run_semantics_id` 는 영향받지 않고 `code_dirty` 는 `execution_provenance` 에 남는다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |
