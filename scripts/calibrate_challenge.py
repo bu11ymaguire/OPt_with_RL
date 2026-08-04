@@ -1,7 +1,4 @@
-"""Challenge set 선정: **비적응 baseline 만으로 측정 가능성**을 판정한다 (D20).
-
-D19 에서 dev subset 3 spec 중 2개가 컨트롤러를 구분하지 못한다는 것이 확인됐다.
-측정 가능한 regime 이 ``quad_ill κ=1e5`` 하나뿐이다.
+"""Challenge set 선정: **비적응 baseline 만으로 측정 가능성**을 판정한다 (D20/D25).
 
 **planner 결과를 보지 않는다.** 선정 기준은 성능 우열이 아니라 측정 가능성이다.
 어떤 컨트롤러가 이기는지로 benchmark 를 고르면 결과를 본 뒤 유리한 task 를
@@ -9,27 +6,32 @@ D19 에서 dev subset 3 spec 중 2개가 컨트롤러를 구분하지 못한다�
 
 ```text
 사용 baseline:  best_static / best open_loop / heuristic / C0(onestep_narrow)
+참조 solver:    lbfgs / adam / sgd_momentum / newton  (planner 아님)
 비공개:         shrinking / committed / fresh / beam 결과
 ```
 
-채택 조건 (사전 고정, 프로토콜 D20)
------------------------------------
+D25: ceiling 을 참조 solver panel 로 잰다
+-----------------------------------------
+초판(D20)은 ``ceiling = log(L0 / numerical_floor) = 31.44 nat`` 을 썼다. 이것은
+전역최소점이 0 이고 도달 가능하다고 가정한다. `rosen_d5` 에서 그 가정이 깨졌다.
+
 ```text
-failure_rate = 0                        numerical failure 없음
-joint floor-hit rate <= 1/3             포화가 과도하지 않음
-각 baseline median logΔ >= 1 nat        문제를 전혀 못 줄이는 조건 아님
-median distance-to-ceiling >= 3 nat     floor 까지 e^3 ~ 20배 여유
+D20 ceiling         31.44 nat   -> "여유 29.62 nat" 통과
+실제 달성 가능 상한  1.8175 nat  -> 여유 0.0000 nat   (국소최소점 cap)
 ```
 
-``ceiling = log(L0 / loss_floor)`` 이다. 비율 기준(``0.8 x ceiling``)은 현재
-open-loop 가 25.456 이라 지나치게 빡빡하므로 **절대 여유 3 nat** 으로 정한다.
+이제 ``J_achievable = log(L0) − log(max(L_ref, L_floor))`` 를 쓴다. ``L_ref`` 는
+참조 solver panel 의 최소 final loss 다.
 
-seed 분리
----------
+채택 조건 (D25 개정)
+--------------------
 ```text
-calibration seeds  0, 1        이 스크립트. spec 선정에만
-beam-8 dev seeds   2, 3, 4     설정 선택에만
-held-out           5 ~ 14      최종 평가에만
+failure_rate = 0                              numerical failure 없음
+joint floor-hit rate <= 1/3                   포화가 과도하지 않음
+각 baseline median logΔ >= 1 nat              문제를 전혀 못 줄이는 조건 아님
+J_achievable − median logΔ >= 3 nat           달성 가능 상한까지 여유
+참조 solver 간 수렴점 산포 <= 0.5 nat          상한 추정이 안정적
+seed 마다 실제로 다른 인스턴스                  seed 복제 금지
 ```
 
 사용법:
@@ -41,11 +43,15 @@ from __future__ import annotations
 import argparse
 import math
 
-from rl_newton.benchmark.metrics import (
-    RELATIVE_LOSS_FLOOR,
-    TargetSpec,
-    summarize_run,
+import torch
+
+from rl_newton.benchmark.eligibility import (
+    REFERENCE_AGREEMENT_NAT,
+    achievable_ceiling,
+    check_seed_variation,
+    reference_panel,
 )
+from rl_newton.benchmark.metrics import TargetSpec, summarize_run
 from rl_newton.optimizers.action_space import NARROW
 from rl_newton.optimizers.controllers import (
     FixedController,
@@ -63,6 +69,8 @@ MIN_MEDIAN_LOG_IMPROVEMENT = 1.0
 MIN_DISTANCE_TO_CEILING = 3.0
 MAX_SPECS = 4
 
+BASELINES = ("best_static", "best_open_loop", "heuristic", "onestep_narrow")
+
 # --- 후보군. conditioning 축을 촘촘히 (D20) ---
 CANDIDATES: list[tuple[str, object]] = [
     ("quad_d100_k1e3", QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e3)),
@@ -70,15 +78,16 @@ CANDIDATES: list[tuple[str, object]] = [
     ("quad_d100_k1e5", QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e5)),
     ("quad_d100_k1e6", QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e6)),
     ("rosen_d5", RosenbrockSpec(dimension=5)),
+    ("rosen_d5_rand", RosenbrockSpec(dimension=5, randomize_start=True)),
 ]
 
 TARGET = TargetSpec("relative_loss", 1.0e-6)
 
 
-def make(spec, seed: int):
+def make(spec, seed: int, *, dtype: torch.dtype = torch.float32):
     if isinstance(spec, QuadraticSpec):
-        return QuadraticTask(spec, seed=seed)
-    return RosenbrockTask(spec, seed=seed)
+        return QuadraticTask(spec, seed=seed, dtype=dtype)
+    return RosenbrockTask(spec, seed=seed, dtype=dtype)
 
 
 def run_one(controller, spec, seed: int, budget: float):
@@ -125,39 +134,74 @@ def main() -> int:
     parser.add_argument("--budget", type=float, default=150.0)
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1])
     parser.add_argument("--n-tune", type=int, default=6, help="baseline 튜닝 후보 수")
+    parser.add_argument(
+        "--reference-iters",
+        type=int,
+        default=4000,
+        help="참조 solver 반복 상한. 예산 제약이 상한을 만들지 않을 만큼 크게",
+    )
     args = parser.parse_args()
 
     space = NARROW.with_fixed_step_size(1.0)
     print(f"Challenge set calibration  예산 {args.budget:g} GE  "
           f"calibration seeds={args.seeds}  N_tune={args.n_tune}")
-    print(f"채택 조건: failure=0, joint floor<= {MAX_JOINT_FLOOR_RATE:.2f}, "
-          f"median logΔ>= {MIN_MEDIAN_LOG_IMPROVEMENT:g}, "
-          f"ceiling 여유>= {MIN_DISTANCE_TO_CEILING:g} nat")
+    print("채택 조건 (D25):")
+    print(f"  failure=0, joint floor<= {MAX_JOINT_FLOOR_RATE:.2f}, "
+          f"median logΔ>= {MIN_MEDIAN_LOG_IMPROVEMENT:g}")
+    print(f"  J_achievable 여유>= {MIN_DISTANCE_TO_CEILING:g} nat, "
+          f"참조 산포<= {REFERENCE_AGREEMENT_NAT:g} nat, seed 복제 금지")
     print("**planner 결과는 열지 않는다.**\n")
 
     verdicts: list[tuple[str, bool, float, str]] = []
     for name, spec in CANDIDATES:
-        rows = []
-        for seed in args.seeds:
-            rows.append(baseline_panel(space, args.budget, spec, seed, args.n_tune))
+        # --- seed 복제 검사 (D23 원인 3) ---
+        variation = check_seed_variation(
+            lambda s, _spec=spec: make(_spec, s, dtype=torch.float64), args.seeds
+        )
 
-        l0 = float(make(spec, args.seeds[0]).initial_loss)
-        floor = max(2.2250738585072014e-308, abs(l0) * RELATIVE_LOSS_FLOOR)
-        ceiling = math.log(l0) - math.log(floor)
+        # --- 달성 가능 상한 (D25) ---
+        first = args.seeds[0]
+        l0 = float(make(spec, first, dtype=torch.float64).initial_loss)
+        panel = reference_panel(
+            lambda _spec=spec, _seed=first: make(_spec, _seed, dtype=torch.float64),
+            max_iter=args.reference_iters,
+            extra_inits=(0.9,) if isinstance(spec, RosenbrockSpec) else (),
+        )
+        ceiling = achievable_ceiling(l0, panel)
 
-        print(f"=== {name}  L0={l0:.4e}  ceiling={ceiling:.2f} nat ===")
-        print(f"  {'baseline':<18} {'median logΔ':>12} {'여유':>8} {'floor':>6} {'fail':>6}")
+        print(f"=== {name} ===")
+        print(f"  {variation.describe()}")
+        print(f"  {ceiling.describe()}")
+        for run in ceiling.runs:
+            mark = "수렴" if run.is_critical_point else "미수렴"
+            print(
+                f"    {run.name:<16} final={run.final_loss:.6e} "
+                f"|grad|={run.grad_norm:.3e} {mark}"
+            )
+
+        rows = [
+            baseline_panel(space, args.budget, spec, seed, args.n_tune)
+            for seed in args.seeds
+        ]
 
         ok = True
         reasons: list[str] = []
+        if not variation.ok:
+            ok = False
+            reasons.append("seed 복제")
+        if not ceiling.references_agree:
+            ok = False
+            reasons.append(f"참조 산포 {ceiling.reference_spread_nat:.2f} nat")
+
+        print(f"  {'baseline':<18} {'median logΔ':>12} {'여유':>8} {'floor':>6} {'fail':>6}")
         worst_gap = math.inf
-        for label in ("best_static", "best_open_loop", "heuristic", "onestep_narrow"):
+        for label in BASELINES:
             vals = [r[label].log_improvement for r in rows]  # type: ignore[index]
             finite = sorted(v for v in vals if math.isfinite(v))
             med = finite[len(finite) // 2] if finite else float("nan")
             n_floor = sum(1 for r in rows if r[label].floor_hit)  # type: ignore[index]
             n_fail = sum(1 for r in rows if r[label].failure_rate > 0.0)  # type: ignore[index]
-            gap = ceiling - med
+            gap = ceiling.nats - med
             worst_gap = min(worst_gap, gap)
             print(
                 f"  {label:<18} {med:>12.4f} {gap:>8.2f} "
@@ -172,9 +216,9 @@ def main() -> int:
             if not math.isfinite(med) or med < MIN_MEDIAN_LOG_IMPROVEMENT:
                 ok = False
                 reasons.append(f"{label} median logΔ {med:.3f} < {MIN_MEDIAN_LOG_IMPROVEMENT}")
-            if gap < MIN_DISTANCE_TO_CEILING:
+            if not math.isfinite(gap) or gap < MIN_DISTANCE_TO_CEILING:
                 ok = False
-                reasons.append(f"{label} ceiling 여유 {gap:.2f} < {MIN_DISTANCE_TO_CEILING}")
+                reasons.append(f"{label} 달성가능 여유 {gap:.2f} < {MIN_DISTANCE_TO_CEILING}")
 
         verdict = "채택" if ok else "탈락"
         print(f"  -> {verdict}" + (f"  ({'; '.join(reasons[:3])})" if reasons else ""))
@@ -184,7 +228,7 @@ def main() -> int:
     accepted = [v for v in verdicts if v[1]]
     print("=== 결과 ===")
     for name, ok, gap, why in verdicts:
-        print(f"  {name:<18} {'채택' if ok else '탈락':<4} 최소여유={gap:>6.2f}  {why}")
+        print(f"  {name:<18} {'채택' if ok else '탈락':<4} 최소여유={gap:>7.2f}  {why}")
     print()
     print(f"  통과 {len(accepted)}개 / 후보 {len(verdicts)}개")
     if len(accepted) > MAX_SPECS:

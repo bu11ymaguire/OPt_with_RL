@@ -46,7 +46,7 @@ import argparse
 import hashlib
 import json
 import math
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from rl_newton.benchmark.metrics import TargetSpec
@@ -60,6 +60,7 @@ from rl_newton.benchmark.oracle import (
 )
 from rl_newton.benchmark.store import ResultStore, environment_fingerprint
 from rl_newton.optimizers.action_space import ABSOLUTE, NARROW, WIDE
+from rl_newton.tasks.micro_neural import MicroNeuralSpec
 from rl_newton.tasks.quadratics import QuadraticSpec
 from rl_newton.tasks.rosenbrock import RosenbrockSpec
 from rl_newton.utils.provenance import collect_provenance, config_hash, git_commit
@@ -88,6 +89,14 @@ TARGETS: dict[str, dict[str, TargetSpec]] = {
         "easy": TargetSpec("absolute_loss", 1.0e-1),
         "medium": TargetSpec("absolute_loss", 1.0e-2),
         "hard": TargetSpec("absolute_loss", 1.0e-4),
+    },
+    # micro-neural 은 teacher 가 학생보다 넓고 라벨 노이즈가 있어 loss 가 0 으로
+    # 가지 않는다. 절대 target 을 쓰면 도달률이 0 이 되므로 **상대 target** 을 쓴다.
+    # 달성 가능 상한은 참조 solver panel 로 별도 측정한다 (D25).
+    "micro_neural": {
+        "easy": TargetSpec("relative_loss", 5.0e-1),
+        "medium": TargetSpec("relative_loss", 2.0e-1),
+        "hard": TargetSpec("relative_loss", 1.0e-1),
     },
 }
 
@@ -125,6 +134,37 @@ def challenge_specs() -> list:
         QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e4),
         QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e5),
         QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e6),
+    ]
+
+
+def micro_neural_specs() -> list:
+    """P4 micro-neural. **feedback 의 가치를 시험하는 것이 목적이다** (D24).
+
+    같은 모델과 데이터를 두 regime 으로 나눈다. 핵심 질문은 "모델이 비선형인가" 가
+    아니라 "초기 계획 시점에 미래 상태를 정확히 예측할 수 없는가" 다.
+
+    ```text
+    [R1] full_batch             전체 데이터로 gradient 와 HVP. 결정론적
+    [R2] controlled_stochastic  고정 seed batch 시퀀스. step 마다 표본이 바뀜
+    ```
+
+    `C3 = shrinking − committed` 를 두 regime 에서 비교하면 `feedback 의 가치`와
+    `예측 가능성`을 분리할 수 있다. D22 는 결정론적 quadratic 에서 `C3 = −0.044`
+    였다. R1 도 비슷하고 R2 에서만 양수면 D24 의 두 번째 갈래가 성립한다.
+
+    **모델과 데이터는 하나만 고정한다.** regime 만 다르다.
+    """
+    base = MicroNeuralSpec(
+        input_dim=32,
+        hidden_dim=128,
+        n_classes=5,
+        n_samples=512,
+        teacher_hidden_dim=256,
+        label_noise=0.05,
+    )
+    return [
+        base,
+        replace(base, regime="controlled_stochastic", batch_size=64),
     ]
 
 
@@ -194,9 +234,21 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         specs = challenge_specs()
         seeds = list(SELECTION_SEEDS)[: args.seeds]
         phase = "challenge"
+    elif args.mode == "challenge-heldout":
+        # D24. 같은 challenge spec, held-out seed. **설정을 다시 고르지 않는다.**
+        # 최종 효과 추정용이므로 phase 를 confirmatory 로 둔다.
+        specs = challenge_specs()
+        seeds = list(HELD_OUT_SEEDS)[: args.seeds]
+        phase = "confirmatory"
     elif args.mode == "nonlinear-diagnostic":
         # D20. 설정 선택 점수에 넣지 않는다. quadratic 에서 freeze 한 설정만 적용한다.
         specs = nonlinear_diagnostic_specs()
+        seeds = list(SELECTION_SEEDS)[: args.seeds]
+        phase = "challenge"
+    elif args.mode == "micro-neural":
+        # D24 P4. 두 regime 에서 C3 를 비교해 feedback 의 가치를 시험한다.
+        # **설정은 shrinking_Q4_narrow 로 freeze 됐다. 다시 고르지 않는다.**
+        specs = micro_neural_specs()
         seeds = list(SELECTION_SEEDS)[: args.seeds]
         phase = "challenge"
     else:
@@ -265,13 +317,17 @@ def build_parser() -> argparse.ArgumentParser:
             "calibrate-beam",
             "pilot",
             "challenge",
+            "challenge-heldout",
             "nonlinear-diagnostic",
+            "micro-neural",
             "confirmatory",
         ],
         default="pilot",
         help=(
             "challenge = D20 selection set (quadratic 4, seeds 2/3/4). "
-            "nonlinear-diagnostic = rosen_d5. 설정 선택에 쓰지 않는다"
+            "challenge-heldout = 같은 spec, held-out seed. 설정을 다시 고르지 않는다 (D24). "
+            "nonlinear-diagnostic = rosen_d5. 설정 선택에 쓰지 않는다. "
+            "micro-neural = D24 P4. full_batch 와 controlled_stochastic 두 regime"
         ),
     )
     parser.add_argument("--seeds", type=int, default=3, help="사용할 seed 개수")

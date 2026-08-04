@@ -28,6 +28,7 @@ from dataclasses import dataclass, replace
 
 import torch
 
+from rl_newton.tasks.micro_neural import MicroNeuralSpec, MicroNeuralTask
 from rl_newton.tasks.quadratics import QuadraticSpec, QuadraticTask
 from rl_newton.tasks.rosenbrock import RosenbrockSpec, RosenbrockTask
 from rl_newton.utils.seed import spawn_seed
@@ -41,8 +42,8 @@ __all__ = [
     "quadratic_meta_test_specs",
 ]
 
-TaskSpec = QuadraticSpec | RosenbrockSpec
-SyntheticTask = QuadraticTask | RosenbrockTask
+TaskSpec = QuadraticSpec | RosenbrockSpec | MicroNeuralSpec
+SyntheticTask = QuadraticTask | RosenbrockTask | MicroNeuralTask
 
 
 def make_task(
@@ -73,6 +74,8 @@ def make_task(
         return QuadraticTask(spec, seed, device=device, dtype=dtype)
     if isinstance(spec, RosenbrockSpec):
         return RosenbrockTask(spec, seed, device=device, dtype=dtype)
+    if isinstance(spec, MicroNeuralSpec):
+        return MicroNeuralTask(spec, seed, device=device, dtype=dtype)
     raise TypeError(f"unsupported task spec: {type(spec).__name__}")
 
 
@@ -155,6 +158,12 @@ def _spec_key(spec: TaskSpec) -> str:
         return (
             f"rosen|{spec.dimension}|{spec.scale:.4f}"
             f"|{int(spec.randomize_start)}|{spec.start_noise:.4f}"
+        )
+    if isinstance(spec, MicroNeuralSpec):
+        return (
+            f"mlp|{spec.input_dim}|{spec.hidden_dim}|{spec.n_classes}"
+            f"|{spec.n_samples}|{spec.regime}|{spec.batch_size}"
+            f"|{spec.teacher_hidden_dim}|{spec.label_noise:.4f}|{spec.init_scale:.4f}"
         )
     raise TypeError(f"unsupported task spec: {type(spec).__name__}")
 

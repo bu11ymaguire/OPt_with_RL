@@ -83,7 +83,19 @@ __all__ = [
 
 
 class TaskLike(Protocol):
-    """optimizer 가 필요로 하는 task 인터페이스."""
+    """optimizer 가 필요로 하는 task 인터페이스.
+
+    ``loss`` 와 ``curvature_loss`` 의 역할이 다르다.
+
+    ```text
+    curvature_loss()  optimizer 가 보는 것. gradient / HVP / 수락 판정
+    loss()            평가용. Track E 점수
+    ```
+
+    결정론적 task 에서는 둘이 같다. minibatch task 에서만 갈린다 (D24).
+
+    ``advance_batch()`` 는 **선택 사항**이다. 있으면 실제 step 뒤에 호출된다.
+    """
 
     @property
     def params(self) -> list[Tensor]: ...
@@ -540,6 +552,19 @@ class NewtonCGOptimizer:
             op.set_damping(previous)
         return result, applied
 
+    def control_loss(self) -> float:
+        """**optimizer 가 보는 loss.** gradient / HVP 와 같은 표본이어야 한다.
+
+        `_StepScope` 가 `HvpGraph(task.curvature_loss, ...)` 로 그래프를 만들므로
+        `operator.loss` 는 `curvature_loss` 값이다. candidate 평가와 거절 처리도
+        같은 표본을 써야 `loss_before` 와 비교가 성립한다.
+
+        결정론적 task 에서는 `loss()` 와 `curvature_loss()` 가 같은 값이므로 이
+        구분이 무의미하다. minibatch task (D24 R2) 에서만 갈린다.
+        """
+        with torch.no_grad():
+            return float(self.task.curvature_loss().detach())
+
     def evaluate_loss_at(self, direction: Tensor, step_size: float) -> float:
         """``L(theta + step_size * direction)``. 파라미터는 값으로 복원한다.
 
@@ -550,13 +575,15 @@ class NewtonCGOptimizer:
 
         그래서 ``_graph_dirty`` 를 세운다. 이후 curvature 가 필요한 연산은
         새 그래프를 만들어야 한다.
+
+        **control loss 를 쓴다.** 수락 판정이 `operator.loss` 와 비교되므로 같은
+        표본이어야 한다.
         """
         assert self._base_params is not None
         self._flat.add_(direction, alpha=step_size)
         self._graph_dirty = True
         try:
-            with torch.no_grad():
-                return float(self.task.loss().detach())
+            return self.control_loss()
         finally:
             self._flat.copy_from_(self._base_params)
 
@@ -667,6 +694,13 @@ class NewtonCGOptimizer:
         for step in range(self.config.total_steps):
             record = self._run_step(step, trace)
             trace.records.append(record)
+            # 실제 step 뒤에만 batch 를 전진시킨다 (D24). planner 의 look-ahead
+            # 시뮬레이션은 `_execute_step(record=False)` 로 돌아 여기 오지 않으므로,
+            # planner 는 현재 batch 로 미래를 예측한다. 미래 batch 를 미리 보면
+            # 데이터 oracle 이 되어 feedback 검증이 무의미해진다.
+            advance = getattr(self.task, "advance_batch", None)
+            if advance is not None:
+                advance()
             if math.isfinite(record.cost_ge):
                 spent += record.cost_ge
             if not math.isfinite(record.train_loss_after):
@@ -678,9 +712,20 @@ class NewtonCGOptimizer:
         else:
             trace.stop_reason = "step_budget"
 
-        trace.final_loss = (
-            trace.records[-1].train_loss_after if trace.records else trace.initial_loss
-        )
+        # **평가 loss 로 점수를 매긴다.** 결정론적 task 에서는 마지막 기록과
+        # bitwise 동일하다 (같은 파라미터에서 같은 식을 다시 계산). minibatch task
+        # 에서는 control loss 가 표본마다 다르므로 전체 데이터 값을 써야 Track E 가
+        # regime 간에 비교 가능하다 (D24).
+        #
+        # 마지막 기록이 비유한값이면 기존 동작을 유지한다. 실패한 run 의 지표를
+        # 조용히 유한값으로 바꾸면 실패가 숨는다.
+        if not trace.records:
+            trace.final_loss = trace.initial_loss
+        elif math.isfinite(trace.records[-1].train_loss_after):
+            with torch.no_grad():
+                trace.final_loss = float(self.task.loss().detach())
+        else:
+            trace.final_loss = trace.records[-1].train_loss_after
         trace.total_cost_ge = sum(r.cost_ge for r in trace.records if math.isfinite(r.cost_ge))
         trace.total_hvp = sum(r.hvp_count for r in trace.records)
         trace.search_hvp = self._search_hvp
@@ -695,7 +740,9 @@ class NewtonCGOptimizer:
         return trace
 
     def _run_step(self, step: int, trace: OptimizationTrace) -> StepRecord:
-        loss_before = float(self.task.loss().detach())
+        # 컨트롤러가 보는 loss 는 control loss 다. 자신이 행동할 수 있는 표본이어야
+        # 한다. 결정론적 task 에서는 `loss()` 와 동일하다.
+        loss_before = self.control_loss()
         if not math.isfinite(loss_before):
             return self._failed_record(step, loss_before, loss_before, "nan")
 
@@ -923,19 +970,18 @@ class NewtonCGOptimizer:
         )
 
         if cfg.safe_fallback == "none":
-            return float(self.task.loss().detach())
+            return self.control_loss()
 
         norm = float(grad.norm())
         if not math.isfinite(norm) or norm == 0.0:
-            return float(self.task.loss().detach())
+            return self.control_loss()
         scale = min(1.0, cfg.fallback_grad_clip / norm)
         assert self._base_params is not None
         self._flat.add_(grad, alpha=-cfg.fallback_step_size * scale)
-        with torch.no_grad():
-            value = float(self.task.loss().detach())
+        value = self.control_loss()
         if not math.isfinite(value):
             self._flat.copy_from_(self._base_params)
-            return float(self.task.loss().detach())
+            return self.control_loss()
         return value
 
     def _failed_record(

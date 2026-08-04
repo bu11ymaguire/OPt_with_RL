@@ -700,6 +700,254 @@ rosen_d5
 > Rosenbrock 결과는 configuration selection 에 사용하지 않고 비선형 행동 분석에만
 > 사용한다.
 
+### D25. eligibility 를 **달성 가능한** 상한으로 판정한다. 참조 solver panel
+
+D23 에서 D20 의 `ceiling` 공식이 전역최소점 도달을 가정한다는 것이 드러났다.
+교정안을 채택한다. 단 **단일 solver 의 수렴점을 절대 상한으로 쓰지 않는다.**
+
+#### 참조 solver panel
+
+planner 를 제외한 강한 방법들을 긴 예산으로 돌려 **최소값**을 쓴다.
+
+```text
+long-budget LBFGS
+Adam
+SGD + momentum
+explicit damped Newton  (d <= 512)
+필요하면 추가 초기화
+```
+
+```text
+L_ref        = min over reference runs of L_final
+J_achievable = log(L0) − log(max(L_ref, L_floor))
+```
+
+단일 solver 만 믿으면 그 solver 의 약점이 상한으로 굳는다. `rosen_d5` 에서
+`extra_inits=(0.9,)` 를 넣으면 전역최소점을 찾아 `L_ref` 가 내려간다. panel 이
+그 차이를 드러낸다.
+
+**planner 를 panel 에 넣지 않는다.** 넣으면 spec 선정에 planner 결과가 새어 든다
+(D20).
+
+#### 이 값의 용도를 제한한다
+
+`J_achievable` 은 **컨트롤러 평가 점수가 아니다.** calibration 지표로만 쓴다.
+
+```text
+baseline 이 이미 도달 가능한 최적점에 포화됐는가
+여전히 비교할 수 있는 headroom 이 남았는가
+```
+
+#### 채택 조건 (D20 개정)
+
+```text
+failure_rate = 0
+joint floor-hit rate <= 1/3
+각 baseline median logΔ >= 1 nat
+J_achievable − median logΔ >= 3 nat        <- ceiling 을 바꿨다
+참조 solver 간 수렴점 산포 <= 0.5 nat        <- 신설
+seed 마다 실제로 다른 인스턴스               <- 신설
+```
+
+`limited_by` 를 함께 보고한다.
+
+```text
+critical_point    국소최소점이 상한을 정했다. rosen_d5 가 이 경우다
+numerical_floor   수치 하한이 상한을 정했다. 볼록 문제의 정상 상태다
+reference_failed  참조 solver 가 전부 실패했다. spec 을 쓸 수 없다
+```
+
+`numerical_floor` 로 제한된 경우는 floor cap 때문에 값이 갈리므로 산포 검사를
+적용하지 않는다.
+
+#### seed 복제 검사
+
+`initial_loss` 만 보면 우연히 같을 수 있으므로 **시작점 벡터도** 본다.
+`RosenbrockSpec(dimension=5)` 의 `randomize_start=False` 를 자동으로 잡는다.
+
+#### 소급 적용 결과 (검증)
+
+```text
+rosen_d5 (randomize_start=False)   seed 복제 + critical_point cap  -> 탈락
+rosen_d5 (randomize_start=True)    critical_point cap             -> 탈락
+challenge quadratic 4종             seed 정상, numerical_floor      -> 유지
+```
+
+교정된 조건으로도 **challenge selection set 은 그대로 통과한다.** D22 의 `n=12`
+결과는 유효하다.
+
+### D24. `shrinking_Q4_narrow` freeze. **PPO 보류.** 연구 질문을 둘로 분해한다
+
+D22 결과를 리뷰한 결정이다. 여기서 정한 것은 되돌리지 않는다.
+
+#### 확정된 결론
+
+```text
+비싼 다단계 탐색은 좋은 Newton-CG 제어 시퀀스를 찾는 데 가치가 있었지만,
+결정론적 quadratic 에서는 실행 중 상태 피드백으로 계획을 수정하는 추가 가치는
+관측되지 않았다.
+```
+
+현재 확인된 헤드룸은 **feedback control** 이 아니라 **sequence planning /
+schedule selection** 에 있다.
+
+성능이 좋아진 구간과 좋아지지 않은 구간이 갈린다.
+
+```text
+좋아짐    best static -> open-loop -> one-step -> committed planner
+안 좋아짐  committed planner -> shrinking feedback planner
+```
+
+#### 원래의 넓은 질문이 둘로 분해됐다
+
+```text
+[Q1] 좋은 action sequence 가 존재하는가          -> 현재 결과 Yes
+[Q2] 그 sequence 를 실행 중 feedback 으로 수정할 가치가 있는가
+                                                  -> quadratic 에서는 No 또는 미확인
+```
+
+**이것은 실패가 아니다.** 초기의 "RL optimizer" 아이디어가 검증 가능한 두 명제로
+쪼개진 것이다.
+
+#### 게이트 C3 판정: **불충족**
+
+```text
+C3 = J_E(shrinking) − J_E(committed) = −0.044 nat
+CI −0.590~+0.070 (0 포함),  p=0.3804,  6승 6패
+```
+
+현재 quadratic 결과만으로 가장 정직한 결론은 "feedback replanning 의 추가 가치가
+없다" 다.
+
+#### PPO 착수를 **보류**한다
+
+PPO 가 학습하는 것은 `π(a_t | s_t)` 다. 상태가 변할 때 행동을 바꾸는 가치가 있어야
+정당화된다. 현재는 초기 상태에서 한 번 계획한 `committed` 가 매 step 재계획하는
+`shrinking` 과 같거나 낫다. 이 상태에서 PPO 를 학습하면 다음 중 하나가 될 가능성이
+크다.
+
+```text
+고정 schedule 암기
+초기 상태만 보고 schedule 선택
+불필요한 재계획 노이즈 학습
+planner 의 비싼 탐색 비용을 줄이지 못한 채 성능도 안 나옴
+```
+
+현재 결과에 더 잘 맞는 학습 대상은 PPO 가 아니라 **amortized schedule selector** 다.
+
+```text
+초기 문제 특징 (loss, gradient norm, 곡률 통계, CG residual 특성, condition 추정)
+  -> 전체 Newton-CG schedule
+```
+
+**다만 지금 방향을 바꾸지 않는다.** 먼저 비선형 또는 micro-neural 환경에서 feedback
+가치가 있는지 확인한다.
+
+#### 최종 결론은 아직 두 갈래다
+
+```text
+micro-neural 에서도 C3 ~ 0
+  -> 적응적 계산 배분의 이득은 주로 초기 상태 기반 sequence selection 에서 발생하며
+     매 단계 feedback 기반 RL 은 정당화되지 않았다.
+     PPO 를 구현하지 않는 것이 올바른 연구 결정이다.
+     후속 방향은 committed planner 를 저비용으로 근사하는 schedule predictor 다.
+
+micro-neural 에서 C3 > 0
+  -> quadratic 에서는 모델이 정확해 feedback 이 불필요했지만, 미래 상태가 불확실한
+     neural optimization 에서는 feedback control 이 가치가 있다.
+     PPO 착수 근거가 생긴다.
+```
+
+#### 설정 freeze
+
+```text
+shrinking_Q4_narrow
+```
+
+**다른 `Q` / space 를 다시 들여다보고 바꾸지 않는다.** D21 규칙으로 한 번 선택했다.
+
+#### beam 8 결과의 역할을 제한한다
+
+D21 의 순서 이탈(비용 측정 dry run 의 게이트 표를 본 뒤 선택 규칙 확정) 때문에
+현재 결과를 완전한 confirmatory 로 부를 수 없다.
+
+```text
+beam 8 challenge-dev  configuration selection 과 가설 정교화에만 사용
+최종 효과 추정        사전 고정된 설정으로 새 held-out seed 에서 수행
+```
+
+#### held-out confirmatory 비교 집합 (사전 고정)
+
+```text
+best_static
+best_open_loop          resource-clock 스케줄
+onestep_narrow          C0
+committed_Q4_narrow
+shrinking_Q4_narrow
+```
+
+seed 는 이미 분리해 둔 `HELD_OUT_SEEDS = 100~109` 를 쓴다.
+
+#### κ 결과를 단조 관계로 해석하지 않는다
+
+```text
+κ=1e3 +6.584   κ=1e4 +2.361   κ=1e5 +0.735   κ=1e6 +1.232
+```
+
+"condition number 가 커질수록 adaptive control 이 중요해진다" 는 가설은 지지되지
+않는다. 그러나 κ 당 seed 가 3개뿐이므로 **반대 방향의 단조 관계를 주장해서도 안
+된다.** 정확한 진술은 이것이다.
+
+> Adaptive headroom 은 condition number 에 따라 단조 증가하지 않았으며, 가장 큰
+> 효과는 `κ=1e3` 에서 관측됐다. 이는 condition number 만으로 headroom 을 설명하기
+> 어렵다는 것을 시사한다.
+
+damping grid, CG budget, 초기 gradient alignment, spectrum 분포가 함께 영향을 줄
+수 있다.
+
+#### Rosenbrock 을 계속 고치지 않는다
+
+`rosen_d5` 에 start noise 를 더 주거나 차원을 바꾸며 쓸 만한 버전을 찾는 것은
+**결과를 본 뒤 benchmark 를 조정하는 모양**이 되고, Rosenbrock 의 basin 구조가
+연구 질문을 흐린다. 다음 용도로만 남긴다.
+
+```text
+rosen_d2   쉬운 문제의 floor saturation 진단
+rosen_d5   특정 시작점에서 국소최소점으로 포화되는 비선형 진단
+```
+
+비선형 일반성은 원래 계획했던 **micro-neural (P4)** 에서 확인한다.
+
+#### micro-neural 설계: 핵심 질문은 비선형성이 아니다
+
+```text
+틀린 질문   모델이 비선형인가
+맞는 질문   초기 계획 시점에 미래 상태를 정확히 예측할 수 없는가
+```
+
+deterministic quadratic 에서는 planner 의 모델이 거의 정확했기 때문에 feedback 이
+필요 없었을 수 있다. 따라서 같은 task 를 두 regime 으로 나눈다.
+
+```text
+[R1] deterministic full-batch
+     동일 데이터 전체로 gradient 와 HVP 계산
+     quadratic 처럼 local model 이 일관됨. committed 와 shrinking 차이가 작을 것으로 예상
+
+[R2] controlled stochastic
+     고정 seed 의 mini-batch 시퀀스. HVP/gradient 계산 batch 가 시간에 따라 변함
+     실행 중 관측 상태가 초기 계획의 예상과 달라질 수 있다
+     **이때만 feedback 의 진짜 가치가 생길 가능성이 있다**
+```
+
+모델과 데이터는 **하나만 고정한다.**
+
+```text
+2-layer MLP
+파라미터 수 수천~수만
+작은 분류 데이터셋 또는 고정 subset
+HVP 가 CPU 에서 안정적으로 계산 가능
+```
+
 ### D23. `rosen_d5` 는 **국소최소점에 갇힌** task 였다. D20 ceiling 공식이 틀렸다
 
 선택된 설정 `shrinking_Q4_narrow` 를 `rosen_d5` 에 적용한 결과, 12개 컨트롤러의
@@ -2401,6 +2649,17 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-04 | `randomize_start=True` 로 바꿔도 cap 은 남는다 | 세 randomized 시작점 모두 같은 국소최소점으로 수렴한다 (`start_noise=0.1` 이 basin 을 벗어나기에 작다). 달성 가능 ceiling 이 1.575~2.887 nat 에 불과하다 |
 | 2026-08-04 | 교정된 eligibility 조건을 **제안만** 하고 적용하지 않음 | `achievable_ceiling = log(L0) − log(L_ref)`, `L_ref` 는 강한 참조 solver 의 수렴점. 기전 기반이고 컨트롤러 비교를 열지 않고 계산 가능하다. 다만 새 비선형 task 설계는 프로토콜 변경이므로 리뷰 대상이다 |
 | 2026-08-04 | quadratic challenge set 은 D23 의 영향을 받지 않음 | seed 마다 다른 인스턴스이고 전부 SPD(`eig min = +1.0`)로 최소점이 유일하다. D22 의 `n=12` 결과는 유효하다 |
+| 2026-08-04 | **D24 신설: `shrinking_Q4_narrow` freeze, PPO 보류, 연구 질문을 Q1/Q2 로 분해** | 헤드룸이 feedback 이 아니라 sequence 에 있다. `C3` 불충족. PPO 는 `π(a\|s)` 를 학습하는데 상태 조건의 추가 가치가 0 이면 고정 schedule 암기가 된다. micro-neural 에서 한 번 더 검증한 뒤 결정한다 |
+| 2026-08-04 | beam 8 결과의 역할을 configuration selection 과 가설 정교화로 제한 | D21 의 순서 이탈(dry run 게이트 표를 본 뒤 규칙 확정) 때문에 완전한 confirmatory 로 부를 수 없다. 최종 효과 추정은 사전 고정 설정으로 held-out seed 에서 한다 |
+| 2026-08-04 | Rosenbrock 을 계속 고치지 않는다 | start noise 를 키우거나 차원을 바꾸며 쓸 만한 버전을 찾는 것은 결과를 본 뒤 benchmark 를 조정하는 모양이 된다. `rosen_d2` 는 floor 진단, `rosen_d5` 는 국소최소점 진단으로만 남긴다 |
+| 2026-08-04 | **D25 신설: eligibility 를 참조 solver panel 의 `J_achievable` 로 판정** | 단일 solver 의 수렴점을 절대 상한으로 쓰면 그 solver 의 약점이 상한으로 굳는다. `L_ref = min over panel`. planner 는 panel 에 넣지 않는다 (D20). `J_achievable` 은 calibration 지표이며 컨트롤러 점수가 아니다 |
+| 2026-08-04 | D25 에 참조 산포 조건과 seed 복제 검사 신설 | 참조 solver 가 `0.5 nat` 이상 갈리면 상한 추정이 불안정하다. seed 복제는 `initial_loss` 와 시작점 벡터를 함께 봐 자동으로 잡는다. 소급 적용하니 `rosen_d5` 는 두 사유로 탈락하고 challenge quadratic 4종은 그대로 통과한다 |
+| 2026-08-04 | **micro-neural task 신설. 두 regime 으로 `C3` 를 다시 잰다** | 핵심 질문은 "비선형인가" 가 아니라 "초기 계획 시점에 미래 상태를 예측할 수 없는가" 다 (D24). `full_batch` 와 `controlled_stochastic` 이 **같은 모델·데이터**를 쓰고 optimizer 표본만 다르다 |
+| 2026-08-04 | optimizer 에 control loss / evaluation loss 분리와 `advance_batch` 훅 추가 | `curvature_loss()` 가 gradient·HVP·수락 판정을, `loss()` 가 Track E 점수를 담당한다. batch 는 **실제 step 뒤에만** 전진한다. planner 가 미래 batch 를 보면 데이터 oracle 이 되어 feedback 검증이 무의미해진다 |
+| 2026-08-04 | `OPTIMIZER_SEMANTICS_VERSION` 을 올리지 않음 | 결정론적 task 는 `loss() == curvature_loss()` 이므로 bitwise 동일하다. `tests/test_control_vs_eval_loss.py` 가 `trace.final_loss == records[-1].train_loss_after` 를 컨트롤러 4종 x task 2종에서 검증한다. 마지막 기록이 비유한값이면 기존 동작을 유지해 실패가 숨지 않게 한다 |
+| 2026-08-04 | `spec_kind_label` 을 duck-typing 에서 명시 타입 분기로 변경 | `getattr(spec, "kind", None)` 이 없으면 `"rosenbrock"` 으로 떨어뜨렸다. 새 spec 을 추가하면 조용히 Rosenbrock target 을 쓰게 된다. `MicroNeuralSpec` 이 실제로 그 경로에 걸렸다 |
+| 2026-08-04 | micro-neural 의 `data_key` 를 `instance_id` 와 분리 | 초판은 데이터 생성에 `instance_id` 를 썼고 거기에 regime 이 들어가 **두 regime 이 다른 데이터셋**을 받았다. `C3` 의 regime 간 비교가 데이터 차이에 오염된다. 테스트가 잡았다 |
+| 2026-08-04 | held-out 실행 중 테스트와 lint 를 병행 실행했음을 기록 | `wall_clock_sec` 이 일부 run 에서 부풀 수 있다. 단일 스레드 float 연산은 부하와 무관하게 결정론적이므로 수치 결과와 어떤 판정에도 영향이 없다. `concurrent_processes=1` 기록은 이 점에서 부정확하다 |
 | 2026-08-04 | 비선형 진단 실행 시 git 이 dirty 였음을 기록 | 프로토콜 문서를 수정한 상태에서 돌렸다. D13 에 따라 `run_semantics_id` 는 영향받지 않고 `code_dirty` 는 `execution_provenance` 에 남는다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |

@@ -93,6 +93,9 @@ from rl_newton.optimizers.newton_cg import (
     NewtonCGOptimizer,
     OptimizationTrace,
 )
+from rl_newton.tasks.micro_neural import MicroNeuralSpec
+from rl_newton.tasks.quadratics import QuadraticSpec
+from rl_newton.tasks.rosenbrock import RosenbrockSpec
 from rl_newton.types import ControllerAction
 
 __all__ = [
@@ -487,9 +490,19 @@ class HeadroomConfig:
 
 
 def spec_kind_label(spec: TaskSpec) -> str:
-    """target 조회용 spec 분류 키."""
-    kind = getattr(spec, "kind", None)
-    return str(kind) if kind is not None else "rosenbrock"
+    """target 조회용 spec 분류 키.
+
+    **타입으로 명시 분기한다.** 예전에는 ``getattr(spec, "kind", None)`` 이 없으면
+    ``"rosenbrock"`` 으로 떨어뜨렸다. 새 spec 을 추가하면 조용히 Rosenbrock target
+    을 쓰게 되므로 위험하다.
+    """
+    if isinstance(spec, QuadraticSpec):
+        return str(spec.kind)
+    if isinstance(spec, RosenbrockSpec):
+        return "rosenbrock"
+    if isinstance(spec, MicroNeuralSpec):
+        return "micro_neural"
+    raise TypeError(f"unsupported task spec: {type(spec).__name__}")
 
 
 def _is_eligible(task: SyntheticTask) -> bool:
