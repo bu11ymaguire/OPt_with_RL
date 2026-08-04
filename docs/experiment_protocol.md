@@ -700,6 +700,119 @@ rosen_d5
 > Rosenbrock 결과는 configuration selection 에 사용하지 않고 비선형 행동 분석에만
 > 사용한다.
 
+### D27. micro-neural 두 regime. **모델 정확도가 축이다.** `C3 > 0` 의 원인은 feedback 이 아니다
+
+`shrinking_Q4_narrow` 를 micro-neural 두 regime × seeds 2/3/4 에 적용했다. 144 run,
+실패 0, regime 당 `n=3`.
+
+#### regime 별 절대 median logΔ
+
+```text
+controller              R2 controlled_stochastic   R1 full_batch
+best_static                          3.029              5.220
+best_open_loop                       2.984              3.299
+heuristic                            0.986              5.105
+onestep_narrow                       3.468             19.886
+onestep_absolute                     3.732             19.460
+committed_Q4_narrow                  1.086             20.491
+shrinking_Q4_narrow                  2.757             20.396
+```
+
+#### regime 별 paired delta
+
+```text
+                          R1 full_batch              R2 controlled_stochastic
+A2  shrinking − static    +15.176  (3/3 양수)          −0.277  (1/3)
+C2  shrinking − onestep    +0.547  (2/3)               −0.716  (1/3)
+C3  shrinking − committed  −0.095  (1/3)               +1.666  (3/3 양수)
+ref committed − onestep    +0.470  (2/3)               −2.322  (0/3)
+```
+
+#### `C3 > 0` 은 `shrinking` 이 좋아진 것이 아니다
+
+두 해석을 절대값으로 구별해야 한다.
+
+```text
+해석 A  shrinking 이 더 좋아졌다  ->  feedback 이 이득을 만든다
+해석 B  committed 가 더 나빠졌다  ->  낡은 계획을 고수하면 손해다
+```
+
+**실측은 B 다.**
+
+```text
+committed_Q4_narrow   R1 20.491  ->  R2 1.086     붕괴
+shrinking_Q4_narrow   R1 20.396  ->  R2 2.757     같이 나빠졌다
+best_static           R1  5.220  ->  R2 3.029
+onestep_narrow        R1 19.886  ->  R2 3.468
+```
+
+R2 에서 `committed` 는 `best_static`(3.029)보다도 나쁘고 `onestep`(3.468)보다 `2.322
+nat` 뒤진다. `shrinking` 도 `best_static` 과 `onestep` 보다 나쁘다.
+
+결정적 진단은 거절률이다.
+
+```text
+committed_Q4_narrow  거절률   R1 0.00   ->   R2 0.66
+shrinking_Q4_narrow  거절률   R1 0.00   ->   R2 0.00
+```
+
+batch 0 에서 세운 계획의 **2/3 가 이후 batch 에서 거절된다.** 계획이 낡는다.
+
+#### 따라서 R2 는 PPO 를 지지하지 않는다
+
+```text
+R2 에서 planner 는 tuned 상수보다 나쁘다        A2 = −0.277
+R2 에서 planner 는 1-step greedy 보다 나쁘다     C2 = −0.716
+R2 planner 탐색 비용 275,286 GE = 예산의 1,835배
+```
+
+`C3 > 0` 의 교훈은 "feedback 정책을 학습하라" 가 아니라 **"낡은 계획을 고수하지
+말라"** 다. 그리고 R2 에서 가장 좋은 것은 값싼 1-step greedy 다.
+
+상태 조건 제어 자체는 R2 에서도 도움이 된다 (`onestep 3.468` vs `static 3.029`,
+`+0.44 nat`). 그러나 그것은 이미 `onestep` 이 하고 있고 탐색 비용이 `1,879 GE` 로
+planner 의 `1/146` 이다.
+
+#### 프로젝트 전체 결론: **모델 정확도가 축이다**
+
+```text
+                        planner 모델 정확  planner 모델 부정확
+                        (결정론적)          (minibatch)
+planning vs static        +15.18            −0.28
+planning vs greedy         +0.55            −0.72
+feedback (C3)              −0.10            +1.67  <- committed 붕괴 때문
+committed 거절률            0.00              0.66
+```
+
+> 다단계 계획은 planner 의 내부 모델이 정확할 때 큰 가치가 있고 feedback 은 가치가
+> 없다. 모델이 부정확해지면 다단계 계획의 가치가 사라지고, feedback 이 하는 일은
+> 낡은 계획을 고수하는 재앙을 피하는 것뿐이다.
+
+`D24` 의 두 갈래 중 **첫 번째**가 성립한다. PPO 보류 결정을 유지한다.
+
+#### 반드시 함께 보고할 교란 요인
+
+`newton_cg.py` 의 `_accept` 는 **단조 감소**를 요구한다. 코드 주석이 이미 경고했다.
+
+> minibatch loss 에는 노이즈가 있으므로 신경망 task 에서 그대로 쓰면 정상 step 도
+> 대량 거절된다. 고정 평가 배치로 판정하거나 trust ratio 기준으로 완화해야 한다.
+
+`committed` 의 R2 거절률 `0.66` 은 **계획이 낡은 것과 수락 규칙이 엄격한 것이
+섞인 값이다.** 수락 규칙을 완화하면 `C3` 의 크기가 달라질 수 있다.
+
+방향은 바뀌지 않을 것으로 보인다. `committed` 가 `onestep` 보다 `2.32 nat` 뒤지는
+것은 거절률만으로 설명되지 않는다 (`shrinking` 은 거절률 0 인데도 `onestep` 보다
+나쁘다). 그러나 **크기를 주장하지 않는다.**
+
+#### 그 밖의 한계
+
+```text
+regime 당 n=3. CI 와 p-value 를 인용하지 않는다
+모델 1종, 데이터 1종, batch_size 1종
+batch_size 를 바꾸면 "모델 부정확도" 의 정도가 달라진다. 축을 스캔하지 않았다
+R1 에서 onestep 이 19.886 까지 가므로 floor 에 접근한다 (하한 4.8e-14)
+```
+
 ### D26. held-out confirmatory 결과. `C3` 는 **약한 귀무가 아니라 좁은 귀무**다
 
 사전 고정한 `shrinking_Q4_narrow` 를 challenge 4 spec × held-out seed 100~109 에
@@ -2805,6 +2918,12 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-04 | `reference_spread_nat` 을 수렴한 run 만으로 계산 | micro-neural 에서 Adam/SGD 가 예산 안에 수렴하지 못해 산포가 32 nat 로 나왔으나 LBFGS 가 하한에 도달했으므로 상한 추정은 모호하지 않았다. "느린 solver" 와 "다른 임계점에 갇힌 solver" 를 구별해야 한다 |
 | 2026-08-04 | `quad_k1e6` 에서 `newton` 이 `lbfgs` 를 크게 이겼다 | `lbfgs 1.0e-06 (미수렴)` vs `newton 3.1e-32 (수렴)`. `lbfgs` 만 썼다면 `J_achievable` 을 `28.3 nat` 로 과소평가했을 것이다. 단일 solver panel 을 금지하는 실측 근거다 |
 | 2026-08-04 | `label_noise` 가 floor saturation 을 막는다는 초판 주장을 철회 | 서로 다른 `x` 에 붙은 뒤집힌 라벨은 과매개화된 신경망이 암기할 수 있다. 실측에서 `onestep` 이 정확도 1.000 에 도달했다. 측정 가능성은 참조 solver panel 로만 판정한다 |
+| 2026-08-04 | **D27 신설: micro-neural 두 regime. 모델 정확도가 축이다** | R1(결정론적): `A2=+15.18`, `C3=−0.10`. R2(minibatch): `A2=−0.28`, `C2=−0.72`, `C3=+1.67`. 다단계 계획은 planner 모델이 정확할 때 큰 가치가 있고 부정확해지면 가치가 사라진다 |
+| 2026-08-04 | **R2 의 `C3 > 0` 은 feedback 이 아니라 `committed` 붕괴 때문** | `committed` 가 `20.491 → 1.086` 으로 떨어져 `best_static`(3.029)보다도 나쁘다. 거절률이 `0.00 → 0.66` 이다. 교훈은 "feedback 정책을 학습하라" 가 아니라 "낡은 계획을 고수하지 말라" 다 |
+| 2026-08-04 | R2 는 PPO 를 지지하지 않음. D24 보류 결정 유지 | R2 에서 planner 는 tuned 상수보다(−0.28), 1-step greedy 보다(−0.72) 나쁘다. 탐색 비용은 예산의 1,835배다. R2 최선은 값싼 `onestep`(탐색 1,879 GE, planner 의 1/146) 이다 |
+| 2026-08-04 | 상태 조건 제어 자체는 R2 에서도 유효함을 구별해 기록 | `onestep 3.468` vs `best_static 3.029` = `+0.44 nat`. 그러나 그것은 이미 1-step greedy 가 하고 있고 다단계 계획이나 학습 정책을 필요로 하지 않는다 |
+| 2026-08-04 | `_accept` 의 단조 감소 규칙이 R2 결과의 교란 요인임을 명시 | 코드 주석이 이미 경고했다. `committed` 의 거절률 `0.66` 은 계획 노후화와 엄격한 수락 규칙이 섞인 값이다. 방향은 바뀌지 않을 것으로 보이나(`shrinking` 은 거절률 0 인데도 `onestep` 보다 나쁘다) **크기를 주장하지 않는다** |
+| 2026-08-04 | micro-neural 한계를 명시 | regime 당 `n=3` 이므로 CI 와 p-value 를 인용하지 않는다. 모델·데이터·`batch_size` 각 1종이며 "모델 부정확도" 축을 스캔하지 않았다 |
 | 2026-08-04 | 비선형 진단 실행 시 git 이 dirty 였음을 기록 | 프로토콜 문서를 수정한 상태에서 돌렸다. D13 에 따라 `run_semantics_id` 는 영향받지 않고 `code_dirty` 는 `execution_provenance` 에 남는다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
