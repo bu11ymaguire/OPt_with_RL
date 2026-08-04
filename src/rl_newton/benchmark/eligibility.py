@@ -71,12 +71,23 @@ REFERENCE_AGREEMENT_NAT = 0.5
 
 @dataclass(frozen=True, slots=True)
 class ReferenceRun:
-    """참조 solver 한 번의 실행 결과."""
+    """참조 solver 한 번의 실행 결과.
+
+    Attributes:
+        from_task_start: task 자신의 시작점에서 출발했는가. **``L_ref`` 계산에는
+            이것이 ``True`` 인 run 만 쓴다.**
+
+            컨트롤러는 항상 task 의 시작점에서 출발한다. 다른 초기화에서 더 좋은
+            점을 찾았다는 사실은 그 시작점의 basin 이 전역최적이 아니라는 **진단**
+            이지, 컨트롤러가 도달할 수 있는 상한이 아니다. 섞으면 `rosen_d5` 처럼
+            국소최소점에 갇힌 task 가 통과한다.
+    """
 
     name: str
     final_loss: float
     grad_norm: float
     n_iters: int
+    from_task_start: bool = True
 
     @property
     def is_critical_point(self) -> bool:
@@ -122,12 +133,54 @@ class AchievableCeiling:
         return "numerical_floor"
 
     @property
+    def start_runs(self) -> tuple[ReferenceRun, ...]:
+        """task 시작점에서 출발한 run 만. ``L_ref`` 의 근거다."""
+        return tuple(r for r in self.runs if r.from_task_start)
+
+    @property
+    def off_start_runs(self) -> tuple[ReferenceRun, ...]:
+        """다른 초기화에서 출발한 run. **진단용이며 상한을 올리지 않는다.**"""
+        return tuple(r for r in self.runs if not r.from_task_start)
+
+    @property
+    def off_start_best(self) -> float:
+        values = [
+            r.final_loss for r in self.off_start_runs if math.isfinite(r.final_loss)
+        ]
+        return min(values) if values else float("nan")
+
+    @property
+    def start_basin_is_suboptimal(self) -> bool:
+        """다른 초기화가 시작점 basin 보다 유의미하게 더 좋은 점을 찾았는가.
+
+        `True` 면 이 task 의 시작점은 국소최소점의 basin 이다. 컨트롤러 비교에는
+        영향이 없지만 **결과 해석에 반드시 함께 보고해야 한다.** "방법이 전역
+        최적에 도달했다" 고 쓰면 틀린 주장이 된다.
+        """
+        best_off = self.off_start_best
+        if not math.isfinite(best_off) or not math.isfinite(self.reference_loss):
+            return False
+        if best_off <= 0.0 or self.reference_loss <= 0.0:
+            return best_off < self.reference_loss
+        return math.log(self.reference_loss) - math.log(best_off) > REFERENCE_AGREEMENT_NAT
+
+    @property
+    def n_converged(self) -> int:
+        return sum(1 for r in self.start_runs if r.is_critical_point)
+
+    @property
     def reference_spread_nat(self) -> float:
-        """수렴한 참조 run 들의 final loss 가 log 축에서 얼마나 벌어졌는가."""
+        """**수렴한** 참조 run 들의 final loss 가 log 축에서 얼마나 벌어졌는가.
+
+        미수렴 run 을 포함하면 "느린 solver" 와 "다른 임계점에 갇힌 solver" 를
+        구별할 수 없다. 실측에서 micro-neural 의 Adam/SGD 가 예산 안에 수렴하지
+        못해 산포가 32 nat 로 나왔지만, LBFGS 가 하한에 도달했으므로 상한 추정
+        자체는 모호하지 않았다. 따라서 수렴한 run 만 본다.
+        """
         values = [
             r.final_loss
-            for r in self.runs
-            if math.isfinite(r.final_loss) and r.final_loss > 0.0
+            for r in self.start_runs
+            if r.is_critical_point and math.isfinite(r.final_loss) and r.final_loss > 0.0
         ]
         if len(values) < 2:
             return 0.0
@@ -135,9 +188,9 @@ class AchievableCeiling:
 
     @property
     def references_agree(self) -> bool:
-        """참조 solver 들이 비슷한 값에 수렴했는가.
+        """수렴한 참조 solver 들이 비슷한 값에 도달했는가.
 
-        크게 벌어지면 어떤 solver 는 더 나쁜 점에 갇혔다는 뜻이고, 상한 추정이
+        크게 벌어지면 어떤 solver 는 더 나쁜 임계점에 갇혔다는 뜻이고, 상한 추정이
         불안정하다. 단 `numerical_floor` 로 제한된 경우는 floor cap 때문에 값이
         갈리므로 이 검사를 적용하지 않는다.
         """
@@ -147,17 +200,23 @@ class AchievableCeiling:
 
     def describe(self) -> str:
         best = min(
-            (r for r in self.runs if math.isfinite(r.final_loss)),
+            (r for r in self.start_runs if math.isfinite(r.final_loss)),
             key=lambda r: r.final_loss,
             default=None,
         )
         who = best.name if best is not None else "없음"
-        return (
+        text = (
             f"L0={self.initial_loss:.4e} L_ref={self.reference_loss:.6e} "
             f"({who}) floor={self.loss_floor:.3e} "
             f"J_achievable={self.nats:.4f} nat 제한={self.limited_by} "
             f"참조 산포={self.reference_spread_nat:.3f} nat"
         )
+        if self.start_basin_is_suboptimal:
+            text += (
+                f"  **시작점 basin 이 전역최적 아님** "
+                f"(다른 초기화 최선={self.off_start_best:.3e})"
+            )
+        return text
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +399,9 @@ def reference_panel(
     if sum(p.numel() for p in task.params) <= newton_dim_limit:
         runs.append(_run_damped_newton(task, steps=200))
 
+    # 다른 초기화는 **진단용**이다. `from_task_start=False` 로 표시해 `L_ref` 에
+    # 들어가지 않게 한다. 컨트롤러는 task 시작점에서만 출발하므로 다른 basin 의
+    # 최적값은 도달 가능한 상한이 아니다.
     for scale in extra_inits:
         task = make_task()
         if hasattr(task, "move_to"):
@@ -354,6 +416,7 @@ def reference_panel(
                     final_loss=run.final_loss,
                     grad_norm=run.grad_norm,
                     n_iters=run.n_iters,
+                    from_task_start=False,
                 )
             )
     return tuple(runs)
@@ -364,13 +427,20 @@ def achievable_ceiling(
 ) -> AchievableCeiling:
     """참조 run 들로부터 달성 가능 상한을 만든다.
 
-    `L_ref` 는 **수렴한 run 중 최소 final loss** 다. 수렴하지 않은 run 도 값이
-    유한하면 후보에 넣는다. 상한을 과소평가하는 쪽이 안전하기 때문이다.
+    `L_ref` 는 **task 시작점에서 출발한 run 중 최소 final loss** 다. 다른 초기화의
+    결과는 진단으로만 쓰고 상한을 올리지 않는다.
+
+    수렴하지 않은 run 도 값이 유한하면 후보에 넣는다. 상한을 과소평가하는 쪽이
+    안전하기 때문이다.
     """
     floor = max(
         torch.finfo(torch.float64).tiny, abs(initial_loss) * RELATIVE_LOSS_FLOOR
     )
-    finite = [r.final_loss for r in runs if math.isfinite(r.final_loss)]
+    finite = [
+        r.final_loss
+        for r in runs
+        if r.from_task_start and math.isfinite(r.final_loss)
+    ]
     reference = min(finite) if finite else float("nan")
     return AchievableCeiling(
         initial_loss=initial_loss,

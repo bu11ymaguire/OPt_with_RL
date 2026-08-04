@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from dataclasses import replace
 
 import torch
 
@@ -60,6 +61,7 @@ from rl_newton.optimizers.controllers import (
     make_open_loop_controller,
 )
 from rl_newton.optimizers.newton_cg import NewtonCGConfig, NewtonCGOptimizer
+from rl_newton.tasks.micro_neural import MicroNeuralSpec, MicroNeuralTask
 from rl_newton.tasks.quadratics import QuadraticSpec, QuadraticTask
 from rl_newton.tasks.rosenbrock import RosenbrockSpec, RosenbrockTask
 
@@ -71,6 +73,15 @@ MAX_SPECS = 4
 
 BASELINES = ("best_static", "best_open_loop", "heuristic", "onestep_narrow")
 
+_MLP_BASE = MicroNeuralSpec(
+    input_dim=32,
+    hidden_dim=128,
+    n_classes=5,
+    n_samples=512,
+    teacher_hidden_dim=256,
+    label_noise=0.05,
+)
+
 # --- 후보군. conditioning 축을 촘촘히 (D20) ---
 CANDIDATES: list[tuple[str, object]] = [
     ("quad_d100_k1e3", QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e3)),
@@ -79,6 +90,9 @@ CANDIDATES: list[tuple[str, object]] = [
     ("quad_d100_k1e6", QuadraticSpec(kind="ill_conditioned", dimension=100, condition_number=1.0e6)),
     ("rosen_d5", RosenbrockSpec(dimension=5)),
     ("rosen_d5_rand", RosenbrockSpec(dimension=5, randomize_start=True)),
+    # D24 P4. 두 regime 이 같은 모델·데이터를 쓰고 optimizer 표본만 다르다.
+    ("mlp_full_batch", _MLP_BASE),
+    ("mlp_stochastic", replace(_MLP_BASE, regime="controlled_stochastic", batch_size=64)),
 ]
 
 TARGET = TargetSpec("relative_loss", 1.0e-6)
@@ -87,6 +101,8 @@ TARGET = TargetSpec("relative_loss", 1.0e-6)
 def make(spec, seed: int, *, dtype: torch.dtype = torch.float32):
     if isinstance(spec, QuadraticSpec):
         return QuadraticTask(spec, seed=seed, dtype=dtype)
+    if isinstance(spec, MicroNeuralSpec):
+        return MicroNeuralTask(spec, seed=seed, dtype=dtype)
     return RosenbrockTask(spec, seed=seed, dtype=dtype)
 
 

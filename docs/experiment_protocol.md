@@ -700,6 +700,96 @@ rosen_d5
 > Rosenbrock 결과는 configuration selection 에 사용하지 않고 비선형 행동 분석에만
 > 사용한다.
 
+### D26. held-out confirmatory 결과. `C3` 는 **약한 귀무가 아니라 좁은 귀무**다
+
+사전 고정한 `shrinking_Q4_narrow` 를 challenge 4 spec × held-out seed 100~109 에
+적용했다. 960 run, 실패 0, floor hit 0, `n=40`.
+
+**설정을 다시 고르지 않았다.** 후보가 하나뿐이라 D21 규칙이 자동으로 그것을
+선택한다 (median logΔ 10.5551).
+
+#### 게이트
+
+```text
+A1=GO  A2=GO  B=재설계  C1=판정불가  C2=GO  C3=재설계  D=GO
+```
+
+```text
+A2   shrinking − best_static   +1.690  CI +1.462~+2.368  p=0.0000  40/40 양수
+C2   shrinking − onestep       +0.456  CI +0.254~+0.720  p=0.0000  35 양수 / 5 음수
+C3   shrinking − committed     +0.010  CI −0.033~+0.053  p=0.9725  21 양 / 1 영 / 18 음
+B    absolute − narrow (H=1)   +0.005
+ref  open_loop − best_static   +0.395  CI +0.350~+0.476  p=0.0000
+ref  heuristic − best_static   −0.000  p=0.7750
+D    cost-to-target (medium)   1.706배  절감 41.4%  p=0.0004  도달 16/40
+```
+
+#### dev 대비 변화
+
+```text
+             dev n=12                 held-out n=40
+A2   +1.502  p=0.0005                 +1.690  p=0.0000
+C2   +0.251  p=0.0771  조건부          +0.456  p=0.0000  GO      <- 승격
+C3   −0.044  p=0.3804                 +0.010  p=0.9725          <- CI 가 좁아졌다
+```
+
+**`C2` 가 조건부에서 GO 로 승격됐다.** `n=40` 에서 GO 임계값 `0.3` 을 명확히 넘고
+CI 하한이 `+0.254` 다. `depth>1` 채택률 `0.84`, `cap 0.00` 이므로 P3 의 두 조건이
+모두 충족된다. **다단계 lookahead 는 one-step greedy 보다 실제로 낫다.**
+
+#### `C3` 의 성격이 바뀌었다
+
+dev 에서는 `p=0.38` 로 "검출하지 못했다" 였다. held-out 에서는 다르다.
+
+```text
+C3 = +0.010 nat,  95% CI [−0.033, +0.053],  n=40
+```
+
+**CI 가 `±0.05 nat` 안에 들어온다.** 즉 "표본이 작아 못 봤다" 가 아니라
+
+> feedback replanning 의 추가 효과는 `0.053 nat` 보다 작다.
+
+를 95% 신뢰수준으로 말할 수 있다. 21승 1무 18패로 부호도 균형이다. **좁은 귀무
+결과다.**
+
+#### 총 헤드룸의 정확한 분해
+
+```text
+best_static → open_loop      +0.395   4구간 고정 스케줄. 상태 미관측
+best_static → onestep        +1.233   1-step greedy. 상태 조건
+onestep     → shrinking      +0.456   다단계 lookahead        (C2, GO)
+committed   → shrinking      +0.010   feedback                (C3, 귀무)
+```
+
+`+1.690 nat` 중 `+1.233` 이 "비정상성 자체", `+0.456` 이 "다단계 계획", `+0.010` 이
+"상태 피드백"이다. **D24 의 결론이 더 정확한 수치로 확인됐다.**
+
+#### κ 의존성 (n=10 each)
+
+```text
+κ=1e3   +6.992
+κ=1e4   +2.365
+κ=1e5   +1.431
+κ=1e6   +1.344
+```
+
+dev 의 비단조 패턴이 `n=10` 에서 재현됐다. `κ=1e3` 최대, `κ=1e5` 까지 감소 후 평탄.
+**단조 증가 가설은 기각된다.** 다만 여전히 단조 감소를 주장하지 않는다 (D24).
+
+#### 탐색 비용
+
+```text
+shrinking_Q4_narrow  decision-search 194,095 GE / object budget 150 GE = 1,294배
+```
+
+#### 이 결과가 PPO 판단을 바꾸지 않는다
+
+`C2` 승격은 **planning 의 가치**를 강화하지만 `C3` 는 여전히 귀무다. PPO 가 학습하는
+것은 `π(a|s)` 이고 그 추가 가치가 `0.053 nat` 미만이다. D24 의 보류 결정을 유지한다.
+
+`C2` 가 GO 라는 것은 오히려 **amortized schedule selector** 방향을 지지한다. 좋은
+다단계 시퀀스가 존재하고, 그것을 초기 상태에서 정할 수 있다.
+
 ### D25. eligibility 를 **달성 가능한** 상한으로 판정한다. 참조 solver panel
 
 D23 에서 D20 의 `ceiling` 공식이 전역최소점 도달을 가정한다는 것이 드러났다.
@@ -765,16 +855,62 @@ reference_failed  참조 solver 가 전부 실패했다. spec 을 쓸 수 없다
 `initial_loss` 만 보면 우연히 같을 수 있으므로 **시작점 벡터도** 본다.
 `RosenbrockSpec(dimension=5)` 의 `randomize_start=False` 를 자동으로 잡는다.
 
-#### 소급 적용 결과 (검증)
+#### 다중 초기화는 **상한을 올리지 않는다**
+
+초판 구현이 틀렸다. `extra_inits` 결과를 `L_ref` 후보에 넣었더니 `rosen_d5_rand` 가
+통과했다.
 
 ```text
-rosen_d5 (randomize_start=False)   seed 복제 + critical_point cap  -> 탈락
-rosen_d5 (randomize_start=True)    critical_point cap             -> 탈락
-challenge quadratic 4종             seed 정상, numerical_floor      -> 유지
+잘못된 구현  L_ref = min over 전체 panel  ->  lbfgs@init0.9 가 4.8e-21 을 찾음
+             -> J_achievable = 31.44 (numerical_floor)  ->  여유 28.86  ->  채택
 ```
 
-교정된 조건으로도 **challenge selection set 은 그대로 통과한다.** D22 의 `n=12`
-결과는 유효하다.
+**컨트롤러는 항상 task 자신의 시작점에서 출발한다.** 다른 초기화에서 더 좋은 점을
+찾았다는 사실은 그 시작점의 basin 이 전역최적이 아니라는 **진단**이지, 컨트롤러가
+도달할 수 있는 상한이 아니다.
+
+```text
+L_ref               = min over runs with from_task_start=True
+off_start_best      = min over 다른 초기화. 진단용
+start_basin_is_suboptimal   두 값이 0.5 nat 이상 벌어지면 True
+```
+
+`start_basin_is_suboptimal` 이면 결과 해석에 **반드시 함께 보고한다.** "방법이
+전역최적에 도달했다" 고 쓰면 틀린 주장이 된다.
+
+#### 소급 적용 결과 (검증, seeds 0/1, reference 3000 iters)
+
+```text
+spec               판정   J_achievable  제한             최소여유   사유
+quad_d100_k1e3     채택        31.44    numerical_floor    13.71
+quad_d100_k1e4     채택        31.44    numerical_floor    20.98
+quad_d100_k1e5     채택        31.44    numerical_floor    21.88
+quad_d100_k1e6     채택        31.44    numerical_floor    21.93
+rosen_d5           탈락         1.82    critical_point     −0.00   seed 복제 + 여유 0
+rosen_d5_rand      탈락         2.58    critical_point      0.00   여유 0
+mlp_full_batch     채택        31.44    numerical_floor    11.68
+mlp_stochastic     채택        31.44    numerical_floor    28.75
+```
+
+`rosen_d5` 계열의 여유가 **정확히 0** 이다. 모든 baseline 이 도달 가능한 최적점에
+이미 도달했다는 뜻이고, D23 의 진단과 정확히 일치한다.
+
+두 Rosenbrock 변형 모두 `start_basin_is_suboptimal=True` 로 표시된다
+(`off_start_best = 4.81e-21` vs `L_ref = 3.930839`).
+
+교정된 조건으로도 **challenge selection set 4종은 그대로 통과한다.** D22 의 `n=12`
+와 D26 의 `n=40` 결과는 유효하다.
+
+##### `newton` 참조가 `quad_k1e6` 에서 `lbfgs` 를 크게 이겼다
+
+```text
+lbfgs   final=1.007485e-06  |grad|=3.456e-02  미수렴
+newton  final=3.059391e-32  |grad|=2.650e-16  수렴
+sgd     final=nan
+```
+
+단일 solver 를 상한으로 쓰면 안 되는 이유의 실측 예다. `lbfgs` 만 썼다면
+`J_achievable` 을 `28.3 nat` 로 과소평가했을 것이다.
 
 ### D24. `shrinking_Q4_narrow` freeze. **PPO 보류.** 연구 질문을 둘로 분해한다
 
@@ -2660,6 +2796,15 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-04 | `spec_kind_label` 을 duck-typing 에서 명시 타입 분기로 변경 | `getattr(spec, "kind", None)` 이 없으면 `"rosenbrock"` 으로 떨어뜨렸다. 새 spec 을 추가하면 조용히 Rosenbrock target 을 쓰게 된다. `MicroNeuralSpec` 이 실제로 그 경로에 걸렸다 |
 | 2026-08-04 | micro-neural 의 `data_key` 를 `instance_id` 와 분리 | 초판은 데이터 생성에 `instance_id` 를 썼고 거기에 regime 이 들어가 **두 regime 이 다른 데이터셋**을 받았다. `C3` 의 regime 간 비교가 데이터 차이에 오염된다. 테스트가 잡았다 |
 | 2026-08-04 | held-out 실행 중 테스트와 lint 를 병행 실행했음을 기록 | `wall_clock_sec` 이 일부 run 에서 부풀 수 있다. 단일 스레드 float 연산은 부하와 무관하게 결정론적이므로 수치 결과와 어떤 판정에도 영향이 없다. `concurrent_processes=1` 기록은 이 점에서 부정확하다 |
+| 2026-08-04 | **D26 신설: held-out confirmatory `n=40`. `C2` 가 조건부 → GO 로 승격** | `+0.251 (p=0.077)` → `+0.456 (p=0.0000)`, CI 하한 `+0.254`. `depth>1` 채택률 `0.84`, `cap 0.00` 이므로 P3 두 조건 충족. 다단계 lookahead 는 one-step greedy 보다 실제로 낫다 |
+| 2026-08-04 | **`C3` 가 "검출 실패" 에서 "좁은 귀무" 로 바뀌었다** | `+0.010 nat`, CI `[−0.033, +0.053]`, `n=40`, 21승 1무 18패. "표본이 작아 못 봤다" 가 아니라 "효과가 `0.053 nat` 보다 작다" 를 95% 신뢰수준으로 말할 수 있다 |
+| 2026-08-04 | 총 헤드룸 `+1.690 nat` 의 분해가 확정됐다 | `+1.233` 비정상성 자체(1-step greedy), `+0.456` 다단계 계획, `+0.010` 상태 피드백. `C2` GO 는 amortized schedule selector 방향을 지지한다 |
+| 2026-08-04 | `C2` 승격이 PPO 판단을 바꾸지 않음 | PPO 가 학습하는 것은 `π(a\|s)` 이고 그 추가 가치가 `0.053 nat` 미만이다. D24 의 보류 결정을 유지한다 |
+| 2026-08-04 | **D25 초판 구현 오류 수정: 다중 초기화가 `L_ref` 에 들어가 상한을 올렸다** | `rosen_d5_rand` 가 `lbfgs@init0.9` 의 `4.8e-21` 덕에 통과했다. 컨트롤러는 task 시작점에서만 출발하므로 다른 basin 의 최적값은 도달 가능한 상한이 아니다. `from_task_start` 로 분리하고 `start_basin_is_suboptimal` 진단을 추가했다 |
+| 2026-08-04 | D25 소급 적용 확정 | `rosen_d5`(여유 −0.00) 와 `rosen_d5_rand`(여유 0.00) 탈락, quadratic 4종과 micro-neural 2종 통과. Rosenbrock 계열의 여유가 정확히 0 인 것이 D23 진단과 일치한다 |
+| 2026-08-04 | `reference_spread_nat` 을 수렴한 run 만으로 계산 | micro-neural 에서 Adam/SGD 가 예산 안에 수렴하지 못해 산포가 32 nat 로 나왔으나 LBFGS 가 하한에 도달했으므로 상한 추정은 모호하지 않았다. "느린 solver" 와 "다른 임계점에 갇힌 solver" 를 구별해야 한다 |
+| 2026-08-04 | `quad_k1e6` 에서 `newton` 이 `lbfgs` 를 크게 이겼다 | `lbfgs 1.0e-06 (미수렴)` vs `newton 3.1e-32 (수렴)`. `lbfgs` 만 썼다면 `J_achievable` 을 `28.3 nat` 로 과소평가했을 것이다. 단일 solver panel 을 금지하는 실측 근거다 |
+| 2026-08-04 | `label_noise` 가 floor saturation 을 막는다는 초판 주장을 철회 | 서로 다른 `x` 에 붙은 뒤집힌 라벨은 과매개화된 신경망이 암기할 수 있다. 실측에서 `onestep` 이 정확도 1.000 에 도달했다. 측정 가능성은 참조 solver panel 로만 판정한다 |
 | 2026-08-04 | 비선형 진단 실행 시 git 이 dirty 였음을 기록 | 프로토콜 문서를 수정한 상태에서 돌렸다. D13 에 따라 `run_semantics_id` 는 영향받지 않고 `code_dirty` 는 `execution_provenance` 에 남는다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |

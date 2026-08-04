@@ -148,22 +148,56 @@ class TestReferencePanel:
         # 관측된 컨트롤러 정체 loss 는 3.9308388~3.9310777 였다.
         assert ceiling.reference_loss < 3.94
 
-    def test_extra_init_can_escape_the_basin(self):
-        """다중 초기화를 넣으면 전역최소점을 찾는다.
+    def test_extra_init_diagnoses_but_does_not_raise_the_ceiling(self):
+        """다른 초기화는 **진단**이다. 상한을 올리면 안 된다.
 
-        `L_ref` 가 panel 의 최소값이므로 상한이 올라간다. 단일 solver 하나만 믿지
-        않는 이유가 이것이다.
+        컨트롤러는 task 시작점에서만 출발한다. 다른 basin 의 최적값을 상한으로
+        쓰면 국소최소점에 갇힌 task 가 eligibility 를 통과한다.
         """
         spec = RosenbrockSpec(dimension=5)
+        l0 = float(RosenbrockTask(spec, seed=2, dtype=torch.float64).initial_loss)
         runs = reference_panel(
             lambda: RosenbrockTask(spec, seed=2, dtype=torch.float64),
             max_iter=2000,
             extra_inits=(0.9,),
         )
-        names = {r.name for r in runs}
-        assert any("init" in n for n in names)
-        best = min(r.final_loss for r in runs if math.isfinite(r.final_loss))
-        assert best < 1.0e-6, "0.9 에서 출발하면 전역최소점에 도달한다"
+        assert any("init" in r.name for r in runs)
+        off_best = min(
+            r.final_loss for r in runs if not r.from_task_start and math.isfinite(r.final_loss)
+        )
+        assert off_best < 1.0e-6, "0.9 에서 출발하면 전역최소점에 도달한다"
+
+        ceiling = achievable_ceiling(l0, runs)
+        # 상한은 여전히 시작점 basin 의 국소최소점이 정한다.
+        assert ceiling.limited_by == "critical_point"
+        assert ceiling.reference_loss > 3.9
+        assert ceiling.nats < 3.0
+        assert ceiling.start_basin_is_suboptimal
+        assert "전역최적 아님" in ceiling.describe()
+
+    def test_rosen_d5_fails_eligibility_even_with_extra_inits(self):
+        """D25 소급 적용 결과. 다중 초기화가 있어도 탈락해야 한다."""
+        spec = RosenbrockSpec(dimension=5, randomize_start=True)
+        task = RosenbrockTask(spec, seed=0, dtype=torch.float64)
+        l0 = float(task.initial_loss)
+        runs = reference_panel(
+            lambda: RosenbrockTask(spec, seed=0, dtype=torch.float64),
+            max_iter=2000,
+            extra_inits=(0.9,),
+        )
+        ceiling = achievable_ceiling(l0, runs)
+        # 관측된 baseline median 은 약 2.58 nat 였다. 여유 3 nat 을 만족할 수 없다.
+        assert ceiling.nats < 3.5, f"J_achievable={ceiling.nats}"
+
+    def test_start_basin_optimal_when_no_extra_inits(self):
+        spec = QuadraticSpec(kind="spd", dimension=8, condition_number=10.0)
+        l0 = float(QuadraticTask(spec, seed=0, dtype=torch.float64).initial_loss)
+        runs = reference_panel(
+            lambda: QuadraticTask(spec, seed=0, dtype=torch.float64), max_iter=500
+        )
+        ceiling = achievable_ceiling(l0, runs)
+        assert not ceiling.start_basin_is_suboptimal
+        assert ceiling.off_start_runs == ()
 
     def test_panel_on_quadratic_reaches_floor(self):
         spec = QuadraticSpec(kind="spd", dimension=20, condition_number=1.0e2)

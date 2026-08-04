@@ -76,8 +76,15 @@ x ~ N(0, I)                          입력
 y = argmax teacher(x)                라벨. teacher 는 학생과 다른 난수 스트림
 ```
 
-teacher 를 학생보다 넓게 두어 학생이 정확히 표현할 수 없게 한다. 그러면 loss 가
-0 으로 붕괴하지 않아 floor saturation (D19) 을 피한다.
+teacher 를 학생보다 넓게 두어 학생이 teacher 함수를 정확히 표현할 수 없게 한다.
+
+**다만 그것이 floor saturation 을 막아주지는 않는다.** 유한한 데이터셋은 과매개화된
+신경망이 암기할 수 있다. 실측(`n=512`, 4869 파라미터)에서 `onestep` 이 정확도
+1.000, loss `3.6e-9` 에 도달했다. 수치 하한 `4.1e-14` 보다는 위여서 150 GE 예산에서는
+포화가 발생하지 않았지만, **구조적으로 보장된 것이 아니다.**
+
+측정 가능성은 참조 solver panel 로 판정한다 (D25). `label_noise` 나 teacher 폭을
+근거로 삼지 않는다.
 """
 
 from __future__ import annotations
@@ -108,8 +115,12 @@ class MicroNeuralSpec:
         batch_size: ``controlled_stochastic`` 에서 optimizer 가 보는 표본 크기.
             gradient 와 HVP 가 같은 batch 를 쓴다 (``HvpGraph`` 구조상 분리 불가).
         teacher_hidden_dim: teacher 폭. 학생보다 넓게 두어 표현 불가능하게 만든다.
-        label_noise: 라벨을 무작위로 뒤집을 비율. loss floor 를 만들지 않기 위한
-            추가 장치다.
+        label_noise: 라벨을 무작위로 뒤집을 비율. 문제를 덜 매끄럽게 만든다.
+
+            **이것은 floor saturation 을 막지 못한다.** 서로 다른 `x` 에 붙은
+            뒤집힌 라벨은 과매개화된 신경망이 그대로 암기할 수 있다. 실측에서
+            `n=512`, 4869 파라미터, `label_noise=0.05` 일 때 `onestep` 이 정확도
+            1.000 에 도달했다. 측정 가능성은 참조 solver panel 로 판정한다 (D25).
         init_scale: 학생 초기화 스케일 배수.
     """
 
@@ -236,7 +247,7 @@ class MicroNeuralTask:
 
     # --- 구성 -------------------------------------------------------------
 
-    def _build_dataset(
+    def _build_dataset(  # noqa: C901
         self, spec: MicroNeuralSpec, seed: int, data_key: str
     ) -> tuple[Tensor, Tensor]:
         gen = torch_generator(seed, "micro_neural", "data", data_key)
@@ -244,8 +255,8 @@ class MicroNeuralTask:
             spec.n_samples, spec.input_dim, generator=gen, dtype=torch.float64
         )
 
-        # teacher 는 학생보다 넓다. 학생이 정확히 표현할 수 없어야 loss 가 0 으로
-        # 붕괴하지 않는다 (floor saturation 회피, D19).
+        # teacher 는 학생보다 넓다. 학생이 teacher 함수를 정확히 표현할 수 없다.
+        # 다만 유한 데이터셋 암기는 여전히 가능하다 (docstring 참조).
         t_gen = torch_generator(seed, "micro_neural", "teacher", data_key)
         h = spec.teacher_hidden_dim
         w1 = torch.randn(spec.input_dim, h, generator=t_gen, dtype=torch.float64)
