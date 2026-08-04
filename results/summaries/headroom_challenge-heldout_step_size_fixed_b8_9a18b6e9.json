@@ -35,9 +35,9 @@
     },
     "concurrent_processes": 1
   },
-  "experiment_id": "61012c871d335195",
+  "experiment_id": "fd62be8f1e018586",
   "sweep_id": "d540541777d40c93",
-  "aggregation_id": "ec5019fa2cc67699",
+  "aggregation_id": "1fb5800f9248290c",
   "identity": {
     "protocol_version": "stage2-v1",
     "phase": "confirmatory",
@@ -101,6 +101,11 @@
         "easy": "absolute_loss<=0.1",
         "medium": "absolute_loss<=0.01",
         "hard": "absolute_loss<=0.0001"
+      },
+      "micro_neural": {
+        "easy": "relative_loss<=0.5",
+        "medium": "relative_loss<=0.2",
+        "hard": "relative_loss<=0.1"
       }
     },
     "spaces": {
@@ -195,11 +200,11 @@
     "mode": "headroom"
   },
   "execution_provenance": {
-    "git_commit": "",
+    "git_commit": "b713c1d9",
     "code_dirty": true,
     "hostname": "DESKTOP-O4MPS5M",
     "platform": "Windows 11",
-    "recorded_at": "2026-08-04T08:16:13.346387+00:00"
+    "recorded_at": "2026-08-04T14:33:01.966406+00:00"
   },
   "selections": {
     "static": {
@@ -347,18 +352,8 @@
       "equivalent_static_action": null,
       "progress_clock": "object_ge_fraction",
       "progress_evaluated_at": "before_step",
-      "realized_segment_counts": {
-        "0": 3,
-        "1": 5,
-        "2": 6,
-        "3": 2
-      },
-      "realized_ge_by_segment": {
-        "0": 44.6,
-        "1": 43.49999999999999,
-        "2": 41.8,
-        "3": 14.6
-      }
+      "realized_segment_counts": {},
+      "realized_ge_by_segment": {}
     }
   },
   "n_instances": 40,
@@ -824,7 +819,7 @@
       "verdict": "GO",
       "go_threshold": 0.7,
       "pivot_threshold": 0.2,
-      "nonsaturated": "[1] all-task floor-capped  +1.690 nat  n=40  CI +1.462~+2.368  joint=0 one-sided=0 unsat=40  (+40/0×0/−0)\n      [2] quad_ill_conditioned_d100_k1e+03   median +6.992 n=10 [+6.992, +6.956, +7.634, +7.101, +6.994, +6.967, +6.946, +7.157, +6.974, +6.294]\n      [2] quad_ill_conditioned_d100_k1e+04   median +2.365 n=10 [+1.278, +2.737, +1.106, +2.269, +1.781, +2.365, +2.648, +2.410, +2.372, +1.599]\n      [2] quad_ill_conditioned_d100_k1e+05   median +1.431 n=10 [+1.431, +1.841, +1.287, +0.598, +1.506, +0.619, +1.517, +1.367, +1.527, +1.269]\n      [2] quad_ill_conditioned_d100_k1e+06   median +1.344 n=10 [+1.162, +2.043, +1.116, +1.599, +1.344, +0.966, +2.008, +0.953, +1.492, +0.729]\n      [3] pairwise nonsaturated 민감도  +1.690 nat  n=40  (비교마다 n 이 달라진다. primary 아님)",
+      "nonsaturated": "[1] all-task floor-capped  +1.690 nat  n=40  CI +1.462~+2.368  joint=0 one-sided=0 unsat=40  (+40/0×0/−0)\n      [2] quad_ill_conditioned_d100_k1e+03   median +6.983 n=10 [+6.992, +6.956, +7.634, +7.101, +6.994, +6.967, +6.946, +7.157, +6.974, +6.294]\n      [2] quad_ill_conditioned_d100_k1e+04   median +2.317 n=10 [+1.278, +2.737, +1.106, +2.269, +1.781, +2.365, +2.648, +2.410, +2.372, +1.599]\n      [2] quad_ill_conditioned_d100_k1e+05   median +1.399 n=10 [+1.431, +1.841, +1.287, +0.598, +1.506, +0.619, +1.517, +1.367, +1.527, +1.269]\n      [2] quad_ill_conditioned_d100_k1e+06   median +1.253 n=10 [+1.162, +2.043, +1.116, +1.599, +1.344, +0.966, +2.008, +0.953, +1.492, +0.729]\n      [3] pairwise nonsaturated 민감도  +1.690 nat  n=40  (비교마다 n 이 달라진다. primary 아님)",
       "detail": "narrow +1.690, wide +nan nat. A1 대비 크게 낮으면 행동 공간 도달성이 병목이다."
     },
     {
@@ -860,7 +855,7 @@
       "verdict": "GO",
       "go_threshold": 0.3,
       "pivot_threshold": 0.05,
-      "nonsaturated": "[1] all-task floor-capped  +0.456 nat  n=40  CI +0.254~+0.720  joint=0 one-sided=0 unsat=40  (+35/0×0/−5)\n      [2] quad_ill_conditioned_d100_k1e+03   median +2.961 n=10 [+2.626, +3.315, +3.766, +3.695, +2.261, +0.407, +0.662, +2.961, +3.626, +1.826]\n      [2] quad_ill_conditioned_d100_k1e+04   median +0.528 n=10 [+0.238, +1.585, -0.741, +1.111, +0.528, +0.367, +1.581, +0.219, +0.360, +0.581]\n      [2] quad_ill_conditioned_d100_k1e+05   median +0.353 n=10 [+0.610, +0.826, +0.149, -0.131, +0.506, -0.498, +0.087, +0.225, +0.802, +0.353]\n      [2] quad_ill_conditioned_d100_k1e+06   median +0.141 n=10 [+0.046, +0.269, +0.062, +0.779, +0.557, -0.145, +0.389, +0.141, +0.111, -0.343]\n      [3] pairwise nonsaturated 민감도  +0.456 nat  n=40  (비교마다 n 이 달라진다. primary 아님)",
+      "nonsaturated": "[1] all-task floor-capped  +0.456 nat  n=40  CI +0.254~+0.720  joint=0 one-sided=0 unsat=40  (+35/0×0/−5)\n      [2] quad_ill_conditioned_d100_k1e+03   median +2.793 n=10 [+2.626, +3.315, +3.766, +3.695, +2.261, +0.407, +0.662, +2.961, +3.626, +1.826]\n      [2] quad_ill_conditioned_d100_k1e+04   median +0.448 n=10 [+0.238, +1.585, -0.741, +1.111, +0.528, +0.367, +1.581, +0.219, +0.360, +0.581]\n      [2] quad_ill_conditioned_d100_k1e+05   median +0.289 n=10 [+0.610, +0.826, +0.149, -0.131, +0.506, -0.498, +0.087, +0.225, +0.802, +0.353]\n      [2] quad_ill_conditioned_d100_k1e+06   median +0.126 n=10 [+0.046, +0.269, +0.062, +0.779, +0.557, -0.145, +0.389, +0.141, +0.111, -0.343]\n      [3] pairwise nonsaturated 민감도  +0.456 nat  n=40  (비교마다 n 이 달라진다. primary 아님)",
       "detail": "깊이/상한(shrinking): Q4:d>1=0.84,cap=0.00. 참고 Q=4(depth 1만 가능) - C0 = +0.456 nat. **GO 판정에는 두 조건이 모두 필요하다** (P3). 개선이 있고, 동시에 depth>1 이 실제로 채택돼야 한다. 개선만 있고 depth 가 계속 1 이면 planning 이 아니라 탐색량이 기여한 것이다. ``cap`` 이 0 이 아니면 계산 상한 때문에 쿼터를 다 쓰지 못한 step 이 있으므로 사다리 비교가 훼손된 것으로 보고한다. 이 게이트만으로 PPO 를 시작하지 않는다. P1~P4 를 함께 본다."
     },
     {
@@ -872,7 +867,7 @@
       "verdict": "재설계",
       "go_threshold": 0.3,
       "pivot_threshold": 0.05,
-      "nonsaturated": "[1] all-task floor-capped  +0.010 nat  n=40  CI -0.033~+0.053  joint=0 one-sided=0 unsat=40  (+21/0×1/−18)\n      [2] quad_ill_conditioned_d100_k1e+03   median +0.500 n=10 [+0.012, +0.814, +1.041, -0.068, +0.500, +0.443, -0.844, +0.693, +0.571, -0.348]\n      [2] quad_ill_conditioned_d100_k1e+04   median +0.000 n=10 [-0.946, +0.283, -1.290, +0.027, -0.916, -0.039, +0.044, +0.000, +0.128, -0.564]\n      [2] quad_ill_conditioned_d100_k1e+05   median +0.025 n=10 [+0.025, +0.072, +0.097, -0.563, -0.008, -0.714, -0.135, +0.056, +0.802, -0.028]\n      [2] quad_ill_conditioned_d100_k1e+06   median +0.009 n=10 [-0.022, +0.147, +0.009, +0.049, +0.111, -0.597, -0.009, -0.423, +0.032, -0.491]\n      [3] pairwise nonsaturated 민감도  +0.010 nat  n=40  (비교마다 n 이 달라진다. primary 아님)",
+      "nonsaturated": "[1] all-task floor-capped  +0.010 nat  n=40  CI -0.033~+0.053  joint=0 one-sided=0 unsat=40  (+21/0×1/−18)\n      [2] quad_ill_conditioned_d100_k1e+03   median +0.472 n=10 [+0.012, +0.814, +1.041, -0.068, +0.500, +0.443, -0.844, +0.693, +0.571, -0.348]\n      [2] quad_ill_conditioned_d100_k1e+04   median -0.019 n=10 [-0.946, +0.283, -1.290, +0.027, -0.916, -0.039, +0.044, +0.000, +0.128, -0.564]\n      [2] quad_ill_conditioned_d100_k1e+05   median +0.009 n=10 [+0.025, +0.072, +0.097, -0.563, -0.008, -0.714, -0.135, +0.056, +0.802, -0.028]\n      [2] quad_ill_conditioned_d100_k1e+06   median +0.000 n=10 [-0.022, +0.147, +0.009, +0.049, +0.111, -0.597, -0.009, -0.423, +0.032, -0.491]\n      [3] pairwise nonsaturated 민감도  +0.010 nat  n=40  (비교마다 n 이 달라진다. primary 아님)",
       "detail": "약 0 이면 좋은 sequence 는 존재하지만 feedback 자체의 추가 가치는 작다. 음수면 approximate replanning 이 계획을 훼손한다. **committed 는 초기 상태에 조건화된 oracle 이므로 open_loop baseline 과 다르다.** committed 가 open_loop 보다 좋다고 해서 feedback 이 필요하다는 뜻이 아니다."
     },
     {
@@ -890,10 +885,10 @@
   ],
   "n_failures": 0,
   "raw_path": "results\\raw\\headroom_challenge-heldout_step_size_fixed_b8_9a18b6e9.jsonl",
-  "raw_sha256": "2bf3803b39001a63fe01328a2ef7e1676f0b3ea0274a9917efc4c886b7ef291a",
-  "raw_n_lines": 960,
+  "raw_sha256": "95b0d3c2191b05cdeb2faff89fa9ca617c0acf06b798d1823d307b3f5cad5f7a",
+  "raw_n_lines": 1200,
   "provenance": {
-    "git_commit": "e58e5cd0",
+    "git_commit": "b713c1d9",
     "git_dirty": true,
     "config_hash": "478b7f48525498be",
     "python_version": "3.12.12",

@@ -93,6 +93,10 @@ DELTAS = (
     ("C2", "onestep_narrow", "shrinking_Q4_narrow"),
     ("C3", "committed_Q4_narrow", "shrinking_Q4_narrow"),
     ("open_loop", "best_static", "best_open_loop"),
+    # 사다리 각 단계를 튜닝 상수와 직접 비교한다. **차이를 손으로 빼서 만들면 안 된다.**
+    # 쌍별 차이의 median 은 선형이 아니므로 `A2 − C2` 가 `onestep − static` 이 아니다.
+    ("ladder", "best_static", "onestep_narrow"),
+    ("ladder", "best_static", "committed_Q4_narrow"),
 )
 
 

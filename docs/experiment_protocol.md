@@ -771,6 +771,72 @@ shrinking 이 C0 까지 이김
 현재 증거상 마지막 경우의 가능성은 높지 않다. 어느 쪽이든 **결과를 본 뒤 해석을
 만들지 않기 위해** 여기에 미리 적는다.
 
+### D32. `run_semantics_id` 에 **이 run 이 쓰지 않는 설정**이 들어 있었다
+
+원고 작업 중 발견했다. D13 이 막으려던 실패가 두 곳에 남아 있었다.
+
+#### 증상
+
+`TARGETS` 에 micro-neural 항목을 추가했더니 **quadratic held-out 의 Track T 240 run
+전부가 무효화**되어 재실행됐다. Track E 는 캐시가 유지됐다.
+
+```text
+git_commit 9679fe33   960 run   원본
+git_commit b713c1d9   145 run   best_static@easy/medium, shrinking_Q4@easy/medium
+                                -> 같은 논리적 run 이 두 experiment_id 로 존재
+```
+
+#### 원인
+
+`run_semantics_payload(uses_target=True)` 가 `self.targets` **전체**를 넣었다.
+
+```python
+payload["targets"] = {kind: {...} for kind, levels in self.targets.items()}
+```
+
+`micro_neural` 키를 추가한 것만으로 `ill_conditioned` quadratic run 의 해시가 바뀐다.
+**이 run 은 그 target 을 쓰지 않는다.**
+
+#### 수정
+
+이 실행이 실제로 쓰는 spec 종류의 target 만 넣는다.
+
+```python
+kinds = {spec_kind_label(spec) for spec in self.specs}
+payload["targets"] = {k: v for k, v in self.targets.items() if k in kinds}
+```
+
+개별 target 문자열은 `RunKey.target` 에 이미 들어 있다. 여기서 고정할 것은 "이 spec
+종류에 어떤 난이도 사다리를 썼는가" 뿐이다.
+
+#### 두 번째 사례: 표시용 `config_hash`
+
+`meta["acceptance_loss"]` 를 무조건 넣었더니 기본 설정 실험의 **raw 파일 경로**가
+바뀌어 held-out 960 run 이 캐시에서 빠졌다. `meta` 는 정체성이 아니라 파일 이름을
+정하는 표시용 해시인데, 그것이 사실상 재실행 여부를 결정한다.
+
+기본값이면 넣지 않도록 고쳤다. 정체성은 `run_semantics_id` 가 담당한다 (D28).
+
+#### 처리
+
+```text
+재실행분 145 run 을 제거해 원본 960 집합으로 되돌렸다
+수정된 정체성으로 Track T 240 run 을 한 번 재실행했다
+Track E 는 영향이 없다 (uses_target=False 이므로 targets 키가 없다)
+게이트 D 의 값은 같은 run 을 다시 집계한 것이므로 변하지 않는다
+```
+
+#### 교훈
+
+D13 은 "무관한 설정 변경으로 baseline 이 무효화되지 않게 한다" 를 목표로 했다. 그
+원칙을 **payload 에 키를 추가할 때마다 확인해야 한다.**
+
+```text
+이 run 이 실제로 그 설정을 쓰는가
+쓰지 않으면 payload 에 넣지 않는다
+표시용 해시(meta)도 파일 경로를 정하므로 같은 기준을 적용한다
+```
+
 ### D31. ablation 결과. `C3` 의 **크기 절반쯤이 acceptance artifact** 였다. 결론은 유지
 
 micro-neural 3 spec × seeds 2/3/4 를 두 수락 규칙에서 각각 216 run, 실패 0.
@@ -1091,7 +1157,7 @@ batch_size 를 바꾸면 "모델 부정확도" 의 정도가 달라진다. 축�
 R1 에서 onestep 이 19.886 까지 가므로 floor 에 접근한다 (하한 4.8e-14)
 ```
 
-### D26. held-out confirmatory 결과. `C3` 는 **약한 귀무가 아니라 좁은 귀무**다
+### D26. held-out confirmatory 결과. `C2` 승격, `C3` 는 **CI 가 좁게 0 을 포함**
 
 사전 고정한 `shrinking_Q4_narrow` 를 challenge 4 spec × held-out seed 100~109 에
 적용했다. 960 run, 실패 0, floor hit 0, `n=40`.
@@ -1153,17 +1219,43 @@ C3 = +0.010 nat,  95% CI [−0.033, +0.053],  n=40,  21승 1무 18패
 부호가 21승 1무 18패로 균형인 것과 CI 폭이 `0.086 nat` 인 것을 함께 보고한다.
 `A2` 의 CI 폭이 `0.906 nat` 인 것과 대비하면 정밀도의 차이가 드러난다.
 
-#### 총 헤드룸의 정확한 분해
+#### 사다리별 측정값. **합으로 분해하지 않는다**
+
+쌍별 차이의 median 은 선형이 아니다. 아래 값들은 각각 독립적으로 측정한 통계다.
 
 ```text
-best_static → open_loop      +0.395   4구간 고정 스케줄. 상태 미관측
-best_static → onestep        +1.233   1-step greedy. 상태 조건
-onestep     → shrinking      +0.456   다단계 lookahead        (C2, GO)
-committed   → shrinking      +0.010   feedback                (C3, 귀무)
+튜닝 상수 기준 쌍별 median (held-out n=40)
+best_open_loop        +0.395   CI +0.350~+0.476   40/40
+onestep_narrow        +1.155   CI +1.092~+1.811   40/40
+committed_Q4_narrow   +2.090   CI +1.532~+2.407   40/40
+shrinking_Q4_narrow   +1.690   CI +1.462~+2.368   40/40   (A2)
+
+직접 측정한 증분
+shrinking − onestep   +0.456   CI +0.254~+0.720   35/40   (C2)
+shrinking − committed +0.010   CI −0.033~+0.053   21/40   (C3)
 ```
 
-`+1.690 nat` 중 `+1.233` 이 "비정상성 자체", `+0.456` 이 "다단계 계획", `+0.010` 이
-"상태 피드백"이다. **D24 의 결론이 더 정확한 수치로 확인됐다.**
+##### 표의 값을 서로 빼면 안 된다
+
+`committed` 의 상수 대비 값(`+2.090`)이 `shrinking`(`+1.690`)보다 크지만 직접 측정한
+`shrinking − committed` 는 `+0.010` 이다. **모순이 아니다.**
+
+```text
+spec 별 shrinking − committed
+κ=1e3  +0.472    κ=1e4  −0.019    κ=1e5  +0.009    κ=1e6  +0.000
+```
+
+각 spec 안에서 두 planner 는 사실상 동률이고, pooled median 이 서로 다른 인스턴스에
+떨어져 marginal 값 차이가 생긴다.
+
+##### 초판 보고의 파생 오류를 정정한다
+
+초판은 `onestep` 의 상수 대비 값을 `A2 − C2 = 1.690 − 0.456 = 1.233` 으로 계산했다.
+**틀렸다.** 직접 측정값은 `+1.155` 다.
+
+`scripts/make_report.py` 의 비교 목록에 `onestep − best_static` 과
+`committed − best_static` 을 추가해 **손으로 빼지 않아도 되게** 했다. 원고 표와
+`Figure 1(b)` 에 "막대를 서로 빼지 말라" 는 경고를 넣었다.
 
 #### κ 의존성 (n=10 each)
 
@@ -3215,9 +3307,9 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-04 | micro-neural 의 `data_key` 를 `instance_id` 와 분리 | 초판은 데이터 생성에 `instance_id` 를 썼고 거기에 regime 이 들어가 **두 regime 이 다른 데이터셋**을 받았다. `C3` 의 regime 간 비교가 데이터 차이에 오염된다. 테스트가 잡았다 |
 | 2026-08-04 | held-out 실행 중 테스트와 lint 를 병행 실행했음을 기록 | `wall_clock_sec` 이 일부 run 에서 부풀 수 있다. 단일 스레드 float 연산은 부하와 무관하게 결정론적이므로 수치 결과와 어떤 판정에도 영향이 없다. `concurrent_processes=1` 기록은 이 점에서 부정확하다 |
 | 2026-08-04 | **D26 신설: held-out confirmatory `n=40`. `C2` 가 조건부 → GO 로 승격** | `+0.251 (p=0.077)` → `+0.456 (p=0.0000)`, CI 하한 `+0.254`. `depth>1` 채택률 `0.84`, `cap 0.00` 이므로 P3 두 조건 충족. 다단계 lookahead 는 one-step greedy 보다 실제로 낫다 |
-| 2026-08-04 | **`C3` 가 "검출 실패" 에서 "좁은 귀무" 로 바뀌었다** | `+0.010 nat`, CI `[−0.033, +0.053]`, `n=40`, 21승 1무 18패. "표본이 작아 못 봤다" 가 아니라 "효과가 `0.053 nat` 보다 작다" 를 95% 신뢰수준으로 말할 수 있다 |
-| 2026-08-04 | 총 헤드룸 `+1.690 nat` 의 분해가 확정됐다 | `+1.233` 비정상성 자체(1-step greedy), `+0.456` 다단계 계획, `+0.010` 상태 피드백. `C2` GO 는 amortized schedule selector 방향을 지지한다 |
-| 2026-08-04 | `C2` 승격이 PPO 판단을 바꾸지 않음 | PPO 가 학습하는 것은 `π(a\|s)` 이고 그 추가 가치가 `0.053 nat` 미만이다. D24 의 보류 결정을 유지한다 |
+| 2026-08-04 | **`C3` 의 CI 가 좁아졌다** | `+0.010 nat`, CI `[−0.033, +0.053]`, `n=40`, 21승 1무 18패. **equivalence margin 을 사전 등록하지 않았으므로 "효과가 0.053 nat 보다 작다" 를 검정 결과로 주장하지 않는다.** "CI 가 좁게 0 을 포함했으므로 실용적으로 큰 이득이 관측되지 않았다" 로 쓴다 |
+| 2026-08-04 | 사다리별 측정값을 **합으로 분해하지 않는다** | 상수 대비 `+0.395 / +1.155 / +2.090 / +1.690`, 직접 측정 증분 `+0.456 / +0.010`. 쌍별 median 은 선형이 아니다. 초판이 `A2 − C2 = 1.233` 으로 파생한 것을 직접 측정값 `+1.155` 로 정정했다 |
+| 2026-08-04 | `C2` 승격이 PPO 판단을 바꾸지 않음 | PPO 가 학습하는 것은 `π(a\|s)` 인데 그 추가 가치에서 실용적으로 큰 이득이 관측되지 않았다. D24 의 보류 결정을 유지한다 |
 | 2026-08-04 | **D25 초판 구현 오류 수정: 다중 초기화가 `L_ref` 에 들어가 상한을 올렸다** | `rosen_d5_rand` 가 `lbfgs@init0.9` 의 `4.8e-21` 덕에 통과했다. 컨트롤러는 task 시작점에서만 출발하므로 다른 basin 의 최적값은 도달 가능한 상한이 아니다. `from_task_start` 로 분리하고 `start_basin_is_suboptimal` 진단을 추가했다 |
 | 2026-08-04 | D25 소급 적용 확정 | `rosen_d5`(여유 −0.00) 와 `rosen_d5_rand`(여유 0.00) 탈락, quadratic 4종과 micro-neural 2종 통과. Rosenbrock 계열의 여유가 정확히 0 인 것이 D23 진단과 일치한다 |
 | 2026-08-04 | `reference_spread_nat` 을 수렴한 run 만으로 계산 | micro-neural 에서 Adam/SGD 가 예산 안에 수렴하지 못해 산포가 32 nat 로 나왔으나 LBFGS 가 하한에 도달했으므로 상한 추정은 모호하지 않았다. "느린 solver" 와 "다른 임계점에 갇힌 solver" 를 구별해야 한다 |

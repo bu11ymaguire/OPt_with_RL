@@ -53,6 +53,14 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | open_loop `best_open_loop` − `best_static` | quad_ill_conditioned_d100_k1e+05 | -0.137 | [-0.184, -0.108] | n/a | 3 | 0/3 |
 | open_loop `best_open_loop` − `best_static` | quad_spd_d64_k1e+02 | -5.982 | [-6.324, -5.562] | n/a | 3 | 0/3 |
 | open_loop `best_open_loop` − `best_static` | rosen_d2_s100_std | +24.346 | [+24.346, +24.346] | n/a | 3 | 3/3 |
+| ladder `onestep_narrow` − `best_static` | ALL | -0.048 | [-5.422, +0.000] | 0.1562 | 9 | 1/9 |
+| ladder `onestep_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+05 | -0.048 | [-0.136, +0.263] | n/a | 3 | 1/3 |
+| ladder `onestep_narrow` − `best_static` | quad_spd_d64_k1e+02 | +0.000 | [+0.000, +0.000] | n/a | 3 | 0/3 |
+| ladder `onestep_narrow` − `best_static` | rosen_d2_s100_std | -5.422 | [-5.422, -5.422] | n/a | 3 | 0/3 |
+| ladder `committed_Q4_narrow` − `best_static` | ALL | +0.000 | [-5.422, +0.217] | 0.1562 | 9 | 2/9 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +0.217 | [-0.297, +0.264] | n/a | 3 | 2/3 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_spd_d64_k1e+02 | +0.000 | [+0.000, +0.000] | n/a | 3 | 0/3 |
+| ladder `committed_Q4_narrow` − `best_static` | rosen_d2_s100_std | -5.422 | [-5.422, -5.422] | n/a | 3 | 0/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -113,6 +121,16 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | open_loop `best_open_loop` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +0.405 | [+0.328, +0.451] | n/a | 3 | 3/3 |
 | open_loop `best_open_loop` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +0.317 | [+0.215, +0.420] | n/a | 3 | 3/3 |
 | open_loop `best_open_loop` − `best_static` | quad_ill_conditioned_d100_k1e+06 | +0.316 | [+0.209, +0.449] | n/a | 3 | 3/3 |
+| ladder `onestep_narrow` − `best_static` | ALL | +1.222 | [+0.961, +4.063] | 0.0005 | 12 | 12/12 |
+| ladder `onestep_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+03 | +6.285 | [+6.135, +6.495] | n/a | 3 | 3/3 |
+| ladder `onestep_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +1.800 | [+1.156, +1.991] | n/a | 3 | 3/3 |
+| ladder `onestep_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +0.803 | [+0.791, +1.235] | n/a | 3 | 3/3 |
+| ladder `onestep_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+06 | +1.104 | [+0.819, +1.209] | n/a | 3 | 3/3 |
+| ladder `committed_Q4_narrow` − `best_static` | ALL | +1.981 | [+1.358, +3.847] | 0.0005 | 12 | 12/12 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+03 | +7.152 | [+5.245, +7.756] | n/a | 3 | 3/3 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +2.388 | [+2.150, +2.449] | n/a | 3 | 3/3 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +1.288 | [+1.015, +1.454] | n/a | 3 | 3/3 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+06 | +1.427 | [+1.136, +1.811] | n/a | 3 | 3/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -132,7 +150,7 @@ paired delta (nat, 양수면 treatment 가 좋다)
 
 ```text
 raw        headroom_challenge-heldout_step_size_fixed_b8_9a18b6e9.jsonl
-완료 run   960
+완료 run   1200
 best_open_loop -> open_loop[4]
 best_static -> static[2]
 ```
@@ -173,6 +191,16 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | open_loop `best_open_loop` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +0.405 | [+0.305, +0.495] | 0.0020 | 10 | 10/10 |
 | open_loop `best_open_loop` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +0.307 | [+0.267, +0.389] | 0.0020 | 10 | 10/10 |
 | open_loop `best_open_loop` − `best_static` | quad_ill_conditioned_d100_k1e+06 | +0.350 | [+0.267, +0.403] | 0.0020 | 10 | 10/10 |
+| ladder `onestep_narrow` − `best_static` | ALL | +1.155 | [+1.092, +1.811] | <0.0001 | 40 | 40/40 |
+| ladder `onestep_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+03 | +4.281 | [+3.637, +5.376] | 0.0020 | 10 | 10/10 |
+| ladder `onestep_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +1.205 | [+1.066, +1.998] | 0.0020 | 10 | 10/10 |
+| ladder `onestep_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +1.007 | [+0.821, +1.138] | 0.0020 | 10 | 10/10 |
+| ladder `onestep_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+06 | +1.092 | [+0.820, +1.381] | 0.0020 | 10 | 10/10 |
+| ladder `committed_Q4_narrow` − `best_static` | ALL | +2.090 | [+1.532, +2.407] | <0.0001 | 40 | 40/40 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+03 | +6.558 | [+6.449, +6.981] | 0.0020 | 10 | 10/10 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +2.400 | [+2.233, +2.504] | 0.0020 | 10 | 10/10 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +1.322 | [+1.190, +1.514] | 0.0020 | 10 | 10/10 |
+| ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+06 | +1.418 | [+1.208, +1.723] | 0.0020 | 10 | 10/10 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -217,6 +245,8 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | C2 `shrinking_Q4_narrow` − `onestep_narrow` | ALL | -0.000 | [-0.000, -0.000] | n/a | 3 | 0/3 |
 | C3 `shrinking_Q4_narrow` − `committed_Q4_narrow` | ALL | +0.000 | [+0.000, +0.000] | n/a | 3 | 0/3 |
 | open_loop `best_open_loop` − `best_static` | ALL | +0.000 | [+0.000, +0.000] | n/a | 3 | 3/3 |
+| ladder `onestep_narrow` − `best_static` | ALL | +0.000 | [+0.000, +0.000] | n/a | 3 | 3/3 |
+| ladder `committed_Q4_narrow` − `best_static` | ALL | +0.000 | [+0.000, +0.000] | n/a | 3 | 3/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -273,6 +303,14 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | open_loop `best_open_loop` − `best_static` | mlp_d32_h128_c5_n512_cs128 | -1.522 | [-1.717, -0.670] | n/a | 3 | 0/3 |
 | open_loop `best_open_loop` − `best_static` | mlp_d32_h128_c5_n512_cs64 | +0.004 | [-0.697, +0.564] | n/a | 3 | 2/3 |
 | open_loop `best_open_loop` − `best_static` | mlp_d32_h128_c5_n512_fb | -1.921 | [-2.362, -1.096] | n/a | 3 | 0/3 |
+| ladder `onestep_narrow` − `best_static` | ALL | +0.597 | [+0.211, +14.629] | 0.0078 | 9 | 8/9 |
+| ladder `onestep_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs128 | +0.276 | [+0.211, +1.023] | n/a | 3 | 3/3 |
+| ladder `onestep_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs64 | +0.439 | [-0.205, +0.597] | n/a | 3 | 2/3 |
+| ladder `onestep_narrow` − `best_static` | mlp_d32_h128_c5_n512_fb | +14.629 | [+14.596, +14.938] | n/a | 3 | 3/3 |
+| ladder `committed_Q4_narrow` − `best_static` | ALL | -1.943 | [-4.158, +15.271] | 0.9102 | 9 | 3/9 |
+| ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs128 | -4.158 | [-4.167, -3.512] | n/a | 3 | 0/3 |
+| ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -1.943 | [-2.527, -0.988] | n/a | 3 | 0/3 |
+| ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_fb | +15.271 | [+14.596, +15.408] | n/a | 3 | 3/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -325,6 +363,12 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | open_loop `best_open_loop` − `best_static` | ALL | -0.897 | [-2.142, +0.284] | 0.1562 | 6 | 2/6 |
 | open_loop `best_open_loop` − `best_static` | mlp_d32_h128_c5_n512_cs64 | +0.004 | [-0.697, +0.564] | n/a | 3 | 2/3 |
 | open_loop `best_open_loop` − `best_static` | mlp_d32_h128_c5_n512_fb | -1.921 | [-2.362, -1.096] | n/a | 3 | 0/3 |
+| ladder `onestep_narrow` − `best_static` | ALL | +7.596 | [+0.117, +14.784] | 0.0625 | 6 | 5/6 |
+| ladder `onestep_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs64 | +0.439 | [-0.205, +0.597] | n/a | 3 | 2/3 |
+| ladder `onestep_narrow` − `best_static` | mlp_d32_h128_c5_n512_fb | +14.629 | [+14.596, +14.938] | n/a | 3 | 3/3 |
+| ladder `committed_Q4_narrow` − `best_static` | ALL | +6.804 | [-2.235, +15.340] | 0.4375 | 6 | 3/6 |
+| ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -1.943 | [-2.527, -0.988] | n/a | 3 | 0/3 |
+| ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_fb | +15.271 | [+14.596, +15.408] | n/a | 3 | 3/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -381,6 +425,14 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | open_loop `best_open_loop` − `best_static` | mlp_d32_h128_c5_n512_cs128 | -0.583 | [-0.597, -0.308] | n/a | 3 | 0/3 |
 | open_loop `best_open_loop` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -0.125 | [-0.132, -0.075] | n/a | 3 | 0/3 |
 | open_loop `best_open_loop` − `best_static` | mlp_d32_h128_c5_n512_fb | -1.585 | [-1.816, -0.665] | n/a | 3 | 0/3 |
+| ladder `onestep_narrow` − `best_static` | ALL | -0.268 | [-1.005, +13.946] | 0.8203 | 9 | 4/9 |
+| ladder `onestep_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs128 | -0.508 | [-1.727, -0.268] | n/a | 3 | 0/3 |
+| ladder `onestep_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -0.546 | [-1.005, +0.003] | n/a | 3 | 1/3 |
+| ladder `onestep_narrow` − `best_static` | mlp_d32_h128_c5_n512_fb | +13.946 | [+13.550, +14.183] | n/a | 3 | 3/3 |
+| ladder `committed_Q4_narrow` − `best_static` | ALL | -1.048 | [-1.735, +14.460] | 0.9102 | 9 | 3/9 |
+| ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs128 | -1.735 | [-2.049, -1.024] | n/a | 3 | 0/3 |
+| ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -1.059 | [-1.221, -1.048] | n/a | 3 | 0/3 |
+| ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_fb | +14.460 | [+14.093, +15.199] | n/a | 3 | 3/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 

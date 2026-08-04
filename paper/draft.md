@@ -1,8 +1,11 @@
-# When Does Feedback Help? Planning and Model Mismatch in Hessian-Free Newton Optimization
+# When Does Feedback Help? Planning and Model Mismatch in Hessian-Free Newton Control
 
 **초안 상태.** 이 문서는 `paper/claim_ledger.md` 에 등록된 주장만 쓴다. 새 해석을
 추가하지 않았다. Abstract / Introduction / Discussion / Conclusion 의 주장 강도는
-리뷰어 검토 대상이다. 제목도 후보 두 개 중 덜 단정적인 쪽을 임시로 골랐다.
+리뷰어 검토 대상이다.
+
+`Planning Is Not Feedback` 은 Discussion 소제목으로만 쓴다. 첫 arXiv 원고 제목으로는
+단정적이다.
 
 모든 수치는 `docs/results_stage2.md` 에서 왔고 출처는 `paper/evidence_map.md` 의
 SHA-256 으로 고정된다. **본문에서 숫자를 손으로 고치지 않는다.**
@@ -22,11 +25,12 @@ Hessian-free Newton-CG 에서 damping 과 CG 반복 예산을 최적화 도중 �
 seed 로 한 번 고정한 뒤 **분리된 held-out seed 40 인스턴스**에서 측정했다.
 
 튜닝된 상수 설정 대비 다단계 재계획 planner 의 개선은 `+1.690 nat`(95% CI
-`+1.462 ~ +2.368`, `p<0.0001`, 40/40 인스턴스)였다. 이를 분해하면 `+1.233 nat` 가
-1-step 상태 의존 제어에서, `+0.456 nat`(CI `+0.254 ~ +0.720`, `p<0.0001`)가 다단계
-lookahead 에서, `+0.010 nat`(CI `−0.033 ~ +0.053`, `p=0.97`)가 실행 중 재계획에서
-왔다. 즉 초기 상태에서 한 번 계획하고 그대로 실행하는 oracle 과 매 step 재계획하는
-oracle 사이에서 **실용적으로 큰 차이가 관측되지 않았다.**
+`+1.462 ~ +2.368`, `p<0.0001`, 40/40 인스턴스)였다. 같은 기준에서 1-step 상태 의존
+제어만으로 `+1.155 nat`(CI `+1.092 ~ +1.811`)를 얻는다. 직접 측정한 증분은 다단계
+lookahead 가 `+0.456 nat`(CI `+0.254 ~ +0.720`, `p<0.0001`, 35/40), 실행 중 재계획이
+`+0.010 nat`(CI `−0.033 ~ +0.053`, `p=0.97`, 21/40)였다. 즉 초기 상태에서 한 번
+계획하고 그대로 실행하는 oracle 과 매 step 재계획하는 oracle 사이에서 **실용적으로
+큰 차이가 관측되지 않았다.**
 
 탐색적 확장으로, 같은 모델과 데이터에 대해 optimizer 가 보는 표본만 바꾼
 micro-neural 문제를 두 regime 에서 비교했다. minibatch regime 에서는 낡은 계획을
@@ -75,16 +79,23 @@ step 당 CG 반복 예산                        [CITATION NEEDED]
 *(강도 조정은 리뷰어 검토 대상이다.)*
 
 ```text
-1  고정 예산 하 자원 제어 이득을 상수 / 스케줄 / 1-step / 다단계 / feedback 으로
-   분해하고, 사전 고정 설정으로 held-out 40 인스턴스에서 측정했다
-2  다단계 lookahead 가 1-step greedy 를 held-out 에서 이긴다는 것을 보였다
+1  Newton-CG 의 damping 과 CG 자원 배분을 순차적 의사결정 문제로 구성한다
+2  static -> open-loop -> greedy -> committed planning -> feedback replanning 을
+   분해해 동일 GE 예산에서 비교한다
+3  held-out quadratic 에서 다단계 planning 의 추가 가치를 확인하고
    (+0.456 nat, CI +0.254~+0.720, p<0.0001, 35/40)
-3  결정론적 quadratic 에서 실행 중 재계획의 실용적으로 큰 추가 이득이 관측되지
-   않았음을 보고한다 (+0.010 nat, CI −0.033~+0.053)
-4  benchmark 적격성을 참조 solver panel 의 도달 가능 상한으로 판정하는 절차를
-   제시하고, 수치 하한 기준이 실패하는 실측 사례를 보인다
-5  정책 학습을 진행하지 않은 결정을 사전 등록한 게이트로 정당화한다
+   feedback 의 추가 가치는 관측하지 못했다
+   (+0.010 nat, CI −0.033~+0.053)
+4  수치 floor 와 reachable optimum 을 함께 고려한 benchmark eligibility audit
+   절차를 제시한다
 ```
+
+`4` 는 **보조 기여**다. 본문에서는 Methods 의 일부(`§5`)로 두고 Discussion 에서
+회수한다. 범용 benchmark framework 나 새 일반 이론이라고 부르지 않는다. 현재 증거는
+이 프로젝트의 benchmark 를 교정한 경험적 절차까지다.
+
+정책 학습을 진행하지 않은 결정은 기여 목록에 넣지 않는다. `§12` 에서 **과학적
+결론과 프로젝트 go/no-go 결정을 분리해** 서술한다.
 
 ---
 
@@ -481,17 +492,49 @@ Table 6. held-out median.
 
 ## 8. Where does the headroom come from?
 
-`+1.690 nat` 의 분해다.
+**쌍별 차이의 median 은 선형이 아니다.** 따라서 아래 값들은 하나의 합으로 분해되지
+않는다. 각각을 **독립적으로 측정한 통계**로 읽어야 한다.
+
+Table 7. held-out `n=40`, 모두 튜닝된 상수를 기준으로 한 쌍별 median.
+
+| treatment | median | 95% CI | p | 양수 |
+|---|---|---|---|---|
+| `best_open_loop` | +0.395 | [+0.350, +0.476] | <0.0001 | 40/40 |
+| `onestep_narrow` | +1.155 | [+1.092, +1.811] | <0.0001 | 40/40 |
+| `committed_Q4_narrow` | +2.090 | [+1.532, +2.407] | <0.0001 | 40/40 |
+| `shrinking_Q4_narrow` (A2) | +1.690 | [+1.462, +2.368] | <0.0001 | 40/40 |
+
+증분 비교는 **직접 쌍별로 측정한 것만** 쓴다.
+
+| 비교 | median | 95% CI | p | 양수 |
+|---|---|---|---|---|
+| `shrinking` − `onestep` (C2) | +0.456 | [+0.254, +0.720] | <0.0001 | 35/40 |
+| `shrinking` − `committed` (C3) | +0.010 | [−0.033, +0.053] | 0.97 | 21/40 |
+
+### 8.1 표의 값을 서로 빼면 안 된다
+
+`committed` 의 상수 대비 값(`+2.090`)이 `shrinking` 의 값(`+1.690`)보다 크다. 그러나
+직접 측정한 `shrinking − committed` 는 `+0.010` 이다. 두 진술은 모순이 아니다.
 
 ```text
-best_static → best_open_loop    +0.395   고정 4구간 스케줄. 상태 미관측
-best_static → onestep           +1.233   1-step 상태 의존 제어
-onestep     → shrinking         +0.456   다단계 lookahead        (C2, GO)
-committed   → shrinking         +0.010   실행 중 재계획          (C3)
+spec 별 shrinking − committed
+κ=10³  +0.472    κ=10⁴  −0.019    κ=10⁵  +0.009    κ=10⁶  +0.000
 ```
 
-이득의 대부분은 **비정상적 제어 자체**에서 온다. 다단계 lookahead 가 그 위에 유의한
-증분을 더한다. 실행 중 재계획의 증분은 실용적으로 크지 않다.
+각 spec 안에서 두 planner 는 사실상 동률이다. pooled median 이 서로 다른 인스턴스에
+떨어져 `+2.090` 과 `+1.690` 이라는 marginal 값 차이가 생긴다. **비교는 직접 쌍별
+통계로만 한다.** Figure 1(b) 에도 같은 경고를 넣었다.
+
+초판 초안은 `onestep` 의 상수 대비 값을 `A2 − C2 = 1.690 − 0.456 = 1.233` 으로
+계산했다. **틀렸다.** 직접 측정값은 `+1.155` 다.
+
+### 8.2 정성적 결론
+
+```text
+비정상적 제어 자체        상수 -> 1-step 에서 +1.155.  가장 큰 단일 기여
+다단계 lookahead 의 증분  1-step -> planner 에서 +0.456,  CI 하한 +0.254
+실행 중 재계획의 증분     committed -> planner 에서 +0.010,  CI [−0.033, +0.053]
+```
 
 `Q1` 은 지지된다. `Q2` 는 이 조건에서 지지되지 않는다.
 
@@ -685,29 +728,54 @@ gradient 를 계산한 batch 의 loss 를 줄이는 것은 쉽다. 대체 기준
 
 ## 12. Why we did not train a policy
 
-사전 등록한 게이트를 데이터에 적용한 결과다.
+이 절은 **두 가지를 분리해** 서술한다. 하나는 데이터가 지지하는 과학적 결론이고,
+다른 하나는 자원 투입에 관한 프로젝트 결정이다. 둘을 섞으면 게이트 임계값을 학문적
+경계처럼 방어해야 한다.
+
+### 12.1 Scientific conclusion
+
+> The experiments did not establish a consistent performance advantage for feedback
+> replanning over committed planning or inexpensive one-step control.
+
+근거는 다음이다.
 
 ```text
 결정론적 quadratic (held-out n=40)
   C3 = +0.010 nat, CI [−0.033, +0.053].  실용적으로 큰 feedback 이득 미관측
 
 minibatch micro-neural (exploratory n=3)
-  C3 > 0 이지만 원인은 committed 붕괴다
+  C3 > 0 이지만 원인은 committed 붕괴다 (§10.3)
   planner 가 튜닝된 상수와 1-step greedy 를 모두 이기지 못한다
-
-탐색 비용
-  decision-search 가 배포 예산의 1,294배
 ```
-
-상태 의존 정책은 상태가 변할 때 행동을 바꾸는 것에 가치가 있어야 정당화된다
-`[CITATION NEEDED]`. 위 조건에서 그런 가치를 확인하지 못했다.
-
-> 우리는 사전 등록한 게이트 기준에서 상태 의존 feedback 정책을 학습할 실험적 근거를
-> 확보하지 못했으므로 정책 학습을 진행하지 않았다.
 
 **이것은 강화학습이 이 문제에서 실패한다는 주장이 아니다.** 정책을 학습하지 않았으므로
 학습 방법의 성능에 대해 말할 수 없다. 우리가 측정한 것은 oracle planner 의 헤드룸
 분해다.
+
+### 12.2 Project decision
+
+> Under our predeclared go/no-go criteria, this evidence was insufficient to justify the
+> additional complexity and computation required for PPO training.
+
+`decision-search` 비용이 배포 예산의 `1,294배` 라는 점도 이 판단에 들어간다. 상태 의존
+정책은 상태가 변할 때 행동을 바꾸는 것에 가치가 있어야 정당화된다 `[CITATION NEEDED]`.
+
+### 12.3 게이트의 지위
+
+게이트 임계값(`C3 ≥ 0.3 nat` 등)은 **이론적 보편 기준이 아니다.** 다음 성격을
+명시한다.
+
+```text
+정책 학습은 별도의 큰 실험 단계를 요구한다
+따라서 사전에 최소 효과 크기, 부호 일관성, 다단계 사용 여부, 전이 조건을 등록했다
+게이트는 통계적 진리 판정이 아니라 scope-control 장치다
+결과를 본 뒤 임계값을 바꾸지 않았다
+```
+
+우리는 이 임계값이 옳다고 주장하지 않는다. **결과를 보기 전에 고정했고 이후 바꾸지
+않았다는 것만 주장한다.**
+
+### 12.4 후속 방향
 
 `C2` 가 held-out 에서 GO 라는 것은 좋은 다단계 시퀀스가 존재한다는 뜻이고, `C3` 가
 작다는 것은 그 시퀀스를 초기 상태에서 정할 수 있다는 뜻이다. 이 조합은 step 단위
@@ -716,7 +784,63 @@ feedback 정책보다 **초기 문제 특징에서 스케줄을 예측하는 amo
 
 ---
 
-## 13. Limitations
+## 13. Discussion
+
+### 13.1 Planning is not feedback
+
+이 연구의 사다리에서 이득이 나온 구간과 나오지 않은 구간이 갈린다.
+
+```text
+좋아짐    상수 -> 스케줄 -> 1-step -> 다단계 계획
+안 좋아짐  다단계 계획 -> 다단계 계획 + 실행 중 피드백
+```
+
+`Q1`(좋은 시퀀스가 존재하는가)은 지지되고 `Q2`(실행 중 수정할 가치가 있는가)는 이
+조건에서 지지되지 않는다. 결정론적 목적함수에서는 planner 의 내부 모델이 정확하므로
+초기 상태에서 세운 계획이 이미 최적 예측이고 재계획이 새 정보를 얻지 못한다.
+
+### 13.2 모델 오차가 planning 의 가치를 지운다
+
+탐색적 micro-neural 결과는 방향을 하나 더 제시한다. minibatch regime 에서는 낡은
+계획을 고수하는 것이 큰 손해였지만(거절률 `0.00 → 0.66~0.79`), planner 자체도 튜닝된
+상수와 1-step greedy 를 이기지 못했다.
+
+즉 모델이 정확할 때 planning 이 가치가 있고 feedback 은 없으며, 모델이 부정확해지면
+planning 의 가치도 사라진다. **`n=3` exploratory 이므로 크기를 주장하지 않는다.**
+
+### 13.3 Benchmark audit 이 왜 필요했는가
+
+> Our benchmark audit was necessary because nominal numerical ceilings and task labels
+> did not reliably identify whether a problem could distinguish controllers.
+
+이 프로젝트에서 실제로 결론을 뒤집은 문제들이다.
+
+```text
+수치 하한에 의한 joint saturation           초기 dev subset 2/3 spec
+one-sided saturation                        쌍 삭제가 좋은 결과를 제거
+Rosenbrock 의 도달 가능한 국소최소점         적격 판정을 통과했다
+같은 seed 가 같은 인스턴스를 만든 문제        n=3 이 실제로 n=1
+전역 optimum 기준과 시작점 basin 기준 ceiling 의 차이
+단일 reference solver 의 실패 가능성          k=1e6 에서 L-BFGS 미수렴
+```
+
+`task 이름으로 포화를 판정한다` 는 초기 규칙과 `수치 하한으로 상한을 계산한다` 는
+초기 규칙이 모두 틀렸다. 그래서 참조 solver panel 과 도달 가능 상한을 도입했다.
+
+**범용 benchmark framework 를 제안하는 것이 아니다.** 이 프로젝트의 benchmark 를
+교정한 경험적 절차이며, 유사한 controller 비교를 설계할 때 확인할 항목 목록으로
+읽히기를 의도한다.
+
+### 13.4 값싼 방법이 놓치는 것
+
+`onestep` 은 탐색 비용이 예산의 `7.9배` 로 planner 의 `1/164` 이면서 튜닝 상수 대비
+`+1.155 nat` 를 얻는다. planner 는 `+1.690 nat` 를 얻지만 탐색 비용이 `1,294배` 다.
+직접 측정한 증분 `+0.456 nat` 는 통계적으로 견고하나 그 대가가 이 비용 차이다.
+실용적 관점에서 이것이 현재 결과의 가장 직접적인 함의다.
+
+---
+
+## 14. Limitations
 
 ### 우리가 주장하지 않는 것
 
@@ -741,6 +865,9 @@ feedback 정책보다 **초기 문제 특징에서 스케줄을 예측하는 amo
 
 "micro-neural 결과가 quadratic 결과를 뒤집는다"
   n=3 exploratory 대 n=40 held-out 이다
+
+쌍별 median 을 더하거나 빼서 만든 값
+  median 은 선형이 아니다. 비교는 직접 쌍별 측정으로만 한다 (§8.1)
 ```
 
 ### 프로토콜 이탈
@@ -751,16 +878,36 @@ E2  (quad κ=10⁵, seed 2) 가 초기 dev audit 과 설정 선택에 중복된�
 E3  일부 실행 시 커밋되지 않은 변경이 있었다. code_dirty 로 기록된다
 E4  held-out 실행 중 테스트를 병행했다. wall-clock 기록이 부정확하나 수치 결과와
     판정에는 영향이 없다 (단일 스레드 결정론적 연산)
-E5  일부 summary 의 provenance git_commit 이 빈 문자열이었다. 수정하고 raw 레코드의
-    per-run 커밋으로 복원했다
+E5  summary 수준 provenance 의 commit 필드 누락 (아래)
 E6  수락 기준 ablation 이 단일 요인 변경이 아니다 (§11.5)
 E7  R1 의 대체 기준 열은 예산 교란이다 (§11.5)
 E8  게이트 C1 은 seed 1개 진단 baseline 이므로 판정에 쓰지 않았다
 E9  3층 보고가 게이트 A1/B 에는 미적용이며 단일 통계를 쓴다
-E10 spec 별 분해와 all-task 통계가 한동안 다른 median 규약을 썼다. n=10 에서
-    0.01~0.09 nat 규모로 갈렸다. 단일 규약으로 통일하고 수치를 정정했다.
-    설정 선택 결과는 표본이 4의 배수여서 영향이 없었다
+E10 median 규약 불일치 (아래)
+E11 결과 식별자에 해당 run 이 쓰지 않는 설정이 포함되어 있었다 (아래)
 ```
+
+**E5.**
+
+> Summary-level provenance omitted the commit field because of a reporting bug; the
+> corresponding per-run raw records retained the commit, allowing deterministic
+> reconstruction.
+
+**E10.**
+
+> An earlier diagnostic script used an upper-middle convention for even sample counts,
+> whereas the main paired analysis used the conventional arithmetic median. All
+> reporting code was unified before manuscript generation; the selected configuration
+> and qualitative conclusions were unchanged.
+
+**E11.**
+
+> Run identifiers initially embedded the full target table rather than only the targets
+> used by the corresponding task family. Adding a target entry for an unrelated task
+> family therefore invalidated the cost-to-target runs of the quadratic suite. We
+> restricted the identifier to the targets actually used and re-executed those runs; the
+> fixed-budget comparisons were unaffected, and the cost-to-target statistic is a
+> re-aggregation of the same measurements.
 
 ### 범위
 
@@ -773,7 +920,7 @@ planner 는 oracle 이다. 배포 가능한 방법이 아니다
 
 ---
 
-## 14. Reproducibility
+## 15. Reproducibility
 
 ```text
 재현 명령        docs/reproduce.md

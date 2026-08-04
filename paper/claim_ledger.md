@@ -56,15 +56,17 @@ status       SUPPORTED
 
 ```text
 Evidence     held-out n=40
-             onestep_absolute − best_static = +1.263 nat  (게이트 A1)
-             95% CI +0.905 ~ +3.957,  p<0.0001,  12/12 양수 (dev)
-             held-out: +1.423 nat
-             shrinking − best_static − (shrinking − onestep) = +1.233 nat 로 정합
-source       docs/results_stage2.md
+             onestep_narrow − best_static  = +1.155 nat
+             95% CI +1.092 ~ +1.811,  p<0.0001,  40/40 양수
+             onestep_absolute − best_static = +1.423 nat  (게이트 A1)
+source       docs/results_stage2.md  (ladder 행)
 raw          headroom_challenge-heldout_...9a18b6e9.jsonl
 protocol     게이트 A1, D26
 status       SUPPORTED
 ```
+
+**금지.** `A2 − C2` 로 이 값을 계산하지 않는다. 쌍별 차이의 median 은 선형이 아니다.
+초판 초안이 `1.690 − 0.456 = 1.233` 으로 적었고 직접 측정값은 `+1.155` 다 (C26).
 
 ### C3. 다단계 planning 이 held-out 에서 one-step 제어를 이긴다
 
@@ -143,22 +145,35 @@ status       SUPPORTED
 
 **이 수치를 숨기지 않는다.** 보고된 헤드룸은 예산의 1,294배를 쓴 oracle 값이다.
 
-### C7. 총 헤드룸의 분해
+### C7. 사다리별 측정값. **합으로 분해되지 않는다**
 
 ```text
-Evidence     held-out n=40
-             best_static → open_loop     +0.395
-             best_static → onestep       +1.233
-             onestep     → shrinking     +0.456
-             committed   → shrinking     +0.010
-             합계 A2 = shrinking − best_static = +1.690
-source       docs/results_stage2.md
+Evidence     held-out n=40. 모두 튜닝 상수 기준 쌍별 median
+             best_open_loop        +0.395   CI +0.350 ~ +0.476   40/40
+             onestep_narrow        +1.155   CI +1.092 ~ +1.811   40/40
+             committed_Q4_narrow   +2.090   CI +1.532 ~ +2.407   40/40
+             shrinking_Q4_narrow   +1.690   CI +1.462 ~ +2.368   40/40   (A2)
+
+             직접 측정한 증분
+             shrinking − onestep   +0.456   CI +0.254 ~ +0.720   35/40   (C2)
+             shrinking − committed +0.010   CI −0.033 ~ +0.053   21/40   (C3)
+source       docs/results_stage2.md  (ladder 행 포함)
 protocol     D26
 status       SUPPORTED
 ```
 
-`+1.690 nat` 중 `+1.233` 이 "비정상성 자체", `+0.456` 이 "다단계 계획", `+0.010` 이
-"상태 피드백"이다.
+**표의 값을 서로 빼지 않는다.** `committed` 의 상수 대비 값(`+2.090`)이 `shrinking`
+의 값(`+1.690`)보다 크지만 직접 측정한 `shrinking − committed` 는 `+0.010` 이다.
+spec 별로는 `+0.472 / −0.019 / +0.009 / +0.000` 로 두 planner 가 사실상 동률이고,
+pooled median 이 서로 다른 인스턴스에 떨어져 marginal 값 차이가 생긴다.
+
+정성적 결론만 주장한다.
+
+```text
+가장 큰 단일 기여   상수 -> 1-step 의 +1.155
+다단계 증분        +0.456,  CI 하한 +0.254
+재계획 증분        +0.010,  CI [−0.033, +0.053]
+```
 
 ### C8. Benchmark eligibility 는 수치 하한이 아니라 **도달 가능한** 상한으로 판정해야 한다
 
@@ -412,6 +427,20 @@ status       EXPLORATORY (해석 주의 항목)
 대체   C16. 불일치 자체를 결과로 보고한다 (D9)
 ```
 
+### C26. 쌍별 median 을 더하거나 빼서 만든 값
+
+```text
+이유   쌍별 차이의 median 은 선형이 아니다. 실측에서
+         median(committed − constant)  = +2.090
+         median(replanning − constant) = +1.690
+         median(replanning − committed)= +0.010
+       marginal 값 차이 −0.400 과 직접 측정한 +0.010 이 다르다
+       초판 초안이 onestep 의 상수 대비 값을 A2 − C2 = 1.233 으로 적었다.
+       직접 측정값은 +1.155 다
+대체   비교하려는 두 컨트롤러를 직접 쌍별로 측정한다.
+       make_report.py 가 ladder 행으로 모든 조합을 생성한다
+```
+
 ### C25. "설정을 held-out 결과로 선택했다"
 
 ```text
@@ -463,6 +492,23 @@ status       EXPLORATORY (해석 주의 항목)
 [E9] three_layer 보고가 A1/B 게이트에는 미적용
      단일 통계를 쓴다
      source: docs/reproduce.md 알려진 한계
+
+[E10] spec 별 분해와 all-task 통계가 한동안 다른 median 규약을 썼다
+     n=10 에서 0.01~0.09 nat 규모로 갈렸다. 단일 규약(metrics.median_of)으로 통일하고
+     수치를 정정했다. 설정 선택 결과는 표본이 4의 배수여서 영향이 없었다
+     원고 문장:
+       An earlier diagnostic script used an upper-middle convention for even sample
+       counts, whereas the main paired analysis used the conventional arithmetic
+       median. All reporting code was unified before manuscript generation; the
+       selected configuration and qualitative conclusions were unchanged.
+     source: docs/experiment_protocol.md D22 (median 규약 절)
+
+[E11] run_semantics_id 에 이 run 이 쓰지 않는 설정이 들어 있었다
+     TARGETS 에 micro-neural 항목을 추가한 것만으로 quadratic held-out 의 Track T
+     240 run 이 무효화됐다. 실제로 쓰는 spec 종류의 target 만 넣도록 고쳤다.
+     Track E 는 영향이 없고 게이트 D 값도 변하지 않는다 (같은 run 재집계).
+     표시용 config_hash 에 acceptance_loss 를 무조건 넣은 것도 같은 유형이었다.
+     source: docs/experiment_protocol.md D32
 ```
 
 ## 인용이 필요한 위치

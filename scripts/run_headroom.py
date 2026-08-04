@@ -302,8 +302,13 @@ def build_config(args: argparse.Namespace) -> tuple[HeadroomConfig, dict]:
         "difficulty": args.difficulty,
         "n_specs": len(specs),
         "narrow_only": bool(args.narrow_only),
-        "acceptance_loss": args.acceptance_loss,
     }
+    # **기본값이면 넣지 않는다.** `meta` 는 표시용 `config_hash` 를 만들고 그것이
+    # raw 파일 경로를 정한다. 무조건 넣으면 기본 설정 실험의 파일 경로가 바뀌어
+    # 기존 결과가 캐시에서 빠지고 전부 재실행된다. 정체성은 이미
+    # `run_semantics_id` 가 담당한다 (D28).
+    if args.acceptance_loss != "control":
+        meta["acceptance_loss"] = args.acceptance_loss
     return config, meta | {"spaces": (narrow, wide, absolute)}
 
 

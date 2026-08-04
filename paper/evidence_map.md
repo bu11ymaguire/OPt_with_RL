@@ -11,7 +11,7 @@
 
 | raw | 역할 | 완료 | 실패 | beam | 예산 GE | 수락 규칙 |
 |---|---|---|---|---|---|---|
-| `headroom_challenge-heldout_step_size_fixed_b8_9a18b6e9.jsonl` | held-out confirmation | 960 | 0 | 8 | 150 | `control` |
+| `headroom_challenge-heldout_step_size_fixed_b8_9a18b6e9.jsonl` | held-out confirmation | 1200 | 0 | 8 | 150 | `control` |
 | `headroom_challenge_step_size_fixed_b8_fc78c2ad.jsonl` | configuration selection | 30 | 0 | 8 | 150 | `control` |
 | `headroom_challenge_step_size_fixed_b8_fed9aebd.jsonl` | configuration selection | 360 | 0 | 8 | 150 | `control` |
 | `headroom_micro-neural_step_size_fixed_b8_0bec1125.jsonl` | exploratory ablation | 216 | 0 | 8 | 150 | `control` |
@@ -29,19 +29,21 @@
 최종 효과 추정 (D26)
 
 ```text
-sha256          2bf3803b39001a63fe01328a2ef7e1676f0b3ea0274a9917efc4c886b7ef291a
-완료 / 실패     960 / 0
+sha256          95b0d3c2191b05cdeb2faff89fa9ca617c0acf06b798d1823d307b3f5cad5f7a
+완료 / 실패     1200 / 0
 sweep_id        d540541777d40c93
-aggregation_id  ec5019fa2cc67699
-git_commit      9679fe33 (dirty)
+aggregation_id  1fb5800f9248290c
+git_commit      b713c1d9 (dirty)
 seeds           [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
-experiment_id   10종
+experiment_id   12종
                 0566cacd125cdcbb
                 210db6664bffcbf2
+                21e70d55aa18d500
                 339ac7dda0d4ca07
                 4924921c77395980
                 5f31db4e5f5a8756
                 635c65850b755cd2
+                af464282a6567662
                 b9b6e7b5e2c79268
                 bd0ec1988f4efbb5
                 f18cc7378a679b2d

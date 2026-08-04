@@ -354,9 +354,20 @@ class HeadroomConfig:
             payload["open_loop_semantics"] = OPEN_LOOP_SEMANTICS_VERSION
             payload["progress_clock"] = OpenLoopController._CLOCK
         if uses_target:
+            # **이 실행이 실제로 쓰는 spec 종류의 target 만 넣는다.**
+            #
+            # 초판은 `self.targets` 전체를 넣었다. 그래서 관계없는 task 족의 target
+            # 을 추가하기만 해도 **모든 Track T run 의 `run_semantics_id` 가 바뀌어
+            # 재실행됐다.** micro-neural target 을 추가했을 때 quadratic held-out 의
+            # Track T 240 run 이 무효화됐다. D13 이 막으려던 실패 그대로다.
+            #
+            # 개별 target 문자열은 `RunKey.target` 에 이미 들어 있으므로 여기서는
+            # "이 spec 종류에 어떤 난이도 사다리를 썼는가" 만 고정하면 된다.
+            kinds = {spec_kind_label(spec) for spec in self.specs}
             payload["targets"] = {
-                kind: {level: spec.label for level, spec in levels.items()}
+                kind: {level: target.label for level, target in levels.items()}
                 for kind, levels in self.targets.items()
+                if kind in kinds
             }
         if extra:
             payload.update(dict(extra))
