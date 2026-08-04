@@ -527,6 +527,84 @@ Track T 지표(`cost_to_target_ge`, `reached`)는 목표 도달 시점으로 정
 `B ≤ A` 였다. **고정 예산 비교에서는 "예산"과 "실제 소모량"을 항상 함께
 확인한다.**
 
+### D19. 포화는 task 이름이 아니라 `floor_hit`으로 판정하고, spec별로 보고한다
+
+D14 초판은 `rosen_d2 제외 = primary` 로 정의했다. **틀렸다.** 포화는 task 이름이
+아니라 실제 `floor_hit` 으로 발생한다.
+
+#### 실측: `quad_spd`도 포화 task였다
+
+```text
+quad_spd_d64_k1e+02  shrinking vs C0
+  seed0  loss 1.69e-20 vs 1.14e-18   GE 139.1 vs 134.3   steps 7 vs 11
+  seed1  loss 1.03e-19 vs 2.62e-21   GE 139.1 vs 147.6   steps 7 vs 12
+  seed2  loss 5.41e-20 vs 8.86e-19   GE 139.1 vs 135.6   steps 7 vs 12
+  -> trajectory 가 전부 다른데 delta 가 정확히 0
+```
+
+`L0` 이 약 `1e2` 규모이므로 floor 는 `1e-12` 근처다. 관측된 loss 는 `1e-18~1e-21`
+로 floor 훨씬 아래다. 양쪽이 cap 되어 같은 값이 된다.
+
+이 spec 의 결론은 "적응 제어가 실패했다" 가 아니다.
+
+> 150 GE 에서는 모든 강한 방법이 요구 정밀도를 넘어 수렴해 차이를 식별할 수 없다.
+
+**benchmark calibration 결과다.**
+
+#### joint saturation과 one-sided saturation을 구별한다
+
+```text
+joint saturation      양쪽 모두 floor. 구분력이 없다
+one-sided saturation  한쪽만 floor. **그 컨트롤러가 명확히 우수하다는 증거다**
+```
+
+`rosen_d2` 에서 `shrinking − best_static = −5.422` (3 seed 전부)가 나왔다. 이것은
+`best_static` 만 floor 에 도달한 one-sided saturation 이므로 **명확한 성능 차이**
+다. "구분 불가" 가 아니다.
+
+#### `drop_saturated_pairs`를 primary 게이트로 승격하지 않는다
+
+비교 쌍마다 표본이 달라지고, one-sided saturation 쌍을 삭제하면 **좋은 결과를
+제거한다.** 실측에서 그 위험이 확인됐다.
+
+```text
+A2 all-task            +0.000 nat  n=9
+A2 pairwise nonsat      −2.675 nat  n=6   부호가 반대다
+```
+
+`rosen_d2` 의 `−5.422` 가 삭제되지 않고 median 에 남아 방향을 뒤집었다. 민감도
+분석으로만 쓴다.
+
+#### spec별 보고가 핵심이다
+
+전체 median 하나로 요약하면 난이도별 차이가 사라진다.
+
+```text
+beam 4 pilot, shrinking Q4 narrow
+                                  vs best_static   vs C0      vs committed
+quad_ill_conditioned d100 k1e+05     +0.494        +0.542       +0.370
+quad_spd d64 k1e+02                  +0.000        +0.000       +0.000
+rosen_d2_s100_std                    −5.422        +0.000       +0.000
+```
+
+세 spec 의 역할이 다르다.
+
+| Spec | 관측된 역할 |
+|---|---|
+| `quad_spd κ=1e2` | joint saturation 으로 구분 불가 |
+| `rosen_d2` | `best_static` 이 planner 보다 명확히 우수한 easy regime |
+| `quad_ill κ=1e5` | adaptive planning 의 양의 headroom 후보 |
+
+정확한 진술은 이것이다.
+
+> Well-conditioned quadratic 은 모든 강한 방법이 numerical floor 에 도달해 구분력이
+> 없었고, Rosenbrock (d=2) 에서는 best static 이 planner 보다 우수했으며,
+> ill-conditioned quadratic 에서만 adaptive planning 의 일관된 양의 headroom 이
+> 관측됐다.
+
+**측정 가능한 regime 이 현재 하나뿐이다.** "실질 표본이 3쌍" 이라기보다 이렇게
+말하는 것이 정확하다.
+
 ### D18. Bridge 검증 규칙을 실행 전에 수치로 고정한다
 
 D13(3계층 정체성), D16(selection manifest), D17(open-loop resource clock) 은
@@ -838,27 +916,23 @@ floor 처리 때문에 paired delta 가 기계적으로 0 으로 고정
   A2 = +0.000, C2 = +0.000, C3 = +0.000  (전부 joint=3)
 ```
 
-##### 세 층을 **동시에** 보고한다
+##### 세 층을 **동시에** 보고한다 (D19에서 재정의)
 
 ```text
-Primary nonsaturated task set        quadratic 2 specs x 3 seeds   n=6
-All-task floor-capped sensitivity    기존 9쌍                      n=9
-Rosenbrock d2 saturation diagnostic  rosen_d2 x 3 seeds            n=3
+[1] all-task floor-capped        n=9. joint / one-sided / unsat 개수를 함께
+[2] spec 별                      난이도 regime 별 median 과 개별 delta
+[3] pairwise nonsaturated 민감도  비교마다 n 이 달라진다. **primary 아님**
 ```
 
-**`n=6` 결과만 primary 로 바꾸고 `n=9` 를 숨기지 않는다.** 둘을 함께 내야 선택적
-제외 논란을 피할 수 있다.
+**`rosen_d2 제외 = primary` 정의는 폐기했다** (D19). 포화는 task 이름이 아니라
+실제 `floor_hit` 으로 발생한다. `quad_spd` 도 floor 아래로 내려가 컨트롤러를
+구분하지 못한다.
 
-`d=2` 진단 표에는 정확한 0 도달률, floor-hit 비율, GE-to-zero, 컨트롤러별 step
-수를 넣는다.
+`GO` / `재설계` 이진 라벨보다 **개별 paired delta 를 함께 출력**한다. 표본이
+작아 CI 와 p-value 가 거칠기 때문이다.
 
-**전체 GE budget 을 낮추지 않는다.** 낮추면 어려운 quadratic 과 Rosenbrock 에서
-필요한 헤드룸까지 제거된다.
-
-##### `n=6` 은 표본이 작다
-
-`GO` / `재설계` 이진 라벨보다 **6개 개별 paired delta 를 함께 출력**한다. CI 와
-p-value 가 거칠기 때문이다.
+**전체 GE budget 을 낮추지 않는다.** 낮추면 어려운 quadratic 에서 필요한 헤드룸까지
+제거된다.
 
 ### D15. 재계획이 계획을 실제로 바꿨는지 행동 내용으로 계측한다
 

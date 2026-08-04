@@ -104,7 +104,7 @@ SELECTION_SEMANTICS_VERSION = 1
 재현 가능해야 한다.
 """
 
-AGGREGATION_VERSION = 3
+AGGREGATION_VERSION = 4
 """집계 의미 버전 (프로토콜 D13/D14).
 
 log floor 정책, 포화 분류, paired intersection 규칙, bootstrap 설정, 게이트
@@ -113,6 +113,9 @@ log floor 정책, 포화 분류, paired intersection 규칙, bootstrap 설정, �
 2: D14 relative loss floor 와 포화 분류 도입.
 3: primary(비포화 task) / all-task / saturation diagnostic 3층 보고 도입.
    bridge 분류에서 범위 밖(``LEGACY_ONLY_OUT_OF_SCOPE``)과 누락을 구별.
+4: 3층 보고를 all-task / spec별 / pairwise-nonsaturated 로 재정의 (D19).
+   ``rosen_d2 제외 = primary`` 정의 폐기. 포화는 task 이름이 아니라 ``floor_hit``
+   으로 발생하고, ``drop_saturated_pairs`` 는 민감도 분석으로만 쓴다.
 """
 
 

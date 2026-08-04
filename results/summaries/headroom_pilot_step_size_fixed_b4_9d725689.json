@@ -31,7 +31,7 @@
   },
   "experiment_id": "803f20c4bc9d7c0f",
   "sweep_id": "6a1e925383730305",
-  "aggregation_id": "bb601c5746f0ae2c",
+  "aggregation_id": "ec5019fa2cc67699",
   "identity": {
     "protocol_version": "stage2-v1",
     "phase": "pilot",
@@ -186,7 +186,7 @@
     "code_dirty": true,
     "hostname": "DESKTOP-O4MPS5M",
     "platform": "Windows 11",
-    "recorded_at": "2026-08-04T03:42:08.640151+00:00"
+    "recorded_at": "2026-08-04T03:56:01.000042+00:00"
   },
   "selections": {
     "static": {
@@ -787,7 +787,7 @@
       "verdict": "재설계",
       "go_threshold": 0.7,
       "pivot_threshold": 0.2,
-      "nonsaturated": "primary(포화 ['rosen_d2'] 제외) +0.036 nat n=6 CI +0.000~+0.615 | all-task +0.000 nat n=9 포화 joint=3 | primary 개별 [+0.000, +0.000, +0.000, +0.737, +0.494, +0.072]",
+      "nonsaturated": "[1] all-task floor-capped  +0.000 nat  n=9  CI -5.422~+0.494  joint=3 one-sided=0 unsat=6  (+3/0×3/−3)\n      [2] quad_ill_conditioned_d100_k1e+05   median +0.494 n=3 [+0.737, +0.494, +0.072]\n      [2] quad_spd_d64_k1e+02                median +0.000 n=3 [+0.000, +0.000, +0.000]\n      [2] rosen_d2_s100_std                  median -5.422 n=3 [-5.422, -5.422, -5.422]\n      [3] pairwise nonsaturated 민감도  -2.675 nat  n=6  (비교마다 n 이 달라진다. primary 아님)",
       "detail": "narrow +0.000, wide +0.000 nat. A1 대비 크게 낮으면 행동 공간 도달성이 병목이다."
     },
     {
@@ -823,7 +823,7 @@
       "verdict": "재설계",
       "go_threshold": 0.3,
       "pivot_threshold": 0.05,
-      "nonsaturated": "primary(포화 ['rosen_d2'] 제외) +0.000 nat n=6 CI -0.096~+0.708 | all-task +0.000 nat n=9 포화 joint=3 | primary 개별 [+0.000, +0.000, +0.000, +0.873, +0.542, -0.191]",
+      "nonsaturated": "[1] all-task floor-capped  +0.000 nat  n=9  CI +0.000~+0.542  joint=3 one-sided=0 unsat=6  (+2/0×6/−1)\n      [2] quad_ill_conditioned_d100_k1e+05   median +0.542 n=3 [+0.873, +0.542, -0.191]\n      [2] quad_spd_d64_k1e+02                median +0.000 n=3 [+0.000, +0.000, +0.000]\n      [2] rosen_d2_s100_std                  median +0.000 n=3 [+0.000, +0.000, +0.000]\n      [3] pairwise nonsaturated 민감도  +0.000 nat  n=6  (비교마다 n 이 달라진다. primary 아님)",
       "detail": "깊이/상한(shrinking): Q2:d>1=0.83,cap=0.00 Q4:d>1=0.93,cap=0.00. 참고 Q=2(depth 1만 가능) - C0 = +0.000 nat. **GO 판정에는 두 조건이 모두 필요하다** (P3). 개선이 있고, 동시에 depth>1 이 실제로 채택돼야 한다. 개선만 있고 depth 가 계속 1 이면 planning 이 아니라 탐색량이 기여한 것이다. ``cap`` 이 0 이 아니면 계산 상한 때문에 쿼터를 다 쓰지 못한 step 이 있으므로 사다리 비교가 훼손된 것으로 보고한다. 이 게이트만으로 PPO 를 시작하지 않는다. P1~P4 를 함께 본다."
     },
     {
@@ -835,7 +835,7 @@
       "verdict": "재설계",
       "go_threshold": 0.3,
       "pivot_threshold": 0.05,
-      "nonsaturated": "primary(포화 ['rosen_d2'] 제외) +0.115 nat n=6 CI +0.000~+0.445 | all-task +0.000 nat n=9 포화 joint=3 | primary 개별 [+0.000, +0.000, +0.000, +0.520, +0.230, +0.370]",
+      "nonsaturated": "[1] all-task floor-capped  +0.000 nat  n=9  CI +0.000~+0.370  joint=3 one-sided=0 unsat=6  (+3/0×6/−0)\n      [2] quad_ill_conditioned_d100_k1e+05   median +0.370 n=3 [+0.520, +0.230, +0.370]\n      [2] quad_spd_d64_k1e+02                median +0.000 n=3 [+0.000, +0.000, +0.000]\n      [2] rosen_d2_s100_std                  median +0.000 n=3 [+0.000, +0.000, +0.000]\n      [3] pairwise nonsaturated 민감도  +0.115 nat  n=6  (비교마다 n 이 달라진다. primary 아님)",
       "detail": "약 0 이면 좋은 sequence 는 존재하지만 feedback 자체의 추가 가치는 작다. 음수면 approximate replanning 이 계획을 훼손한다. **committed 는 초기 상태에 조건화된 oracle 이므로 open_loop baseline 과 다르다.** committed 가 open_loop 보다 좋다고 해서 feedback 이 필요하다는 뜻이 아니다."
     },
     {
@@ -856,7 +856,7 @@
   "raw_sha256": "7c7a280d34bfe9b108335cc70a323338462808e413cafb6acac9e5ac24fd3eb0",
   "raw_n_lines": 324,
   "provenance": {
-    "git_commit": "ed1781af",
+    "git_commit": "fc483bce",
     "git_dirty": true,
     "config_hash": "f19e363e7eaad29c",
     "python_version": "3.12.12",

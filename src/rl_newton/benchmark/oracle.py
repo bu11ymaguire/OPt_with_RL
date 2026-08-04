@@ -194,11 +194,13 @@ class HeadroomConfig:
     가장 비싼 조합이고 진단 목적에는 narrow 만으로 충분하다.
     """
     saturated_task_prefixes: Sequence[str] = ("rosen_d2",)
-    """primary 게이트에서 분리할 포화 task (프로토콜 D14).
+    """포화 **진단 표**를 따로 낼 task (프로토콜 D19).
 
-    ``rosen_d2`` 는 150 GE 에서 여러 컨트롤러가 정확히 ``loss = 0`` 에 도달해
-    paired delta 를 기계적으로 0 으로 만든다. **버리지 않고 세 층으로 보고한다.**
-    이것은 집계 규칙이므로 ``aggregation_payload`` 에 들어간다.
+    ``rosen_d2`` 는 150 GE 에서 여러 컨트롤러가 정확히 ``loss = 0`` 에 도달한다.
+
+    **이것으로 primary 게이트를 정의하지 않는다.** 포화는 task 이름이 아니라
+    실제 ``floor_hit`` 으로 발생하며, ``quad_spd`` 도 floor 아래로 내려가
+    컨트롤러를 구분하지 못한다. 이 목록은 진단 표 대상을 고르는 데만 쓴다.
     """
     execution_modes: Sequence[str] = ("shrinking", "committed", "fresh")
     """돌릴 실행 방식 (프로토콜 D12). **sweep 커버리지이므로 run 정체성이 아니다.**
@@ -1517,33 +1519,63 @@ def run_headroom(
         d = compare_paired_delta(b, t, metric="log_improvement")
         return f"{d.median_delta:+.3f} nat (n={d.n_valid})"
 
-    # --- 3층 보고 (프로토콜 D14). primary / all-task / saturation diagnostic ---
+    # --- 3층 보고 (프로토콜 D19) ---
     #
-    # primary 만 내고 all-task 를 숨기면 선택적 제외가 된다. **함께 낸다.**
+    # ``rosen_d2 제외 = primary`` 라는 정의는 폐기했다. **포화는 task 이름이
+    # 아니라 실제 ``floor_hit`` 으로 발생한다.** ``quad_spd`` 도 floor 아래로
+    # 내려가 컨트롤러를 구분하지 못한다.
+    #
+    # ``drop_saturated_pairs`` 를 primary 게이트로 승격하지도 않는다. 비교 쌍마다
+    # 표본이 달라지고, one-sided saturation 은 그 컨트롤러가 **더 잘했다는 증거**
+    # 인데 쌍을 삭제하면 좋은 결과를 제거한다. 민감도 분석으로만 쓴다.
     def three_layer(base: Sequence[RunSummary], treat: Sequence[RunSummary]) -> str:
-        prefixes = config.saturated_task_prefixes
-        pb, _ = split_by_task_family(base, exclude_prefixes=prefixes)
-        pt, _ = split_by_task_family(treat, exclude_prefixes=prefixes)
-        if not pb or not pt:
+        if not base or not treat:
             return ""
-        p = compare_paired_delta(pb, pt, metric="log_improvement")
         a = compare_paired_delta(base, treat, metric="log_improvement")
-        # n 이 작으므로 개별 delta 도 낸다. 이진 라벨만으로는 거칠다.
-        # delta = treat - base. 양수면 treat 가 좋다 (표 전체와 같은 부호 규칙).
-        base_by_key = {(r.task_instance_id, r.seed): r for r in pb}
-        deltas = [
-            t.log_improvement - base_by_key[(t.task_instance_id, t.seed)].log_improvement
-            for t in pt
+        base_by_key = {(r.task_instance_id, r.seed): r for r in base}
+        pairs = [
+            (t, base_by_key[(t.task_instance_id, t.seed)])
+            for t in treat
             if (t.task_instance_id, t.seed) in base_by_key
         ]
-        listed = ", ".join(f"{d:+.3f}" for d in deltas if math.isfinite(d))
-        return (
-            f"primary(포화 {list(prefixes)} 제외) {p.median_delta:+.3f} nat "
-            f"n={p.n_valid} CI {p.delta_ci[0]:+.3f}~{p.delta_ci[1]:+.3f} "
-            f"| all-task {a.median_delta:+.3f} nat n={a.n_valid} "
-            f"포화 joint={a.n_joint_saturated} "
-            f"| primary 개별 [{listed}]"
-        )
+        # delta = treat - base. 양수면 treat 가 좋다.
+        deltas = [(t, b, t.log_improvement - b.log_improvement) for t, b in pairs]
+        finite = [d for _t, _b, d in deltas if math.isfinite(d)]
+        unsat = a.n_valid - a.n_saturated
+
+        lines = [
+            f"[1] all-task floor-capped  {a.median_delta:+.3f} nat  n={a.n_valid}  "
+            f"CI {a.delta_ci[0]:+.3f}~{a.delta_ci[1]:+.3f}  "
+            f"joint={a.n_joint_saturated} one-sided={a.n_one_sided_saturated} "
+            f"unsat={unsat}  "
+            f"(+{sum(1 for d in finite if d > 0)}/0×{sum(1 for d in finite if d == 0.0)}"
+            f"/−{sum(1 for d in finite if d < 0)})"
+        ]
+
+        # [2] spec 별. 난이도에 따라 headroom 이 달라지는 것 자체가 결과다.
+        by_spec: dict[str, list[float]] = {}
+        for t, _b, d in deltas:
+            spec = t.task_instance_id.rsplit("_seed", 1)[0]
+            by_spec.setdefault(spec, []).append(d)
+        for spec in sorted(by_spec):
+            vals = [d for d in by_spec[spec] if math.isfinite(d)]
+            med = sorted(vals)[len(vals) // 2] if vals else float("nan")
+            listed = ", ".join(f"{d:+.3f}" for d in by_spec[spec])
+            lines.append(
+                f"[2] {spec:<34} median {med:+.3f} n={len(by_spec[spec])} [{listed}]"
+            )
+
+        # [3] pairwise nonsaturated 민감도. **primary 가 아니다.**
+        nb, nt = drop_saturated_pairs(base, treat)
+        if nb:
+            s = compare_paired_delta(nb, nt, metric="log_improvement")
+            lines.append(
+                f"[3] pairwise nonsaturated 민감도  {s.median_delta:+.3f} nat  "
+                f"n={s.n_valid}  (비교마다 n 이 달라진다. primary 아님)"
+            )
+        else:
+            lines.append("[3] pairwise nonsaturated 민감도  비포화 쌍 없음")
+        return "\n      ".join(lines)
 
     gate_a1_nonsat = e_delta_nonsat(static_runs, onestep_runs["onestep_absolute"])
     gate_b_nonsat = e_delta_nonsat(
