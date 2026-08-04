@@ -700,6 +700,74 @@ rosen_d5
 > Rosenbrock 결과는 configuration selection 에 사용하지 않고 비선형 행동 분석에만
 > 사용한다.
 
+### D21. 설정 선택 통계를 실행 전에 하나로 못박는다
+
+§게이트 C 의 "설정(Q, action space) 선택은 beam 8 dev 결과의 median 으로 한 번만
+한다" 는 **무엇의 median 인지 미지정이었다.** D19 에서 all-task median 과 spec별
+median 이 반대 결론을 냈으므로 이 자유도를 남겨두면 사후 선택이 된다.
+
+```text
+all-task median  A2/C2/C3 모두 +0.000  ->  재설계
+quad_ill κ=1e5   +0.494 / +0.542 / +0.370  ->  GO
+```
+
+#### 선택 대상은 `shrinking` 의 (Q, space) 하나다
+
+`committed` 는 배포 가능한 컨트롤러가 아니라 **초기 상태에 조건화된 비교 oracle**
+(C3)이다. `fresh` 는 진단 baseline 이다. 따라서 freeze 대상은 `shrinking` 뿐이고,
+`committed` 는 선택된 같은 `(Q, space)` 에서 비교용으로 함께 돌린다.
+
+#### 선택 통계: planner **자신의** median logΔ 를 최대화한다
+
+baseline 과의 delta 로 고르지 않는다. **strongest baseline 순위가 현재 표본에서
+안정적이지 않기 때문이다** (P2 각주: `onestep_absolute` 와 `heuristic` 이 둘 다
+31.438, CI −5.982~+24.346, p=0.906). 불안정한 기준점으로 나눗셈을 하면 설정
+선택이 baseline 잡음을 따라간다.
+
+```text
+선택 통계  median over 12 challenge 인스턴스 (4 spec x 3 seed) of
+           shrinking 의 Track E log improvement (절대값, delta 아님)
+목표       최대화
+```
+
+challenge set 은 D20 calibration 에서 floor hit 0 을 확인했으므로 이 median 이
+floor cap 에 눌리지 않는다. **dev subset 과 달리 all-task median 을 쓸 수 있다.**
+
+#### tie-break 사다리 (사전 고정)
+
+median 이 `0.05 nat` 이내로 같으면 순서대로 적용한다.
+
+```text
+1  decision-search GE 가 적은 쪽      같은 성능이면 싼 것
+2  Q 가 작은 쪽                       계획 지평이 짧아 단순하다
+3  narrow 가 wide 보다 우선           행동 공간이 작아 단순하다
+```
+
+#### 함께 보고하되 선택에 쓰지 않는 것
+
+```text
+spec 별 median 4개          conditioning 의존성 분석
+개별 12 delta               표본이 작아 CI 가 거칠다
+shrinking − best_static     헤드룸 주장 (A2)
+shrinking − C0              (C2)
+shrinking − committed       (C3)
+rosen_d5                    선택된 설정만 사후 적용 (D20)
+```
+
+#### 사전 공개: 1 인스턴스 dry run 을 먼저 실행했다
+
+비용 측정을 위해 `--max-tasks 1 --seeds 1` (즉 `quad_d100_k1e3`, seed 2) 로 beam 8
+을 한 번 돌렸고 그 게이트 표를 봤다. 30 run, 약 8분.
+
+이 규칙은 그 결과와 무관하게 정할 수 있는 것만 담았다. dry run 에서 `Q × space`
+별 planner logΔ 순위를 열지 않았고, 선택 통계를 "planner 자신의 median 최대화"
+로 정한 근거는 baseline 순위 불안정성(P2, 기존 관측)이다. 그럼에도 순서가
+`규칙 확정 → 전체 실행` 이 아니라 `dry run → 규칙 확정 → 전체 실행` 이었다는
+사실을 기록한다.
+
+dry run 산출물은 삭제하지 않고 `config_hash` 가 다른 별도 파일로 남긴다. 전체
+실행과 섞이지 않는다.
+
 ### D19. 포화는 task 이름이 아니라 `floor_hit`으로 판정하고, spec별로 보고한다
 
 D14 초판은 `rosen_d2 제외 = primary` 로 정의했다. **틀렸다.** 포화는 task 이름이
@@ -1794,7 +1862,8 @@ Q=4   narrow, wide 모두 beam 8 재평가
 진단 baseline이고 P1~P3 판정에 쓰지 않으며 탐색 비용이 가장 크다.
 
 설정(Q, action space) 선택은 **beam 8 dev 결과의 median** 으로 한 번만 하고,
-그 시점에 protocol freeze 한다.
+그 시점에 protocol freeze 한다. **어떤 median 인지는 D21 에서 못박았다**
+(`shrinking` 자신의 Track E logΔ 를 challenge 12 인스턴스에서 median, 최대화).
 
 #### `fresh` 에 계산을 과도하게 쓰지 않는다
 
@@ -2061,6 +2130,9 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-03 | challenge set 을 `--mode challenge`, 진단 층을 `--mode nonlinear-diagnostic` 으로 코드에 등록. `CALIBRATION_SEEDS`/`SELECTION_SEEDS` 신설 | 목록을 코드 밖에 두면 사전 등록이 무의미해진다. `TestChallengeSetFreeze` 가 spec 4개, `log10(κ)` 간격, seed 서로소, `phase` 가 `run_semantics_id` 를 바꾸지 않음을 검증한다 |
 | 2026-08-03 | `HELD_OUT_SEEDS` 를 권고 범위 5~14 로 바꾸지 않고 100~109 유지 | 이미 calibration(0,1) 및 selection(2,3,4) 과 서로소다. 바꾸면 기존 confirmatory 정의가 흔들린다 |
 | 2026-08-03 | `(quad_d100_k1e5, seed 2)` 가 original dev audit 과 challenge selection 에 모두 포함됨을 명시 | 숨기지 않고 기록한다. 완전 분리에는 `SELECTION_SEEDS=(3,4,5)` 가 필요하지만 사전 등록 범위를 벗어난다. selection 12 인스턴스 중 1개이고 beam 8 조합은 아직 미실행이다 |
+| 2026-08-03 | **D21 신설: 설정 선택 통계를 `shrinking` 자신의 median logΔ 최대화로 확정** | 기존 규칙("beam 8 dev median")이 무엇의 median 인지 미지정이었다. D19 에서 all-task 와 spec별 median 이 반대 결론을 냈으므로 남겨두면 사후 선택이 된다. baseline delta 로 고르지 않는 이유는 strongest baseline 순위가 불안정하기 때문이다 (p=0.906) |
+| 2026-08-03 | D21 tie-break 사다리 고정: `decision-search GE` → `작은 Q` → `narrow` | median 이 `0.05 nat` 이내면 적용한다. 결정론적이어야 재현 가능하다 |
+| 2026-08-03 | beam 8 전체 실행 전에 1 인스턴스 dry run 을 먼저 돌렸음을 공개 | 비용 측정 목적(`quad_d100_k1e3`, seed 2, 30 run, 약 8분). `Q × space` 별 planner 순위는 열지 않았으나 순서가 `dry run → 규칙 확정 → 전체 실행` 이었다는 사실을 기록한다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |
