@@ -53,6 +53,7 @@ from rl_newton.benchmark.metrics import (
     compare_paired,
     compare_paired_delta,
     drop_saturated_pairs,
+    median_of,
     saturation_report,
     split_by_task_family,
     summarize_group,
@@ -1245,6 +1246,7 @@ def run_headroom(
     wide: ActionSpace,
     absolute: ActionSpace,
     store: ResultStore | None = None,
+    git_commit: str = "",
     code_dirty: bool = False,
     verbose: bool = True,
 ) -> HeadroomReport:
@@ -1256,6 +1258,11 @@ def run_headroom(
         wide: damping 배수를 넓힌 공간.
         absolute: 도달성 제약 없는 분석용 공간. **로그 해상도가 narrow 와
             같아야** 게이트 B의 해석이 성립한다.
+        git_commit: 실행 시점 커밋. **어떤 ID 에도 들어가지 않고**
+            ``execution_provenance`` 로만 기록된다 (프로토콜 D13). 넘기지 않으면
+            summary 의 provenance 가 빈 문자열이 되어 원고에서 결과를 커밋에
+            연결할 수 없다.
+        code_dirty: 실행 시점에 커밋되지 않은 변경이 있었는가.
         verbose: 진행 상황 출력.
     """
     report = HeadroomReport(phase=config.phase)
@@ -1313,7 +1320,11 @@ def run_headroom(
     )
     report.aggregation_id = aggregation_id(config.aggregation_payload())
     # git commit 과 dirty 는 어떤 ID 에도 들어가지 않는다 (프로토콜 D13).
-    report.provenance = execution_provenance(code_dirty=code_dirty)
+    # 다만 provenance 에는 반드시 남아야 한다. 없으면 원고에서 결과를 커밋에
+    # 연결할 수 없다.
+    report.provenance = execution_provenance(
+        git_commit=git_commit, code_dirty=code_dirty
+    )
 
     def log(message: str) -> None:
         if verbose:
@@ -1604,8 +1615,10 @@ def run_headroom(
             spec = t.task_instance_id.rsplit("_seed", 1)[0]
             by_spec.setdefault(spec, []).append(d)
         for spec in sorted(by_spec):
-            vals = [d for d in by_spec[spec] if math.isfinite(d)]
-            med = sorted(vals)[len(vals) // 2] if vals else float("nan")
+            # `_median` 을 쓴다. `sorted(vals)[len(vals)//2]` 는 짝수 표본에서
+            # 상위 중앙값을 골라 `compare_paired_delta` 의 all-task 통계와 규약이
+            # 어긋난다. n=10 에서 spec 별 값이 0.01 nat 규모로 갈렸다.
+            med = median_of(by_spec[spec])
             listed = ", ".join(f"{d:+.3f}" for d in by_spec[spec])
             lines.append(
                 f"[2] {spec:<34} median {med:+.3f} n={len(by_spec[spec])} [{listed}]"

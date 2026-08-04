@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from rl_newton.benchmark.metrics import RunSummary, compare_paired_delta
+from rl_newton.benchmark.metrics import RunSummary, compare_paired_delta, median_of
 from rl_newton.benchmark.store import ResultStore
 
 _SEED_SUFFIX = re.compile(r"_seed\d+$")
@@ -44,13 +44,11 @@ def spec_of(run: RunSummary) -> str:
 
 
 def median(values: list[float]) -> float:
-    finite = sorted(v for v in values if math.isfinite(v))
-    if not finite:
-        return float("nan")
-    mid = len(finite) // 2
-    if len(finite) % 2:
-        return finite[mid]
-    return 0.5 * (finite[mid - 1] + finite[mid])
+    """프로젝트 단일 규약을 쓴다 (`metrics.median_of`).
+
+    자체 구현을 두면 보고 도구와 게이트 통계가 갈린다. 실제로 그런 적이 있다.
+    """
+    return median_of(values)
 
 
 def fmt_p(value: float) -> str:

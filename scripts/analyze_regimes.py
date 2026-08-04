@@ -33,7 +33,7 @@ import math
 import re
 from pathlib import Path
 
-from rl_newton.benchmark.metrics import RunSummary, compare_paired_delta
+from rl_newton.benchmark.metrics import RunSummary, compare_paired_delta, median_of
 from rl_newton.benchmark.store import ResultStore
 
 _SEED_SUFFIX = re.compile(r"_seed\d+$")
@@ -67,13 +67,8 @@ def regime_of(run: RunSummary) -> str:
 
 
 def median(values: list[float]) -> float:
-    finite = sorted(v for v in values if math.isfinite(v))
-    if not finite:
-        return float("nan")
-    mid = len(finite) // 2
-    if len(finite) % 2:
-        return finite[mid]
-    return 0.5 * (finite[mid - 1] + finite[mid])
+    """프로젝트 단일 규약을 쓴다 (`metrics.median_of`)."""
+    return median_of(values)
 
 
 def resolve_alias(by_controller: dict[str, list[RunSummary]], summary: Path) -> dict[str, str]:

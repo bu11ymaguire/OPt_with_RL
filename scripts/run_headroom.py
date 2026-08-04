@@ -525,6 +525,7 @@ def main() -> int:
         wide=wide,
         absolute=absolute,
         store=store,
+        git_commit=commit,
         code_dirty=dirty,
         verbose=True,
     )

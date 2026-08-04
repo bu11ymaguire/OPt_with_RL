@@ -46,6 +46,7 @@ __all__ = [
     "saturation_report",
     "budget_respecting_prefix",
     "RELATIVE_LOSS_FLOOR",
+    "median_of",
     "recovery_ratio",
     "geometric_mean",
     "bootstrap_ci",
@@ -192,9 +193,22 @@ protocol freeze 전에 이 근거와 함께 고정한다.
 """
 
 
-def _median(values: Sequence[float]) -> float:
+def median_of(values: Sequence[float]) -> float:
+    """**프로젝트 전체의 유일한 median 규약.**
+
+    짝수 표본에서 두 중앙값의 평균을 쓴다 (`statistics.median`). 비유한값은 뺀다.
+
+    한동안 `three_layer` 의 spec 별 분해가 `sorted(vals)[len(vals)//2]` (상위 중앙값)
+    를 써서 `compare_paired_delta` 의 all-task 통계와 규약이 어긋났다. `n=10` held-out
+    에서 spec 별 값이 `0.01 nat` 규모로 갈렸고, 프로토콜 본문과 자동 생성 표에 다른
+    숫자가 실렸다. **보고 도구와 스크립트는 모두 이 함수를 쓴다.**
+    """
     finite = [v for v in values if math.isfinite(v)]
     return statistics.median(finite) if finite else float("nan")
+
+
+_median = median_of
+"""내부 호출부 호환용 별칭."""
 
 
 def budget_respecting_prefix(

@@ -38,7 +38,7 @@ import math
 import re
 from pathlib import Path
 
-from rl_newton.benchmark.metrics import RunSummary, compare_paired_delta
+from rl_newton.benchmark.metrics import RunSummary, compare_paired_delta, median_of
 from rl_newton.benchmark.store import ResultStore
 
 TIE_TOLERANCE = 0.05
@@ -55,13 +55,11 @@ def spec_of(run: RunSummary) -> str:
 
 
 def median(values: list[float]) -> float:
-    finite = sorted(v for v in values if math.isfinite(v))
-    if not finite:
-        return float("nan")
-    mid = len(finite) // 2
-    if len(finite) % 2:
-        return finite[mid]
-    return 0.5 * (finite[mid - 1] + finite[mid])
+    """프로젝트 단일 규약을 쓴다 (`metrics.median_of`).
+
+    D21 의 선택 통계가 게이트 통계와 다른 median 규약을 쓰면 안 된다.
+    """
+    return median_of(values)
 
 
 def load(path: Path) -> dict[str, list[RunSummary]]:
