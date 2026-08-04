@@ -527,6 +527,155 @@ Track T 지표(`cost_to_target_ge`, `reached`)는 목표 도달 시점으로 정
 `B ≤ A` 였다. **고정 예산 비교에서는 "예산"과 "실제 소모량"을 항상 함께
 확인한다.**
 
+### D20. Challenge set을 측정 가능성 기준으로 사전 등록한다
+
+D19 에서 dev subset 3 spec 중 2개가 컨트롤러를 구분하지 못한다는 것이 확인됐다.
+**측정 가능한 regime 이 `quad_ill κ=1e5` 하나뿐이다.** 기존 9쌍만으로 beam 8 을
+돌려 설정을 freeze 하면 seed 하나에 좌우된다.
+
+#### 기존 dev set은 보존한다
+
+쉬운 spec 을 몰래 교체하거나 제거하지 않는다. 결과를 본 뒤 benchmark 를 바꿨다는
+문제가 생긴다.
+
+```text
+Original dev audit    rosen_d2 / quad_spd κ=1e2 / quad_ill κ=1e5   그대로 유지
+New challenge set     별도로 사전 등록. 아래 규칙으로 선정
+```
+
+#### 선정 기준은 성능 우열이 아니라 **측정 가능성**이다
+
+**planner 결과를 보지 않는다.** 비적응 baseline 패널만으로 판정한다.
+
+```text
+사용 baseline:  best_static / best resource-clock open_loop / heuristic / C0
+비공개:         shrinking / committed / fresh / beam 결과
+```
+
+##### 채택 조건 (사전 고정)
+
+```text
+failure_rate = 0                             numerical failure 없음
+joint floor-hit rate <= 1/3                  포화가 과도하지 않음
+각 baseline median logΔ >= 1 nat             문제를 전혀 못 줄이는 조건 아님
+median distance-to-ceiling >= 3 nat          floor 까지 e^3 ~ 20배 여유
+```
+
+여기서 ceiling 은 `log(L0 / loss_floor)` 이고 `RELATIVE_LOSS_FLOOR` 기준 약
+31.4 nat 이다. `0.8 x ceiling` 같은 비율 기준은 현재 open-loop 가 25.456 이므로
+지나치게 빡빡하다. **절대 여유 3 nat** 으로 정한다.
+
+##### 최대 개수와 tie-break
+
+```text
+사전 정의한 측정 가능성 조건을 통과한 모든 spec 을 채택한다.
+최대 4개를 초과하면 log10(κ) 간격을 가장 고르게 덮는 spec 을 선택한다.
+planner 성능은 선택에 사용하지 않는다.
+```
+
+"3개를 골라야 한다" 로 미리 정하면 결과를 보고 유리한 셋을 고를 위험이 있다.
+
+#### 후보군
+
+conditioning 이 핵심 축이므로 quadratic 을 촘촘히 만든다. 기존 `κ=1e2` 와
+`κ=1e5` 사이에 중간 구간이 없어 **임계점이 어디인지 모른다.**
+
+```text
+quad d=100 κ=1e3       중간 구간. 특히 중요
+quad d=100 κ=1e4       중간 구간. 특히 중요
+quad d=100 κ=1e5       기존 anchor
+quad d=100 κ=1e6
+Rosenbrock d=5         비선형. d=2 는 너무 쉬움
+```
+
+Rosenbrock 은 quadratic 과 수치 특성이 다르므로 calibration 에서 floor 도달 속도,
+Newton-CG fallback 지배 여부, 발산/정체를 먼저 확인한다.
+
+#### seed 역할을 분리한다
+
+challenge spec 을 고르는 seed 와 beam 8 을 평가하는 seed 가 같으면 benchmark
+tuning 이 된다.
+
+```text
+calibration seeds        0, 1        challenge spec 선정에만
+beam-8 dev seeds         2, 3, 4     설정(Q, space, beam) 선택에만
+held-out confirmatory    5 ~ 14      선택된 단일 설정 평가에만
+```
+
+#### 전체 구조
+
+```text
+Original dev audit        기존 3 specs x 3 seeds. 포화 현상 보고
+Challenge calibration     baseline-only. spec 선정
+Beam 8 dev                challenge specs 에서 Q / space / beam 선택
+Held-out confirmation     선택된 단일 설정을 새 seed 에서 평가
+```
+
+기존 결과를 버리지 않으면서도 너무 쉬운 benchmark 만으로 beam 을 고르는 문제를
+피한다.
+
+#### Calibration 결과와 freeze (2026-08-03, seeds 0/1, 150 GE, N_tune 6)
+
+**후보 5개가 사전 조건을 전부 통과했다.** floor hit 0, numerical failure 0.
+
+```text
+spec              L0       median logΔ (static/open_loop/heuristic/C0)   최소 ceiling 여유
+quad_d100_k1e3    9.7e3    13.23 / 14.66 / 13.23 / 17.72                 13.71
+quad_d100_k1e4    3.7e4     8.33 /  8.80 /  8.33 / 10.46                 20.98
+quad_d100_k1e5    4.4e5     8.71 /  9.05 /  8.71 /  9.56                 21.88
+quad_d100_k1e6    2.6e6     8.69 /  9.51 /  8.71 /  9.44                 21.93
+rosen_d5          2.4e1      1.82 /  1.82 /  1.82 /  1.82                 29.62
+```
+
+5개 > `MAX_SPECS = 4` 이므로 사전 등록된 tie-break("`log10(κ)` 간격을 가장 고르게
+덮는 spec")를 적용한다.
+
+##### Challenge selection set (freeze)
+
+```text
+quad_d100_k1e3
+quad_d100_k1e4
+quad_d100_k1e5
+quad_d100_k1e6
+```
+
+선정 근거: baseline-only 측정 가능성 조건 전부 통과, numerical failure 0,
+floor hit 0, `log10(κ)` 축을 간격 1로 균등 포괄. **planner 결과는 보지 않았다.**
+
+##### Nonlinear diagnostic (선택에 사용하지 않음)
+
+```text
+rosen_d5
+```
+
+`rosen_d5` 는 `κ` 축에 없어 tie-break 규칙상 탈락했다. 관측 사실을 함께 기록한다.
+
+> 네 baseline 이 모두 정확히 `1.8175` nat 을 기록했다. baseline panel 로는
+> controller 구분력을 확인하지 못했다.
+
+**사후에 `baseline spread` 임계값을 추가하지 않는다.** 임계값 선택이 사후적이
+되고, baseline 4종이 같다고 planner 도 같다는 보장이 없다. 두 해석이 모두 가능하다.
+
+```text
+문제가 controller 에 둔감해서 실제로 구분력이 없음
+단순 baseline 은 같은 행동으로 수렴하지만 다단계 planner 는 다른 궤적을 찾을 수 있음
+```
+
+따라서 "무가치한 task" 가 아니라 **baseline panel 에서는 구분력이 관측되지 않은
+비선형 진단 문제**로 보존한다. baseline spread 는 향후 benchmark 설계의 참고
+지표로만 기록하고 이번 eligibility 에 소급 적용하지 않는다.
+
+##### `rosen_d5` 사용 규칙
+
+**가장 엄격한 순서를 쓴다.** quadratic 4개에서 설정 하나를 freeze 한 뒤 그 설정만
+`rosen_d5` 에 적용한다. 그러면 Rosenbrock 결과를 보고 설정을 조정했다는 문제가
+사라진다.
+
+계산 여유로 모든 `Q × space` 조합을 돌리더라도 다음을 지킨다.
+
+> Rosenbrock 결과는 configuration selection 에 사용하지 않고 비선형 행동 분석에만
+> 사용한다.
+
 ### D19. 포화는 task 이름이 아니라 `floor_hit`으로 판정하고, spec별로 보고한다
 
 D14 초판은 `rosen_d2 제외 = primary` 로 정의했다. **틀렸다.** 포화는 task 이름이
@@ -1880,6 +2029,11 @@ Stage 4 재실행이 5회를 넘어가면 contextual bandit 또는 supervised po
 | 2026-08-03 | **D17 신설: open-loop `progress` 를 `step/total_steps` → 소모 GE 비율로 교체** | GE 예산으로 종료하는데 breakpoint 가 step 비율이라 4구간 스케줄의 첫 구간만 실행됐다. `best_open_loop` 이 `best_static` 과 9쌍 전부 bitwise 동일(CI `+0.000~+0.000`)했던 것은 퇴화가 아니라 구현 결함이다. 수정 후 4/4 구간 실행, median logΔ 9.337 → 25.456 |
 | 2026-08-03 | `OPEN_LOOP_SEMANTICS_VERSION` 을 open-loop payload 에만 넣어 격리 | open-loop 108 run 만 재실행되고 static / heuristic / one-step 의 `run_semantics_id` 와 `selection_id` 는 유지됐다. D13 3계층 분리가 의도대로 작동한 사례 |
 | 2026-08-03 | P2 strongest baseline 을 단순 median 최대값으로 정하지 않도록 명시 | `onestep_absolute` 와 `heuristic` 이 둘 다 31.438 인 것은 floor ceiling 영향이다. baseline 간 순위를 현재 dev 표본으로는 안정적으로 구분할 수 없다 (CI −5.982~+24.346, p=0.906) |
+| 2026-08-03 | **D18 신설: bridge 검증 tolerance(`1e-12`/`1e-14`)와 분류를 실행 전 고정. bridge 통과** | expected 72쌍 전부 bitwise EXACT, `MISMATCH` 0. D13/D16/D17 이 planner 실행 궤적을 바꾸지 않았음을 확인. 범위 밖(`LEGACY_ONLY_OUT_OF_SCOPE`)과 누락을 구별하지 않으면 범위를 좁힐 때 통과가 불가능해진다 |
+| 2026-08-03 | **D19 신설: 포화를 task 이름 대신 `floor_hit` 으로 판정. `rosen_d2 제외 = primary` 정의 폐기** | `quad_spd` 도 floor 아래로 내려가 delta 가 0이었다(trajectory 는 전부 다름). joint saturation(구분 불가)과 one-sided saturation(명확한 차이)은 다르다. `drop_saturated_pairs` 를 primary 로 쓰면 one-sided 쌍의 좋은 결과를 삭제한다 |
+| 2026-08-03 | spec 별 보고가 all-task median 과 반대 결론을 냈다 | all-task 는 A2/C2/C3 모두 `+0.000`(재설계)인데, `quad_ill κ=1e5` 만 보면 `+0.494`/`+0.542`/`+0.370` 으로 GO 기준을 넘는다. 측정 가능한 regime 이 하나뿐이라는 것이 핵심 발견이다 |
+| 2026-08-03 | **D20 신설: challenge set 을 측정 가능성 기준으로 사전 등록. quadratic κ∈{1e3,1e4,1e5,1e6} freeze** | dev subset 3개 중 2개가 포화되어 beam 8 을 기존 9쌍만으로 돌리면 seed 하나에 좌우된다. 선정에 planner 결과를 쓰지 않고 baseline-only 로 판정했다. `rosen_d5` 는 tie-break 규칙상 탈락, 비선형 진단 층으로 보존 |
+| 2026-08-03 | `rosen_d5` 에 사후 `baseline spread` 조건을 추가하지 않음 | 임계값 선택이 사후적이 되고, baseline 4종이 동일하다고 planner 도 동일하다는 보장이 없다. 기존 tie-break 규칙만으로 같은 결론에 도달한다 |
 | 2026-08-01 | **D3 보상을 트랙별로 재정의. per-step ratio 보상 폐기** | ratio 보상은 정책이 `k=3` 같은 싸고 작은 행동만 반복하게 만든다. Track E는 additive log 감소, Track T는 `-cost` + target 종료 |
 | 2026-08-01 | `greedy_oracle` → one-step efficiency controller, `lookahead_oracle` → H-step MPC planner | 전역 상한이 아니다. 실제로 고정 설정보다 나쁠 수 있음이 확인됐다 |
 | 2026-08-01 | D6에 target 난이도 3단계와 pilot/confirmatory 분리 추가 | target 하나면 그 값 선정이 결론을 좌우한다. 결과를 본 뒤 예산을 고치면 사후 선택이 된다 |
