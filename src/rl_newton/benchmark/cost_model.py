@@ -32,7 +32,7 @@ Newton-CG step 하나의 비용은 다음으로 환산된다.
 
 from __future__ import annotations
 
-import platform
+import os
 import statistics
 import time
 from collections.abc import Callable, Sequence
@@ -46,6 +46,9 @@ import yaml
 from torch import Tensor
 
 __all__ = ["CostModel", "measure_cost_model", "LAUNCH_BOUND_THRESHOLD_MS"]
+
+HOST_ID_FALLBACK = "host-unspecified"
+"""``EXPERIMENT_HOST_ID`` 가 없을 때 쓰는 라벨. 장치 실제 이름을 기록하지 않는다."""
 
 
 LAUNCH_BOUND_THRESHOLD_MS = 1.0
@@ -343,7 +346,9 @@ def measure_cost_model(
         device=str(device),
         gpu_name=gpu_name,
         torch_version=str(torch.__version__),
-        host=platform.node(),
+        # 장치의 실제 이름을 기록하지 않는다. `EXPERIMENT_HOST_ID` 별칭을 쓴다.
+        # 재현에는 GPU 모델, torch 버전, batch 구성이 필요하고 장치 이름은 아니다.
+        host=os.environ.get("EXPERIMENT_HOST_ID", HOST_ID_FALLBACK),
         n_repeat=n_repeat,
         peak_vram_mb=peak_vram,
     )

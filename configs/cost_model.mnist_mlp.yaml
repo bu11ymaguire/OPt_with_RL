@@ -6,7 +6,7 @@ curvature_batch_size: 512
 device: cuda:0
 gpu_name: NVIDIA GeForce RTX 3060 Ti
 grad_batch_size: 512
-host: DESKTOP-O4MPS5M
+host: host-a
 is_launch_bound: true
 model_id: mnist_mlp_b512_cuda
 n_params: 101770

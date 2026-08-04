@@ -43,6 +43,7 @@ from rl_newton.utils.logging import sanitize_for_json
 from rl_newton.utils.provenance import config_hash
 
 __all__ = [
+    "HOST_ID_FALLBACK",
     "RunKey",
     "RunRecord",
     "ResultStore",
@@ -102,6 +103,17 @@ SELECTION_SEMANTICS_VERSION = 1
 후보 집합 생성, 선택 지표, tie-break 규칙이 바뀌면 올린다. ``best_static`` 과
 ``best_open_loop`` 는 컨트롤러가 아니라 튜닝 결과이므로 선택 과정 자체가
 재현 가능해야 한다.
+"""
+
+HOST_ID_FALLBACK = "host-unspecified"
+"""``EXPERIMENT_HOST_ID`` 가 없을 때 쓰는 라벨.
+
+**장치의 실제 이름을 대신 넣지 않는다.** 공개 산출물에 개인 식별 정보를 남길 이유가
+없다. 여러 기계의 결과를 구별해야 하면 실행 시 별칭을 지정한다.
+
+```bash
+EXPERIMENT_HOST_ID=host-a python scripts/run_headroom.py ...
+```
 """
 
 AGGREGATION_VERSION = 4
@@ -174,15 +186,24 @@ def execution_provenance(*, git_commit: str = "", code_dirty: bool = False) -> d
     git commit 이나 code-dirty 를 ``sweep_id`` 에 넣으면, 같은 run 집합을
     요청했는데 문서만 수정해도 ID 가 달라진다. "어떤 집합을 요청했는가" 라는
     의미가 깨지므로 provenance 로 분리한다.
+
+    **장치의 실제 이름을 기록하지 않는다.** 공개 저장소에 개인 식별 정보를 남길
+    이유가 없다. 재현에 필요한 것은 OS, Python / PyTorch 버전, CPU 모델, 스레드 수,
+    dtype, 관련 환경변수, 코드 commit 과 configuration hash 다. 장치 이름은 같은
+    실행 환경을 묶는 라벨 역할만 하므로 별칭으로 충분하다.
+
+    ``EXPERIMENT_HOST_ID`` 환경변수로 안정적인 별칭을 준다. 없으면
+    ``HOST_ID_FALLBACK`` 을 쓴다. hostname 을 해시하는 방법은 쓰지 않는다. salt 가
+    없으면 사전 대입으로 복원되고, salt 를 관리하는 복잡도가 이득보다 크다.
     """
+    import os
     import platform
-    import socket
     from datetime import UTC, datetime
 
     return {
         "git_commit": git_commit,
         "code_dirty": code_dirty,
-        "hostname": socket.gethostname(),
+        "host_id": os.environ.get("EXPERIMENT_HOST_ID", HOST_ID_FALLBACK),
         "platform": f"{platform.system()} {platform.release()}",
         "recorded_at": datetime.now(UTC).isoformat(),
     }
