@@ -771,6 +771,185 @@ shrinking 이 C0 까지 이김
 현재 증거상 마지막 경우의 가능성은 높지 않다. 어느 쪽이든 **결과를 본 뒤 해석을
 만들지 않기 위해** 여기에 미리 적는다.
 
+### D31. ablation 결과. `C3` 의 **크기 절반쯤이 acceptance artifact** 였다. 결론은 유지
+
+micro-neural 3 spec × seeds 2/3/4 를 두 수락 규칙에서 각각 216 run, 실패 0.
+
+#### `C3 = shrinking − committed`
+
+```text
+              control            fixed_eval
+full_batch    −0.095 (1/3)       −0.949 (0/3)
+cs128         +2.941 (3/3)       +1.110 (3/3)
+cs64          +1.666 (3/3)       +0.973 (3/3)
+```
+
+R2 에서 `C3` 가 **약 40~60% 줄었지만 부호는 3/3 로 유지**됐다.
+
+#### `C2 = shrinking − onestep`
+
+```text
+              control            fixed_eval
+full_batch    +0.547 (2/3)       −0.080 (1/3)
+cs128         −1.111 (1/3)       −0.118 (1/3)
+cs64          −0.716 (1/3)       +0.104 (2/3)
+```
+
+R2 에서 `C2` 가 명확한 음수에서 **약 0** 으로 올라왔다. `shrinking` 이 `onestep` 을
+비기는 수준이고 **이기지는 않는다.**
+
+#### `A2 = shrinking − best_static`
+
+```text
+              control            fixed_eval
+full_batch   +15.176 (3/3)      +14.065 (3/3)
+cs128         −0.900 (1/3)       −0.598 (0/3)
+cs64          −0.277 (1/3)       −0.093 (0/3)
+```
+
+R2 에서 여전히 음수이고, `fixed_eval` 에서는 **0/3 으로 부호가 더 일관되게 음수**다.
+
+#### 사전 등록한 시나리오 중 어느 것인가
+
+D28 에 세 시나리오를 미리 적어 두었다. 결과는 **1번과 2번 사이**다.
+
+```text
+1번 C3 여전히 크지만 shrinking 이 C0 보다 나쁨  -> stale-plan 방지일 뿐. RL 근거 없음
+2번 C3 작아짐                                 -> 상당 부분이 acceptance artifact
+3번 shrinking 이 C0 까지 이김                  -> feedback 연구 재검토  <- 해당 없음
+```
+
+정확한 진술은 이것이다.
+
+> `C3` 크기의 절반쯤은 엄격한 minibatch 수락 규칙이 만든 것이었다. 나머지는
+> 부호가 일관된 실제 stale-plan 손해다. 그러나 두 수락 규칙 모두에서 `shrinking`
+> 은 stochastic regime 에서 `best_static` 을 이기지 못하고 `onestep` 을 비기는 데
+> 그친다. **3번 시나리오는 관측되지 않았다.**
+
+따라서 D24 의 PPO 보류 결정을 유지한다.
+
+#### 거절률은 **올라갔다.** 예상과 반대다
+
+```text
+                    control      fixed_eval
+committed  cs128      0.79          0.89
+committed  cs64       0.66          0.92
+shrinking  cs128      0.04          0.42
+shrinking  cs64       0.00          0.36
+onestep    cs64       0.00          0.57
+```
+
+`control` 에서는 `loss_before` 와 `candidate_loss` 가 **같은 minibatch** 위에 있다.
+방금 gradient 를 계산한 batch 의 loss 를 줄이는 것은 쉽다. `fixed_eval` 은 전체
+데이터 loss 의 감소를 요구하므로 훨씬 어렵다.
+
+즉 `fixed_eval` 은 완화가 아니라 **엄격화**다. "현재 batch 에 과적합하는 step" 을
+막는다. 과학적으로 옳은 방향이지만 거절이 늘어난다.
+
+#### ablation 이 단일 요인 변경이 아니라는 점을 명시한다
+
+`fixed_eval` 은 두 가지를 동시에 바꾼다.
+
+```text
+[1] 수락 기준이 참 목적함수로 바뀐다
+[2] 평가 forward 가 n_samples/batch_size 배 비싸므로 같은 예산에 들어가는 step 이 줄어든다
+```
+
+[2] 를 회계에서 빼면 비용을 숨기는 것이 되므로 넣었다. 그 대가로 **단일 요인
+ablation 이 아니다.** R2 의 절대 logΔ 가 전반적으로 낮아진 것은 두 효과가 섞인
+결과다.
+
+```text
+cs64        control   fixed_eval
+best_static   3.029      1.120
+onestep       3.468      0.575
+shrinking     2.757      1.002
+committed     1.086      0.073
+```
+
+**절대값 비교로 두 수락 규칙의 우열을 주장하지 않는다.** 같은 규칙 안의 paired
+delta 만 해석한다.
+
+#### `full_batch` 열은 의미 변화가 아니라 예산 교란이다
+
+`full_batch` 에서는 `acceptance_loss()` 와 `curvature_loss()` 가 같은 값이다. 따라서
+`fixed_eval` 이 바꾸는 것은 **step 마다 forward 1회를 더 청구하는 것뿐**이다
+(`acceptance_forward_units = 1.0`).
+
+```text
+best_static  full_batch   control 5.2199  ->  fixed_eval 5.1094
+```
+
+이 차이는 의미 변화가 아니라 예산이 조금 줄어든 효과다. **`full_batch` 의 두 열을
+"수락 규칙 비교" 로 읽으면 안 된다.**
+
+같은 값을 돌려주는 forward 를 청구하는 것은 비효율이지만, optimizer 가 실제로 그
+연산을 수행하므로 회계상 맞다. 특수 처리로 건너뛰는 것은 최적화이고 정확성 수정이
+아니므로 하지 않았다. **알려진 비효율로 남긴다.**
+
+#### `full_batch` 에서 `C3` 가 더 음수가 됐다
+
+```text
+C3 full_batch   control −0.095 (1/3)  ->  fixed_eval −0.949 (0/3)
+```
+
+엄격한 수락 규칙 아래에서는 결정론적 regime 에서도 재계획이 **적극적으로 해롭다.**
+`committed` 가 3/3 로 더 낫다. D26 의 quadratic held-out (`C3 = +0.010`, `n=40`) 과
+방향이 다르지만, 이쪽은 `n=3` 이고 예산 교란이 섞여 있으므로 **quadratic 결과를
+뒤집는 근거로 쓰지 않는다.**
+
+#### `C2` 의 micro-neural full_batch 값이 quadratic 과 다르다
+
+```text
+C2 quadratic held-out   +0.456  n=40  p<0.0001   GO
+C2 micro full_batch     −0.080  n=3   fixed_eval
+```
+
+`n=40` held-out 결과가 강한 쪽이다. `n=3` micro-neural 이 이를 뒤집지 못한다.
+**불일치 자체를 결과로 보고한다** (프로토콜 D9).
+
+### D30. GE 는 **FLOP 이 아니라 gradient 호출 횟수**다. regime 간 절대값 비교의 한계
+
+D1 의 정의는 이것이다.
+
+```text
+1 GE = gradient batch 1회 forward + backward
+```
+
+**task 자신의 gradient batch 를 단위로 쓴다.** 따라서 batch size 가 다르면 같은
+`150 GE` 가 다른 FLOP 을 뜻한다.
+
+```text
+full_batch (n=512)   1 GE = 512 샘플 gradient
+cs128                1 GE = 128 샘플 gradient
+cs64                 1 GE =  64 샘플 gradient
+```
+
+`150 GE` 에서 `full_batch` 는 `cs64` 의 약 **8배 FLOP** 을 쓴다.
+
+#### 무엇이 유효하고 무엇이 아닌가
+
+```text
+유효    regime 내부의 paired delta (A2, C2, C3)
+        같은 batch size, 같은 예산이므로 컨트롤러끼리 compute-matched 다
+
+주의    regime 간 절대 logΔ 비교
+        "같은 gradient 호출 횟수" 기준이며 "같은 FLOP" 기준이 아니다
+```
+
+따라서 `full_batch 20.396` 과 `cs64 2.757` 을 나란히 놓고 "결정론적 환경이 7배 더
+좋다" 고 쓰면 안 된다. 정확한 진술은 이것이다.
+
+> 같은 수의 gradient 평가를 허용했을 때, 결정론적 full-batch 목적함수에서 planner 가
+> 도달한 개선이 minibatch regime 보다 훨씬 컸다. 두 조건은 FLOP 이 아니라 gradient
+> 호출 횟수로 정규화됐다.
+
+#### 이 정의를 바꾸지 않는다
+
+FLOP 정규화로 바꾸면 `full_batch` 예산이 `1/8` 로 줄어 결정론적 조건의 결과가 전부
+무효가 된다. 그리고 D1 의 정의는 실측 `CostModel` 계수와 묶여 있다. **정의를
+유지하고 한계를 명시하는 쪽을 택한다.**
+
 ### D29. `batch_size` 축은 **중간 한 점만** 추가한다
 
 `batch_size ∈ {16, 32, 64, 128, ...}` 를 전면 스캔하면 프로젝트가 끝없이 늘어난다.
