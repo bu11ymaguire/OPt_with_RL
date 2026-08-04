@@ -431,7 +431,13 @@ class HeadroomConfig:
         return payload
 
     def aggregation_payload(self) -> dict[str, object]:
-        """집계 규칙 정체성. 바뀌면 재집계만 한다 (프로토콜 D13/D14)."""
+        """집계 규칙 정체성. 바뀌면 재집계만 한다 (프로토콜 D13/D14).
+
+        `targets` 는 **이 실행이 실제로 쓰는 spec 종류만** 담는다. 전체를 담으면
+        무관한 task 족의 target 을 추가하기만 해도 `aggregation_id` 가 바뀐다 (D32).
+        run 을 무효화하지는 않지만 보고 라벨이 이유 없이 달라진다.
+        """
+        kinds = {spec_kind_label(spec) for spec in self.specs}
         return {
             "aggregation_version": AGGREGATION_VERSION,
             "relative_loss_floor": RELATIVE_LOSS_FLOOR,
@@ -440,8 +446,9 @@ class HeadroomConfig:
             "utility_epsilon": UTILITY_EPSILON,
             "deep_fraction_tolerance": DEEP_FRACTION_TOLERANCE,
             "targets": {
-                kind: {level: spec.label for level, spec in levels.items()}
+                kind: {level: target.label for level, target in levels.items()}
                 for kind, levels in self.targets.items()
+                if kind in kinds
             },
         }
 

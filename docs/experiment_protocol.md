@@ -809,6 +809,12 @@ payload["targets"] = {k: v for k, v in self.targets.items() if k in kinds}
 개별 target 문자열은 `RunKey.target` 에 이미 들어 있다. 여기서 고정할 것은 "이 spec
 종류에 어떤 난이도 사다리를 썼는가" 뿐이다.
 
+#### 세 번째 사례: `aggregation_payload`
+
+같은 문제가 집계 정체성에도 있었다. `aggregation_id` 가 `ec5019fa2cc67699` 에서
+`1fb5800f9248290c` 로 바뀐 원인이다. run 을 무효화하지는 않지만 **보고 라벨이 이유
+없이 달라진다.** 같은 필터를 적용했다.
+
 #### 두 번째 사례: 표시용 `config_hash`
 
 `meta["acceptance_loss"]` 를 무조건 넣었더니 기본 설정 실험의 **raw 파일 경로**가

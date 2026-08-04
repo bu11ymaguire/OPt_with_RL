@@ -14,34 +14,38 @@ SHA-256 으로 고정된다. **본문에서 숫자를 손으로 고치지 않는
 
 ## Abstract
 
-*(리뷰어 검토 필요. 아래는 등록된 주장만으로 구성한 초안이다.)*
+*(리뷰어 검토 필요. 다섯 요소만 담았다: 문제 / 분해 / planning 결과 / feedback 결과
+/ stochastic 결과와 정책 학습 미진행.)*
 
-Hessian-free Newton-CG 에서 damping 과 CG 반복 예산을 최적화 도중 조절하면 고정
-설정보다 나은 결과를 얻을 수 있다. 그러나 그 이득이 **다단계 계획**에서 오는지
-**실행 중 상태 피드백**에서 오는지는 구분되어 보고된 적이 드물다 `[CITATION NEEDED]`.
+<!-- CLAIM: scope -->
+Hessian-free Newton-CG 에서 damping 과 CG 반복 예산의 배분을 **순차적 의사결정
+문제로 구성한다** `[CITATION NEEDED]`. 그 이득이 다단계 계획에서 오는지 실행 중
+상태 피드백에서 오는지를 분리해 측정하는 것이 목적이다.
 
-우리는 이 이득을 사다리로 분해했다. 고정 예산(150 gradient-equivalent, GE) 아래
-`d=100` ill-conditioned quadratic 네 개(`κ ∈ {10³, 10⁴, 10⁵, 10⁶}`)에서, 설정을 dev
-seed 로 한 번 고정한 뒤 **분리된 held-out seed 40 인스턴스**에서 측정했다.
+<!-- CLAIM: C07 -->
+고정 예산(150 gradient-equivalent, GE) 아래에서 상수 설정, 자원 시계 open-loop
+스케줄, 1-step greedy, 초기 상태에서 한 번 계획하고 그대로 실행하는 committed
+planner, 매 step 재계획하는 planner 를 같은 사다리에서 비교했다. 설정은 dev seed 에서
+한 번 고정하고 분리된 held-out seed 에서 측정했다.
 
-튜닝된 상수 설정 대비 다단계 재계획 planner 의 개선은 `+1.690 nat`(95% CI
-`+1.462 ~ +2.368`, `p<0.0001`, 40/40 인스턴스)였다. 같은 기준에서 1-step 상태 의존
-제어만으로 `+1.155 nat`(CI `+1.092 ~ +1.811`)를 얻는다. 직접 측정한 증분은 다단계
-lookahead 가 `+0.456 nat`(CI `+0.254 ~ +0.720`, `p<0.0001`, 35/40), 실행 중 재계획이
-`+0.010 nat`(CI `−0.033 ~ +0.053`, `p=0.97`, 21/40)였다. 즉 초기 상태에서 한 번
-계획하고 그대로 실행하는 oracle 과 매 step 재계획하는 oracle 사이에서 **실용적으로
-큰 차이가 관측되지 않았다.**
+<!-- CLAIM: C03 -->
+**차원 `d=100` 의 ill-conditioned 이면서 양정인(SPD) quadratic 네 족
+(`κ ∈ {10³, 10⁴, 10⁵, 10⁶}`) × held-out seed 10개, 40 인스턴스**에서, 다단계
+lookahead 는 1-step greedy 대비 `+0.456 nat`(95% CI `+0.254 ~ +0.720`, `p<0.0001`,
+35/40 인스턴스) 개선했다.
 
+<!-- CLAIM: C04 -->
+같은 40 인스턴스에서 실행 중 재계획은 committed planner 대비 `+0.010 nat`
+(95% CI `−0.033 ~ +0.053`, `p=0.97`, 21/40)였다. 신뢰구간이 좁고 0 을 포함했으며
+**실용적으로 큰 feedback 이득은 관측되지 않았다.**
+
+<!-- CLAIM: C12 -->
 탐색적 확장으로, 같은 모델과 데이터에 대해 optimizer 가 보는 표본만 바꾼
-micro-neural 문제를 두 regime 에서 비교했다. minibatch regime 에서는 낡은 계획을
-고수하는 것이 큰 손해였으나, planner 는 값싼 1-step 제어를 이기지 못했다. 이
-결과들은 사전 등록한 게이트 기준에서 상태 의존 feedback 정책을 학습할 실험적 근거를
-주지 않았고, 따라서 우리는 정책 학습 단계로 진행하지 않았다.
-
-방법론 부산물로, benchmark 적격성을 **수치 하한이 아니라 도달 가능한 상한**으로
-판정해야 한다는 것을 보인다. 표준 시작점의 Rosenbrock(`d=5`)에서 모든 참조 solver 와
-baseline 이 동일한 국소최소점에 도달했는데, 수치 하한 기준으로는 그 문제가 적격으로
-분류됐다.
+micro-neural 문제를 결정론적 full-batch 와 minibatch regime 에서 비교했다
+(`n=3` per regime). minibatch regime 에서는 낡은 계획을 고수하는 것이 큰 손해였고
+재계획이 그 손해를 줄였으나, **planner 는 값싼 1-step 제어를 안정적으로 이기지
+못했다.** 정책 학습은 사전 등록한 조건부 다음 단계였고, 이 증거로는 그 단계로
+진행하지 않았다.
 
 ---
 
@@ -78,21 +82,20 @@ step 당 CG 반복 예산                        [CITATION NEEDED]
 
 *(강도 조정은 리뷰어 검토 대상이다.)*
 
-```text
-1  Newton-CG 의 damping 과 CG 자원 배분을 순차적 의사결정 문제로 구성한다
-2  static -> open-loop -> greedy -> committed planning -> feedback replanning 을
-   분해해 동일 GE 예산에서 비교한다
-3  held-out quadratic 에서 다단계 planning 의 추가 가치를 확인하고
-   (+0.456 nat, CI +0.254~+0.720, p<0.0001, 35/40)
-   feedback 의 추가 가치는 관측하지 못했다
-   (+0.010 nat, CI −0.033~+0.053)
-4  수치 floor 와 reachable optimum 을 함께 고려한 benchmark eligibility audit
-   절차를 제시한다
-```
+> 1. We operationalize the control of damping and CG effort as a sequential decision
+>    problem.
+> 2. We present a controller ladder that separates multi-step planning from
+>    execution-time feedback.
+> 3. On held-out instances of ill-conditioned SPD quadratics, we confirm an additional
+>    value for multi-step planning (`+0.456 nat`, CI `+0.254 ~ +0.720`, `p<0.0001`,
+>    35/40) and do not observe a practically large additional value for feedback
+>    (`+0.010 nat`, CI `−0.033 ~ +0.053`).
+> 4. We document and apply an audit procedure required to make our controller
+>    comparisons identifiable.
 
-`4` 는 **보조 기여**다. 본문에서는 Methods 의 일부(`§5`)로 두고 Discussion 에서
-회수한다. 범용 benchmark framework 나 새 일반 이론이라고 부르지 않는다. 현재 증거는
-이 프로젝트의 benchmark 를 교정한 경험적 절차까지다.
+`1` 을 "새로운 MDP formulation" 처럼 쓰지 않는다. `4` 를 "general benchmark
+framework" 라고 쓰지 않는다. **보조 기여**이며 본문에서는 Methods 의 일부(`§5`)로
+두고 Discussion `§13.3` 에서 회수한다.
 
 정책 학습을 진행하지 않은 결정은 기여 목록에 넣지 않는다. `§12` 에서 **과학적
 결론과 프로젝트 go/no-go 결정을 분리해** 서술한다.
@@ -270,6 +273,8 @@ D   cost-to-target 헤드룸                     GO ≥ 1.2 배
 
 ### 5.1 수치 하한 기준이 실패하는 사례
 
+<!-- CLAIM: C08 -->
+
 초기 적격성 조건은 상한을 수치 하한으로 계산했다.
 
 ```text
@@ -300,6 +305,7 @@ L_ref        = min over reference runs started from the task's own initial point
 J_achievable = log L_0 − log max(L_ref, L_floor)
 ```
 
+<!-- CLAIM: C09 -->
 참조 solver panel 을 쓴다. 단일 solver 는 금지한다. `κ=10⁶` quadratic 에서 실측 근거가
 나왔다.
 
@@ -311,6 +317,7 @@ sgd     final nan
 
 L-BFGS 만 썼다면 `J_achievable` 을 약 `28.3 nat` 로 과소평가했을 것이다.
 
+<!-- CLAIM: C10 -->
 **다른 초기화의 결과는 상한을 올리지 않는다.** 컨트롤러는 항상 task 의 시작점에서
 출발하므로 다른 basin 의 최적값은 도달 가능한 값이 아니다. 진단으로만 기록한다.
 `(0.9, …, 0.9)` 에서 출발하면 Rosenbrock `d=5` 는 전역최소점에 도달하고, 그 값을
@@ -442,6 +449,8 @@ Table 2. `n=40`.
 
 ### 7.3 다단계 lookahead 는 1-step 을 이긴다
 
+<!-- CLAIM: C03 -->
+
 `C2 = +0.456 nat` 이고 CI 하한이 `+0.254` 로 GO 임계값 `0.3` 을 넘는다. P3 의 두
 조건이 모두 충족됐다.
 
@@ -458,6 +467,7 @@ Table 2. `n=40`.
 
 ### 7.4 실행 중 재계획
 
+<!-- CLAIM: C04 -->
 `C3 = +0.010 nat`, 95% CI `[−0.033, +0.053]`, 21승 1무 18패. CI 폭이 `0.086 nat` 로
 `A2` 의 `0.906 nat` 보다 한 자릿수 좁다.
 
@@ -471,6 +481,7 @@ Table 2. `n=40`.
 
 ### 7.5 행동 공간은 병목이 아니다
 
+<!-- CLAIM: C05 -->
 `absolute`(132 action, log10 범위 15.27)가 `narrow`(12 action, 범위 0.95) 대비 얻는
 것은 `+0.005 nat` 다. `wide − narrow` 는 `−0.001 nat` 다. damping 을 자유롭게 고를 수
 있게 해도 1-step 성능이 오르지 않는다. **음의 결과지만 값싼 좁은 행동 공간을
@@ -478,6 +489,7 @@ Table 2. `n=40`.
 
 ### 7.6 탐색 비용
 
+<!-- CLAIM: C06 -->
 Table 6. held-out median.
 
 | controller | decision-search GE | 예산 대비 |
@@ -495,6 +507,9 @@ Table 6. held-out median.
 **쌍별 차이의 median 은 선형이 아니다.** 따라서 아래 값들은 하나의 합으로 분해되지
 않는다. 각각을 **독립적으로 측정한 통계**로 읽어야 한다.
 
+<!-- CLAIM: C07 -->
+<!-- CLAIM: C01 -->
+<!-- CLAIM: C02 -->
 Table 7. held-out `n=40`, 모두 튜닝된 상수를 기준으로 한 쌍별 median.
 
 | treatment | median | 95% CI | p | 양수 |
@@ -551,6 +566,7 @@ Table 3. spec 별 `A2`, `n=10` each.
 | 10⁵ | +1.399 | [+0.953, +1.517] | 10/10 |
 | 10⁶ | +1.253 | [+0.966, +1.693] | 10/10 |
 
+<!-- CLAIM: C18 -->
 > Adaptive headroom did not increase monotonically with condition number; the largest
 > effect was observed at `κ=10³`. This suggests that condition number alone does not
 > explain the headroom.
@@ -690,6 +706,7 @@ gradient 와 HVP 는 계속 minibatch 에서 계산한다. 바뀌는 것은 수�
 | R2 batch 128 | −0.900 (1/3) | −0.598 (0/3) |
 | R2 batch 64 | −0.277 (1/3) | −0.093 (0/3) |
 
+<!-- CLAIM: C13 -->
 > This alternative criterion reduced, but did not eliminate, the apparent advantage of
 > replanning over a committed stale plan. The estimated `C3` magnitude decreased
 > substantially under the alternative acceptance criterion, indicating that the
@@ -700,6 +717,7 @@ gradient 와 HVP 는 계속 minibatch 에서 계산한다. 바뀌는 것은 수�
 
 ### 11.4 대체 기준은 완화가 아니라 엄격화였다
 
+<!-- CLAIM: C14 -->
 거절률이 올라갔다.
 
 | controller / regime | control | fixed-evaluation |
@@ -720,6 +738,7 @@ gradient 를 계산한 batch 의 loss 를 줄이는 것은 쉽다. 대체 기준
 회계에서 빼면 비용을 숨기는 것이 되므로 넣었고, 그 대가로 두 효과가 섞였다. 따라서
 두 열의 **절대값 비교로 수락 규칙의 우열을 주장하지 않는다.**
 
+<!-- CLAIM: C19 -->
 `R1` 열은 의미 비교가 아니다. `full-batch` 에서는 고정 평가 목적함수와 곡률 목적함수가
 같은 값이므로, 대체 기준이 바꾸는 것은 step 마다 forward 1회를 더 청구하는 것뿐이다
 (`best_static` `5.2199 → 5.1094`). 예산 교란이다.
@@ -734,31 +753,49 @@ gradient 를 계산한 batch 의 loss 를 줄이는 것은 쉽다. 대체 기준
 
 ### 12.1 Scientific conclusion
 
-> The experiments did not establish a consistent performance advantage for feedback
-> replanning over committed planning or inexpensive one-step control.
+**이 절은 결과만 서술한다.** 정책 학습이나 프로젝트 의사결정을 언급하지 않는다.
 
-근거는 다음이다.
+<!-- CLAIM: C03 -->
+1. 다단계 planning 은 held-out 에서 1-step 제어보다 개선됐다
+   (`+0.456 nat`, CI `+0.254 ~ +0.720`, 35/40).
 
-```text
-결정론적 quadratic (held-out n=40)
-  C3 = +0.010 nat, CI [−0.033, +0.053].  실용적으로 큰 feedback 이득 미관측
+<!-- CLAIM: C04 -->
+2. 실행 중 재계획은 committed planning 보다 의미 있게 개선되지 않았다.
+   `+0.010 nat`, 21/40.
 
-minibatch micro-neural (exploratory n=3)
-  C3 > 0 이지만 원인은 committed 붕괴다 (§10.3)
-  planner 가 튜닝된 상수와 1-step greedy 를 모두 이기지 못한다
-```
+> The confidence interval was narrow and included zero, and we did not observe a
+> practically large feedback benefit.
 
-**이것은 강화학습이 이 문제에서 실패한다는 주장이 아니다.** 정책을 학습하지 않았으므로
-학습 방법의 성능에 대해 말할 수 없다. 우리가 측정한 것은 oracle planner 의 헤드룸
-분해다.
+`equivalent` 나 `statistically the same` 을 쓰지 않는다. 사전 equivalence margin 이
+없다 `[CITATION NEEDED]`.
+
+<!-- CLAIM: C12 -->
+3. stochastic model mismatch 에서 committed plan 은 취약했다. 거절률이
+   `0.00 → 0.66~0.79` 로 올랐고 터미널 개선이 튜닝 상수보다 낮아졌다.
+
+<!-- CLAIM: C16 -->
+4. 재계획은 그 취약성을 줄였으나 값싼 1-step 제어를 안정적으로 이기지 못했다.
+   `replanning − one-step` 이 두 minibatch 조건에서 각각 `−1.111`, `−0.716`
+   (`n=3` per regime, exploratory).
 
 ### 12.2 Project decision
 
-> Under our predeclared go/no-go criteria, this evidence was insufficient to justify the
-> additional complexity and computation required for PPO training.
+> PPO training was a conditional next stage, not a required component of the study. We
+> predeclared empirical gates to determine whether the added implementation and
+> computational cost was justified. Because feedback replanning did not consistently
+> outperform committed planning or inexpensive one-step control, we did not proceed to
+> PPO.
 
-`decision-search` 비용이 배포 예산의 `1,294배` 라는 점도 이 판단에 들어간다. 상태 의존
-정책은 상태가 변할 때 행동을 바꾸는 것에 가치가 있어야 정당화된다 `[CITATION NEEDED]`.
+`decision-search` 비용이 배포 예산의 `1,294배` 라는 점도 이 판단에 들어간다.
+
+명확히 구분한다.
+
+```text
+PPO 가 실패한 것이 아니다
+PPO 를 실험하지 않았다
+강화학습 전반을 부정하는 것이 아니다
+현재 환경에서 상태 의존 학습 feedback 정책을 정당화할 헤드룸을 확보하지 못했다
+```
 
 ### 12.3 게이트의 지위
 
@@ -788,25 +825,43 @@ feedback 정책보다 **초기 문제 특징에서 스케줄을 예측하는 amo
 
 ### 13.1 Planning is not feedback
 
-이 연구의 사다리에서 이득이 나온 구간과 나오지 않은 구간이 갈린다.
+사다리의 각 구간이 서로 다른 능력의 가치를 잰다.
 
 ```text
-좋아짐    상수 -> 스케줄 -> 1-step -> 다단계 계획
-안 좋아짐  다단계 계획 -> 다단계 계획 + 실행 중 피드백
+상수 -> 1-step        상태별 즉시 선택의 가치
+1-step -> committed   다단계 lookahead 의 가치
+committed -> 재계획    실행 중 feedback 수정의 가치
 ```
+
+<!-- AVOID: C26 -->
+**이 값들을 산술적으로 빼서 분해하지 않는다.** 쌍별 차이의 median 은 선형이 아니다.
+실측에서 튜닝 상수 대비 `committed` 가 `+2.090`, `재계획` 이 `+1.690` 인데 직접 측정한
+`재계획 − committed` 는 `+0.010` 이다. spec 별로는 `+0.472 / −0.019 / +0.009 / +0.000`
+로 두 planner 가 사실상 동률이고, pooled median 이 서로 다른 인스턴스에 떨어져
+marginal 값 차이가 생긴다. **비교는 직접 쌍별 통계로만 한다** (`§8.1`, Figure 2).
 
 `Q1`(좋은 시퀀스가 존재하는가)은 지지되고 `Q2`(실행 중 수정할 가치가 있는가)는 이
 조건에서 지지되지 않는다. 결정론적 목적함수에서는 planner 의 내부 모델이 정확하므로
 초기 상태에서 세운 계획이 이미 최적 예측이고 재계획이 새 정보를 얻지 못한다.
 
-### 13.2 모델 오차가 planning 의 가치를 지운다
+### 13.2 모델 오차가 장기 계획의 위험을 키운다
 
-탐색적 micro-neural 결과는 방향을 하나 더 제시한다. minibatch regime 에서는 낡은
-계획을 고수하는 것이 큰 손해였지만(거절률 `0.00 → 0.66~0.79`), planner 자체도 튜닝된
-상수와 1-step greedy 를 이기지 못했다.
+<!-- CLAIM: C16 -->
+탐색적 micro-neural 결과는 이렇게 정리된다.
 
-즉 모델이 정확할 때 planning 이 가치가 있고 feedback 은 없으며, 모델이 부정확해지면
-planning 의 가치도 사라진다. **`n=3` exploratory 이므로 크기를 주장하지 않는다.**
+> 장기 계획은 내부 예측 모델이 정확할 때 가치가 있고, 모델이 틀리면 stale plan 의
+> 위험이 커진다.
+
+minibatch regime 에서 committed plan 의 거절률이 `0.00 → 0.66~0.79` 로 올랐고 터미널
+개선이 튜닝 상수보다 낮아졌다. 재계획은 그 손해를 줄였다.
+
+**그러나 같은 조건에서 재계획은 1-step 제어보다 나쁘다.** `재계획 − 1-step` 이 두
+minibatch 조건에서 각각 `−1.111`, `−0.716` 이고 `재계획 − 튜닝 상수` 도 각각
+`−0.900`, `−0.277` 이다. 즉 `committed → 재계획` 의 양수 값만 보고 학습 feedback
+정책의 필요성을 읽으면 안 된다. **그 양수는 stale plan 회피이지 값싼 myopic 제어에
+대한 우위가 아니다.**
+
+`n=3` per regime 이므로 크기를 주장하지 않는다.
 
 ### 13.3 Benchmark audit 이 왜 필요했는가
 
@@ -909,14 +964,38 @@ E11 결과 식별자에 해당 run 이 쓰지 않는 설정이 포함되어 있�
 > fixed-budget comparisons were unaffected, and the cost-to-target statistic is a
 > re-aggregation of the same measurements.
 
-### 범위
+### 범위와 교란
 
+<!-- CLAIM: C17 -->
 ```text
-quadratic 4 spec (d=100 고정), micro-neural 1 모델
-예산 150 GE 단일 지점. 예산 축을 스캔하지 않았다
-CPU 단일 스레드. GPU 결과가 아니다
-planner 는 oracle 이다. 배포 가능한 방법이 아니다
+[L1] 핵심 confirmatory 결과는 synthetic ill-conditioned SPD quadratic 에 한정된다
+     d=100 고정, κ 네 값, held-out seed 10개
+
+[L2] micro-neural 결과는 regime 당 n=3 의 exploratory evidence 다
+     CI 와 p-value 를 인용하지 않는다
+
+[L3] acceptance ablation 은 평가 forward 비용까지 포함하므로 단일 요인 변화가 아니다
+     수락 기준과 유효 step 수가 함께 바뀐다
+
+[L4] GE 는 regime 내부의 oracle-call matching 이며 batch size 간 FLOP matching 이
+     아니다. regime 간 절대값 비교는 descriptive 다
+
+[L5] fixed-evaluation criterion 은 "완화" 가 아니다. 실측에서 거절률이 올라간
+     더 엄격한 기준이다
+
+[L6] beam search 비용이 object-level 예산보다 매우 크다
+     decision-search 194,095 GE / 150 GE = 1,294배
+
+[L7] D21 규칙은 전체 실행 전에 확정했지만 비용 측정용 dry-run 게이트 표를 본 뒤
+     확정했다. protocol deviation 으로 기록한다 (E1)
+
+[L8] PPO 를 직접 실행하지 않았으므로 learned policy 성능에 대한 결론을 낼 수 없다
+
+[L9] Hessian-free Newton 계열 전체나 일반 neural optimization 으로 일반화할 수 없다
 ```
+
+Rosenbrock 의 benchmark 결함과 median 규약 수정은 `§15` 와 위 이탈 목록에 있다.
+여기서 반복하지 않는다.
 
 ---
 

@@ -155,9 +155,13 @@ def figure1(raw_dir: Path, out: Path) -> None:
         color="#555555",
     )
 
+    # **역할 분리.** Figure 1 은 절대 성능을 설명한다. 인과적 분해와 핵심 주장은
+    # Figure 2 의 직접 쌍별 delta 에서만 가져온다.
     fig.suptitle(
-        "Figure 1. Controller ladder on held-out instances (4 specs $\\times$ 10 seeds)",
-        fontsize=10,
+        "Figure 1. Absolute performance of the controller ladder on held-out instances\n"
+        "(4 ill-conditioned SPD quadratic specs $\\times$ 10 seeds). "
+        "Descriptive; see Figure 2 for the decomposition.",
+        fontsize=9.5,
     )
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")
@@ -230,8 +234,10 @@ def figure2(raw_dir: Path, out: Path) -> None:
         axes[1].legend(fontsize=8, loc="lower right")
 
     fig.suptitle(
-        "Figure 2. Multi-step planning helps; replanning during execution adds little",
-        fontsize=10,
+        "Figure 2. Directly measured paired effects. Multi-step planning improves over "
+        "one-step control;\nreplanning during execution shows no practically large "
+        "benefit over a committed plan.",
+        fontsize=9.5,
     )
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")

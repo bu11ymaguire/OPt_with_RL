@@ -206,10 +206,50 @@ planner 는 oracle 이며 배포 가능한 방법이 아니다
 
 프로토콜 이탈 `E1~E11` 은 `paper/claim_ledger.md` 에 전부 기록돼 있다.
 
-## 상태
+## 상태와 태그의 의미
 
 ```text
-실험        Stage 2 종료. protocol-freeze-stage2-v1 태그
-원고        초안 (paper/draft.md). 주장 강도 검토 중
-테스트      455개 통과
+실험    Stage 2 종료
+원고    초안 (paper/draft.md). 주장 강도 검토 중
+테스트  455개 통과
 ```
+
+`protocol-freeze-stage2-v1` 태그는 **프로토콜과 설정이 고정된 시점**을 가리킨다.
+
+```text
+태그가 보장하는 것
+  게이트 정의와 임계값, 설정 선택 규칙, challenge spec 과 seed 역할이 그 시점에
+  확정되어 있고 이후 결과를 보고 바꾸지 않았다
+
+태그 이후 커밋에 포함된 것
+  원고 작성, 그림 생성, README 재작성
+  보고 도구의 median 규약 통일 (E10)
+  run_semantics_id 에서 무관한 설정 제거 (E11, D32)
+
+태그 이후에 하지 않은 것
+  게이트 임계값 변경
+  설정 재선택
+  새 실험 조건 추가
+```
+
+`git diff protocol-freeze-stage2-v1..HEAD` 로 확인할 수 있다. 실험 조건이 아닌 변경만
+들어 있다.
+
+## 주장 검증
+
+원고 문장과 claim ledger 를 기계적으로 대조한다. 사람이 읽어 확인하면 누락이 생긴다.
+
+```bash
+python scripts/check_claims.py
+```
+
+```text
+SUPPORTED / LIMITED claim 이 draft 에 최소 1회 인용됐는가
+NOT SUPPORTED claim 이 주장으로 인용되지 않았는가   (AVOID: 표시는 허용)
+금지 표현이 draft 에 없는가
+숫자를 담은 claim 에 evidence source 가 있는가
+draft 의 claim ID 가 ledger 에 존재하는가
+```
+
+원고에는 `<!-- CLAIM: C03 -->` 형태의 주석을 붙인다. HTML 주석이므로 PDF 에는 나오지
+않는다.
