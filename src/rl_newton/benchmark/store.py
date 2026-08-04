@@ -104,13 +104,15 @@ SELECTION_SEMANTICS_VERSION = 1
 재현 가능해야 한다.
 """
 
-AGGREGATION_VERSION = 2
+AGGREGATION_VERSION = 3
 """집계 의미 버전 (프로토콜 D13/D14).
 
 log floor 정책, 포화 분류, paired intersection 규칙, bootstrap 설정, 게이트
 정의, report schema. **이것이 바뀌면 raw run 은 그대로 두고 재집계만 한다.**
 
 2: D14 relative loss floor 와 포화 분류 도입.
+3: primary(비포화 task) / all-task / saturation diagnostic 3층 보고 도입.
+   bridge 분류에서 범위 밖(``LEGACY_ONLY_OUT_OF_SCOPE``)과 누락을 구별.
 """
 
 

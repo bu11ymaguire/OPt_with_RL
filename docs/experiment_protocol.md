@@ -527,7 +527,94 @@ Track T 지표(`cost_to_target_ge`, `reached`)는 목표 도달 시점으로 정
 `B ≤ A` 였다. **고정 예산 비교에서는 "예산"과 "실제 소모량"을 항상 함께
 확인한다.**
 
-### D17. open-loop 스케줄의 시계를 GE 예산으로 바꾼다
+### D18. Bridge 검증 규칙을 실행 전에 수치로 고정한다
+
+D13(3계층 정체성), D16(selection manifest), D17(open-loop resource clock) 은
+**실행 의미를 바꾸지 않아야 한다.** identity / logging / baseline 시계만 고쳤다.
+그러면 planner trajectory 는 legacy pilot 과 동일해야 한다. 이것을 확인하는 것이
+bridge 다.
+
+#### tolerance
+
+동일 CPU, float64, 단일 스레드, 동일 seed 이므로 **기대값은 bitwise exact** 다.
+tolerance 는 bitwise 가 깨졌을 때만 보조로 쓴다.
+
+```python
+REL_TOL = 1.0e-12
+ABS_TOL = 1.0e-14
+bitwise_equal or math.isclose(legacy, new, rel_tol=REL_TOL, abs_tol=ABS_TOL)
+```
+
+**정확히 0인 loss 는 양쪽 모두 `0.0` 이어야 한다.** `0` 과 작은 양수를 단순히
+tolerance 로 같다고 넘기면 D14 의 saturation 상태가 바뀐다.
+
+#### 분류 (실행 전 고정)
+
+```text
+EXACT                 bitwise 동일
+CLOSE                 수치 tolerance 만 통과
+MISMATCH              tolerance 도 실패
+ZERO_MISMATCH         한쪽만 정확히 0. 별도로 센다
+LEGACY_FIELD_MISSING  legacy 에 새 계측 필드가 없음. 실패로 세지 않는다
+MISSING / DUPLICATE   키에 행이 0개 또는 2개 이상. 비교하지 않는다
+```
+
+#### legacy row 선택은 결정론적으로
+
+같은 논리적 run 이 여러 `experiment_id` 에 존재하므로 기준을 명시한다.
+
+```text
+legacy_reference_experiment_id = 0a63f5e6de3d
+```
+
+각 `(mode, quota, space, task, seed)` 키에 legacy 1행, new 1행이 정확히 있어야
+한다. **중복을 평균하거나 최신 timestamp 로 임의 선택하지 않는다.** 0개나 2개
+이상이면 `MISSING` / `DUPLICATE` 로 분류하고 비교를 보류한다.
+
+#### exact match가 기대되는 항목
+
+```text
+object GE / step 수 / termination reason / total HVP / search GE
+action counts / chosen-depth counts
+raw final loss / initial loss
+planner_stats: mean_simulations, depth_cap_hit, quota_ge, max_depth_seen
+```
+
+**`mean_simulations` 가 달라지면 로깅 차이로 넘기지 않는다.** 탐색 순서, pruning,
+incumbent carry-over, 컨트롤러 구현이 달라졌을 가능성이 있으므로 trajectory 가
+같아도 원인을 규명한다.
+
+legacy 에 없을 수 있는 새 계측값(`suffix_retention_rate`, `n_replans`,
+`windows`)은 `LEGACY_FIELD_MISSING` 으로 처리한다.
+
+#### 통과 조건
+
+```text
+모든 공통 이산 필드 exact match
+loss 는 bitwise 또는 tolerance 충족
+설명되지 않는 MISMATCH / ZERO_MISMATCH / DUPLICATE / MISSING 이 0개
+```
+
+통과하면 beam 4 전체를 다시 돌리지 않고 사전 등록된 beam 8 로 넘어간다.
+
+#### 실패 시 진단 순서
+
+aggregate median 을 먼저 보지 않는다. **최초로 갈라지는 지점**을 찾는다.
+
+```text
+첫 action -> 초기 계획 sequence -> 첫 planner 후보 점수
+-> remaining quota -> 실제 첫 step GE -> 다음 상태의 loss / grad norm
+```
+
+최종 loss 부터 역추적하면 원인을 좁히기 어렵다.
+
+#### calibration은 별도로 취급한다
+
+`calibrate-beam` 이 쓰는 컨트롤러를 `fresh` → `shrinking` 으로 고쳤다 (D13
+커밋). 이것은 **실제 의미 변경**이므로 일반 planner bridge 와 섞어 비교하지
+않는다. calibration run 은 bridge 대상에서 제외한다.
+
+### D17. open-loop 스케줄의 시계를 GE 예산으로 바꼾다
 
 #### 기존 결함
 
@@ -735,19 +822,43 @@ beam 4 pilot 재집계 실측: `B-wide` 는 주 `+0.308`(조건부) 대 비포�
 `+0.115`(조건부)로 **세 게이트에서 결론이 뒤집혔다.** 9쌍 중 3쌍이 `rosen_d2`
 포화이고 그 쌍의 delta 가 0 이어서 중앙값을 지배한다.
 
-#### confirmatory에서 Rosenbrock d=2를 primary에서 분리한다
+#### Rosenbrock d=2를 primary에서 분리하고 세 층으로 보고한다
 
-`d=2` Rosenbrock 은 150 GE 에서 여러 컨트롤러가 정확한 최적점에 도달한다. 더 이상
-adaptive controller 의 성능 차이를 재는 benchmark 가 아니라 sanity check 다.
+`d=2` Rosenbrock 은 150 GE 에서 여러 컨트롤러가 정확한 최적점(`loss = 0.0`)에
+도달한다. 더 이상 adaptive controller 의 성능 차이를 재는 benchmark 가 아니라
+sanity check 다.
+
+**결과를 보고 불리한 task 를 제거하는 것이 아니다.** beam 8 실행 전에 다음을
+확인하고 정했다.
 
 ```text
-Primary Track E:        quadratic, Rosenbrock d=5/d=10, micro-neural
-Saturation diagnostic:  Rosenbrock d=2
+여러 컨트롤러가 정확히 loss = 0 에 도달
+9쌍 중 동일한 3쌍이 joint saturation
+floor 처리 때문에 paired delta 가 기계적으로 0 으로 고정
+  A2 = +0.000, C2 = +0.000, C3 = +0.000  (전부 joint=3)
 ```
 
-`d=2` 를 삭제하지 않고 별도 표에서 floor 도달률, 정확한 0 도달률, GE-to-zero,
-컨트롤러별 step 수를 보고한다. **전체 GE budget 을 낮추지 않는다.** 낮추면 어려운
-quadratic 과 Rosenbrock 에서 필요한 헤드룸까지 제거된다.
+##### 세 층을 **동시에** 보고한다
+
+```text
+Primary nonsaturated task set        quadratic 2 specs x 3 seeds   n=6
+All-task floor-capped sensitivity    기존 9쌍                      n=9
+Rosenbrock d2 saturation diagnostic  rosen_d2 x 3 seeds            n=3
+```
+
+**`n=6` 결과만 primary 로 바꾸고 `n=9` 를 숨기지 않는다.** 둘을 함께 내야 선택적
+제외 논란을 피할 수 있다.
+
+`d=2` 진단 표에는 정확한 0 도달률, floor-hit 비율, GE-to-zero, 컨트롤러별 step
+수를 넣는다.
+
+**전체 GE budget 을 낮추지 않는다.** 낮추면 어려운 quadratic 과 Rosenbrock 에서
+필요한 헤드룸까지 제거된다.
+
+##### `n=6` 은 표본이 작다
+
+`GO` / `재설계` 이진 라벨보다 **6개 개별 paired delta 를 함께 출력**한다. CI 와
+p-value 가 거칠기 때문이다.
 
 ### D15. 재계획이 계획을 실제로 바꿨는지 행동 내용으로 계측한다
 

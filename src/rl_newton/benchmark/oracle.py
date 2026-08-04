@@ -53,6 +53,8 @@ from rl_newton.benchmark.metrics import (
     compare_paired,
     compare_paired_delta,
     drop_saturated_pairs,
+    saturation_report,
+    split_by_task_family,
     summarize_group,
     summarize_run,
 )
@@ -190,6 +192,13 @@ class HeadroomConfig:
     """``fresh`` 를 wide 행동 공간에서도 돌릴지.
 
     가장 비싼 조합이고 진단 목적에는 narrow 만으로 충분하다.
+    """
+    saturated_task_prefixes: Sequence[str] = ("rosen_d2",)
+    """primary 게이트에서 분리할 포화 task (프로토콜 D14).
+
+    ``rosen_d2`` 는 150 GE 에서 여러 컨트롤러가 정확히 ``loss = 0`` 에 도달해
+    paired delta 를 기계적으로 0 으로 만든다. **버리지 않고 세 층으로 보고한다.**
+    이것은 집계 규칙이므로 ``aggregation_payload`` 에 들어간다.
     """
     execution_modes: Sequence[str] = ("shrinking", "committed", "fresh")
     """돌릴 실행 방식 (프로토콜 D12). **sweep 커버리지이므로 run 정체성이 아니다.**
@@ -376,6 +385,7 @@ class HeadroomConfig:
         return {
             "aggregation_version": AGGREGATION_VERSION,
             "relative_loss_floor": RELATIVE_LOSS_FLOOR,
+            "saturated_task_prefixes": sorted(self.saturated_task_prefixes),
             "utility_tolerance": UTILITY_TOLERANCE,
             "utility_epsilon": UTILITY_EPSILON,
             "deep_fraction_tolerance": DEEP_FRACTION_TOLERANCE,
@@ -912,6 +922,12 @@ class HeadroomReport:
     """실행 흔적 (git commit, dirty, hostname, 시각). 어떤 ID 에도 안 들어간다."""
     selections: dict[str, SelectionManifest] = field(default_factory=dict)
     """baseline 튜닝 근거 (프로토콜 D16). ``static`` / ``open_loop``."""
+    saturation_diagnostics: dict[str, dict[str, float]] = field(default_factory=dict)
+    """primary 에서 분리한 포화 task 의 진단 지표 (프로토콜 D14).
+
+    ``rosen_d2`` 를 버리지 않고 별도 표로 보고한다. 정확한 0 도달률, floor-hit
+    비율, GE-to-zero, step 수.
+    """
 
     def summary_table(self) -> str:
         header = (
@@ -1501,6 +1517,34 @@ def run_headroom(
         d = compare_paired_delta(b, t, metric="log_improvement")
         return f"{d.median_delta:+.3f} nat (n={d.n_valid})"
 
+    # --- 3층 보고 (프로토콜 D14). primary / all-task / saturation diagnostic ---
+    #
+    # primary 만 내고 all-task 를 숨기면 선택적 제외가 된다. **함께 낸다.**
+    def three_layer(base: Sequence[RunSummary], treat: Sequence[RunSummary]) -> str:
+        prefixes = config.saturated_task_prefixes
+        pb, _ = split_by_task_family(base, exclude_prefixes=prefixes)
+        pt, _ = split_by_task_family(treat, exclude_prefixes=prefixes)
+        if not pb or not pt:
+            return ""
+        p = compare_paired_delta(pb, pt, metric="log_improvement")
+        a = compare_paired_delta(base, treat, metric="log_improvement")
+        # n 이 작으므로 개별 delta 도 낸다. 이진 라벨만으로는 거칠다.
+        # delta = treat - base. 양수면 treat 가 좋다 (표 전체와 같은 부호 규칙).
+        base_by_key = {(r.task_instance_id, r.seed): r for r in pb}
+        deltas = [
+            t.log_improvement - base_by_key[(t.task_instance_id, t.seed)].log_improvement
+            for t in pt
+            if (t.task_instance_id, t.seed) in base_by_key
+        ]
+        listed = ", ".join(f"{d:+.3f}" for d in deltas if math.isfinite(d))
+        return (
+            f"primary(포화 {list(prefixes)} 제외) {p.median_delta:+.3f} nat "
+            f"n={p.n_valid} CI {p.delta_ci[0]:+.3f}~{p.delta_ci[1]:+.3f} "
+            f"| all-task {a.median_delta:+.3f} nat n={a.n_valid} "
+            f"포화 joint={a.n_joint_saturated} "
+            f"| primary 개별 [{listed}]"
+        )
+
     gate_a1_nonsat = e_delta_nonsat(static_runs, onestep_runs["onestep_absolute"])
     gate_b_nonsat = e_delta_nonsat(
         onestep_runs["onestep_narrow"], onestep_runs["onestep_absolute"]
@@ -1547,6 +1591,9 @@ def run_headroom(
             unit="nat",
             go_threshold=0.7,
             pivot_threshold=0.2,
+            nonsaturated=three_layer(
+                static_runs, planner_runs.get(f"shrinking_Q{max_q:g}_narrow") or []
+            ),
             detail=(
                 f"narrow {gate_a2_narrow:+.3f}, wide {gate_a2_wide:+.3f} nat. "
                 "A1 대비 크게 낮으면 행동 공간 도달성이 병목이다."
@@ -1613,6 +1660,17 @@ def run_headroom(
             ),
         )
     )
+    # 포화 task 진단 표 (프로토콜 D14). 분리한 task 를 버리지 않고 별도로 낸다.
+    for label in ("best_static", "onestep_narrow", shrink, commit):
+        group = report.groups.get(label)
+        if group is None:
+            continue
+        _, sat_runs = split_by_task_family(
+            group.runs, exclude_prefixes=config.saturated_task_prefixes
+        )
+        if sat_runs:
+            report.saturation_diagnostics[label] = saturation_report(sat_runs)
+
     gate_c2 = e_delta("onestep_narrow", shrink)
     q1_gain = e_delta("onestep_narrow", f"shrinking_Q{min_q:g}_narrow")
     report.gates.append(
@@ -1627,6 +1685,9 @@ def run_headroom(
             unit="nat",
             go_threshold=0.3,
             pivot_threshold=0.05,
+            nonsaturated=three_layer(
+                onestep_runs["onestep_narrow"], planner_runs.get(shrink) or []
+            ),
             detail=(
                 f"깊이/상한(shrinking): {' '.join(depth_notes)}. "
                 f"참고 Q={min_q:g}(depth 1만 가능) - C0 = {q1_gain:+.3f} nat. "
@@ -1648,6 +1709,9 @@ def run_headroom(
             unit="nat",
             go_threshold=0.3,
             pivot_threshold=0.05,
+            nonsaturated=three_layer(
+                planner_runs.get(commit) or [], planner_runs.get(shrink) or []
+            ),
             detail=(
                 "약 0 이면 좋은 sequence 는 존재하지만 feedback 자체의 추가 "
                 "가치는 작다. 음수면 approximate replanning 이 계획을 훼손한다. "

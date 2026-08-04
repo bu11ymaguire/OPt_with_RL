@@ -302,3 +302,98 @@ class TestExclusionIsRecorded:
         b, t = drop_saturated_pairs(base, treat)
         assert [r.task_instance_id for r in b] == ["i1"]
         assert len(t) == 1
+
+
+# ---------------------------------------------------------------------------
+# 3층 보고: primary / all-task / saturation diagnostic (프로토콜 D14)
+# ---------------------------------------------------------------------------
+
+
+class TestTaskFamilySplit:
+    """포화 task 를 primary 에서 분리하되 **버리지 않는다.**
+
+    `rosen_d2` 는 150 GE 에서 여러 컨트롤러가 정확히 0 에 도달해 paired delta 를
+    기계적으로 0 으로 만든다. n=6 primary 만 내고 n=9 를 숨기면 선택적 제외다.
+    """
+
+    def _runs(self):
+        return [
+            make_summary(controller="c", instance="quad_spd_d64_seed0", final_loss=1.0),
+            make_summary(controller="c", instance="quad_ill_d100_seed0", final_loss=0.5),
+            make_summary(controller="c", instance="rosen_d2_s100_seed0", final_loss=0.0),
+        ]
+
+    def test_split_separates_by_prefix(self):
+        from rl_newton.benchmark.metrics import split_by_task_family
+
+        primary, excluded = split_by_task_family(self._runs(), exclude_prefixes=("rosen_d2",))
+        assert [r.task_instance_id for r in primary] == [
+            "quad_spd_d64_seed0",
+            "quad_ill_d100_seed0",
+        ]
+        assert [r.task_instance_id for r in excluded] == ["rosen_d2_s100_seed0"]
+
+    def test_nothing_is_dropped(self):
+        from rl_newton.benchmark.metrics import split_by_task_family
+
+        runs = self._runs()
+        primary, excluded = split_by_task_family(runs, exclude_prefixes=("rosen_d2",))
+        assert len(primary) + len(excluded) == len(runs)
+
+    def test_empty_prefix_list_keeps_everything(self):
+        from rl_newton.benchmark.metrics import split_by_task_family
+
+        primary, excluded = split_by_task_family(self._runs(), exclude_prefixes=())
+        assert len(primary) == 3
+        assert excluded == []
+
+    def test_saturation_report_measures_zero_rate(self):
+        from rl_newton.benchmark.metrics import saturation_report
+
+        runs = [
+            make_summary(controller="c", instance="rosen_d2_a", final_loss=0.0),
+            make_summary(controller="c", instance="rosen_d2_b", final_loss=0.0),
+            make_summary(controller="c", instance="rosen_d2_c", final_loss=1.0),
+        ]
+        rep = saturation_report(runs)
+        assert rep["n"] == 3
+        assert rep["exact_zero_rate"] == pytest.approx(2 / 3)
+        assert rep["floor_hit_rate"] == pytest.approx(2 / 3)
+
+    def test_saturation_report_on_empty_is_empty(self):
+        from rl_newton.benchmark.metrics import saturation_report
+
+        assert saturation_report([]) == {}
+
+    def test_saturated_pairs_pin_the_all_task_median_to_zero(self):
+        """실측 재현: 포화 쌍이 다수면 all-task median 이 기계적으로 0 이 된다.
+
+        beam 4 pilot 에서 9쌍 중 3쌍이 joint saturation 이었고 A2·C2·C3 가 모두
+        정확히 `+0.000` 으로 나왔다. 포화 쌍의 delta 가 0 이므로 median 을
+        차지하면 실제 개선이 보이지 않는다.
+        """
+        from rl_newton.benchmark.metrics import compare_paired_delta, split_by_task_family
+
+        # quad 2쌍은 개선, rosen 3쌍은 양쪽 포화 -> delta 0 이 과반이 된다.
+        base = [
+            make_summary(controller="b", instance=f"quad_{i}", final_loss=1.0) for i in range(2)
+        ]
+        treat = [
+            make_summary(controller="t", instance=f"quad_{i}", final_loss=0.1) for i in range(2)
+        ]
+        for i in range(3):
+            base.append(make_summary(controller="b", instance=f"rosen_d2_{i}", final_loss=0.0))
+            treat.append(make_summary(controller="t", instance=f"rosen_d2_{i}", final_loss=0.0))
+
+        all_task = compare_paired_delta(base, treat)
+        pb, _ = split_by_task_family(base, exclude_prefixes=("rosen_d2",))
+        pt, _ = split_by_task_family(treat, exclude_prefixes=("rosen_d2",))
+        primary = compare_paired_delta(pb, pt)
+
+        assert all_task.n_valid == 5
+        assert all_task.n_joint_saturated == 3
+        # 포화 쌍이 과반이라 median 이 0 으로 고정된다. 실측과 같은 현상이다.
+        assert all_task.median_delta == pytest.approx(0.0)
+        # primary 는 실제 개선을 드러낸다.
+        assert primary.n_valid == 2
+        assert primary.median_delta == pytest.approx(math.log(10.0))

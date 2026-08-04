@@ -42,6 +42,8 @@ __all__ = [
     "compare_paired",
     "compare_paired_delta",
     "drop_saturated_pairs",
+    "split_by_task_family",
+    "saturation_report",
     "budget_respecting_prefix",
     "RELATIVE_LOSS_FLOOR",
     "recovery_ratio",
@@ -675,6 +677,44 @@ def _bootstrap_median_ci(
     lo = samples[int(alpha * len(samples))]
     hi = samples[min(len(samples) - 1, int((1.0 - alpha) * len(samples)))]
     return lo, hi
+
+
+def split_by_task_family(
+    runs: Sequence[RunSummary], *, exclude_prefixes: Sequence[str]
+) -> tuple[list[RunSummary], list[RunSummary]]:
+    """``(primary, excluded)``. task_instance_id 접두사로 나눈다 (프로토콜 D14).
+
+    포화된 쉬운 task 를 primary 게이트에서 분리하되 **버리지 않는다.** 세 층으로
+    함께 보고한다.
+
+    ```text
+    Primary nonsaturated   excluded 제외
+    All-task sensitivity   전부
+    Saturation diagnostic  excluded 만
+    ```
+    """
+    primary: list[RunSummary] = []
+    excluded: list[RunSummary] = []
+    for run in runs:
+        target = excluded if run.task_instance_id.startswith(tuple(exclude_prefixes)) else primary
+        target.append(run)
+    return primary, excluded
+
+
+def saturation_report(runs: Sequence[RunSummary]) -> dict[str, float]:
+    """포화 진단 지표 (프로토콜 D14). 분리한 task 를 별도 표로 보고할 때 쓴다."""
+    if not runs:
+        return {}
+    n = len(runs)
+    zero = [r for r in runs if r.exact_zero]
+    return {
+        "n": float(n),
+        "exact_zero_rate": len(zero) / n,
+        "floor_hit_rate": sum(1 for r in runs if r.floor_hit) / n,
+        "median_ge_to_zero": _median([r.total_cost_ge for r in zero]),
+        "median_steps": _median([float(r.n_steps) for r in runs]),
+        "median_log_improvement": _median([r.log_improvement for r in runs]),
+    }
 
 
 def drop_saturated_pairs(
