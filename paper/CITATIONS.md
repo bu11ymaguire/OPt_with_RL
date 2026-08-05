@@ -1,12 +1,21 @@
-# 인용 내용 검증 체크리스트
+# 인용 검증 체크리스트
 
-`paper/references.bib` 의 `note` 필드는 **서지정보**가 맞는지만 기록한다. 이 문서는 다른
-질문을 다룬다.
+**이 문서가 인용 검증의 유일한 기록이다.** `paper/references.bib` 에는 출판에 필요한
+정상 서지정보만 둔다. 검증 상태와 오인용 위험을 `.bib` 의 필드로 넣지 않는다.
+`plainnat` 이 `note` 필드를 조판 결과에 인쇄하므로, 거기에 내부 메모를 적으면 그 메모가
+논문 참고문헌 목록에 그대로 나온다.
 
-> 그 논문이 실제로 우리가 그 자리에서 하는 말을 지지하는가?
+이 문서는 두 질문을 나눠 다룬다.
+
+```text
+서지정보가 맞는가            -> §9 서지정보 검증 출처, §7 남은 항목
+그 논문이 실제로 우리가      -> §1~§6 판정과 주의
+그 자리에서 하는 말을
+지지하는가
+```
 
 두 작업은 분리해야 한다. 서지정보가 정확해도 인용이 틀릴 수 있다. `scripts/check_claims.py`
-의 `[6]` 검사는 키가 존재하는지와 서지정보가 `TODO` 가 아닌지만 본다. **내용 일치는
+의 `[6]` 검사는 키가 존재하는지와 항목에 `TODO` 가 남아 있지 않은지만 본다. **내용 일치는
 기계로 확인할 수 없으므로 이 문서로 관리한다.**
 
 ## 판정 기호
@@ -154,8 +163,10 @@ regime 과 설정이 가깝다. 다만 원문은 **해법**을 제시하는 논�
 판정       DIRECT (용어 정의)
 ```
 
-주의. 서지정보가 부분 미확인이다(`references.bib` 참조). 최종본에서 arXiv ID 로 인용하거나
-FnT 권/호/페이지를 확정한다.
+주의. 서지정보가 부분 미확인이다(`§7 [C2]`, `§9`). FnT 권/호/페이지를 확정하지 못했으므로
+`.bib` 항목의 `note` 에 `arXiv:2202.00665` 를 두어 참고문헌에 arXiv ID 가 인쇄되게 했다.
+이 `note` 는 내부 메모가 아니라 독자용 서지정보다. 최종본에서 권/호/페이지를 확정하면
+지운다.
 
 ---
 
@@ -308,3 +319,89 @@ seed 복제 검출, 정체성 3층 분리, bitwise 재현 검사 (§4.3, §5.3)
 `§4.1` 의 "컨트롤러가 난수를 얼마나 쓰든 인스턴스가 같다" 도 여기 속한다. 초안에는
 `[CITATION NEEDED]` 가 붙어 있었으나, 이는 문헌에서 가져온 주장이 아니라 우리 실행기의
 설계 사실이므로 인용을 붙이지 않고 `§4.3` 의 bitwise 검사로 근거를 댔다.
+
+---
+
+## 9. 서지정보 검증 출처
+
+`references.bib` 의 `note` 필드에 있던 검증 기록을 여기로 옮겼다 (2026-08-05). `.bib` 에
+두면 `plainnat` 이 참고문헌 목록에 인쇄하므로 내부 메모를 둘 자리가 아니다.
+
+**판정 기준.** `VERIFIED` 는 저자·제목·연도·게재지와 권/호/페이지(또는 arXiv ID)를 원문
+또는 출판사 페이지에서 확인했다는 뜻이다. 확인하지 못한 필드가 있으면 아래에 적고 `§7` 에
+남긴다. 2026-08-05 기준 **미확인 상태로 인용하는 항목은 없다.**
+
+### Truncated / inexact Newton, Hessian-free
+
+```text
+dembo1982inexact        VERIFIED  SIAM, JSTOR stable/2156954 에서 권/호/페이지 확인
+steihaug1983cg          VERIFIED  SIAM doi 확인. 권/호/페이지는 SIAM 페이지 기준
+nash1984lanczos         VERIFIED  Springer 인용 목록, JSTOR stable/2157008
+nash2000survey          VERIFIED  ADS 2000JCoAM.124...45N 및 doi
+martens2010hessianfree  VERIFIED  icml.cc/Conferences/2010/papers/458.pdf 원문
+martens2011rnn          VERIFIED  icml.cc/2011/papers/532_icmlpaper.pdf 원문
+pearlmutter1994hvp      VERIFIED  MIT Press direct.mit.edu/neco 원문 PDF
+byrd2011stochastic      VERIFIED  SIAM epubs 원문, Nocedal CV 에서 권/페이지
+```
+
+### Conjugate gradient, damping, trust region
+
+```text
+hestenes1952cg      VERIFIED  AMS Mathematics of Computation 인용 목록, SIAM, Springer,
+                              PETSc 문서가 모두 vol. 49, pp. 409--436 (1952) 로 일치.
+                              호 번호 6 은 Springer JOTA 인용에서 확인
+levenberg1944       VERIFIED  JSTOR Quarterly of Applied Mathematics vol. 2 no. 2
+                              (July 1944) 목차, SIAM 및 Springer 인용 목록에서
+                              pp. 164--168 확인
+marquardt1963       VERIFIED  SIAM doi 10.1137/0111030, Garfield Citation Classics
+                              (J. Soc. Indust. Appl. Math. 11:431-41, 1963)
+conn2000trustregion VERIFIED  SIAM epubs doi 10.1137/1.9780898719857 에서 출판사/연도/
+                              장 구조 확인
+```
+
+### Learned optimizers, amortized, RL, MPC
+
+```text
+andrychowicz2016l2l VERIFIED  proceedings.neurips.cc 2016 원문. arXiv:1606.04474
+metz2019pathologies VERIFIED  proceedings.mlr.press/v97/metz19a 원문
+metz2020effective   VERIFIED  arXiv:2009.11243 초록 확인. arXiv 판과 NeurIPS workshop
+                              판의 제목 표기가 다르다 -> §7 [C4]. 정식 게재지가 없어
+                              @article journal = {arXiv preprint arXiv:2009.11243} 로
+                              둔다 (schulman2017ppo 와 같은 표기)
+schulman2017ppo     VERIFIED  arXiv:1707.06347 초록
+bae2022apo          VERIFIED  proceedings.neurips.cc 초록 페이지
+                              (doi 10.52202/068431-0653), arXiv:2203.00089
+amos2023amortized   VERIFIED(arXiv)  arXiv:2202.00665 초록 페이지에서 현재 제목과
+                              comment 필드 "Foundations and Trends in Machine Learning"
+                              확인. **FnT 권/호/페이지 미확인** -> §7 [C2].
+                              v1--v2 제목은 "...for learning to optimize over continuous
+                              domains" 였으므로 최종본에서 하나로 고정한다
+rawlings2017mpc     VERIFIED  저자 구성을 sites.engineering.ucsb.edu/~jbraw/mpc/ 에서
+                              확인. **판(edition)과 연도 미확정** -> §7 [C5]
+bertsekas2017dp     VERIFIED(서지)  Athena Scientific 주문 페이지에서 Vol. I 4th ed.,
+                              ISBN-13 978-1-886529-43-4, 576 pages 확인.
+                              **절 번호 미확인** -> §7 [C1], §4 주의(RISK)
+```
+
+### Benchmark 구조
+
+```text
+shang2006rosenbrock VERIFIED  MIT Press 원문 초록. "the n-dimensional (n = 4--30)
+                              Rosenbrock function has 2 minima" 라고 명시한다.
+                              우리 d=5 국소최소점 관측을 직접 지지한다
+kok2009rosenbrock   VERIFIED  MIT Press cognet 초록과 UP 저장소 원문(hdl:2263/13845).
+                              두 변종 구별은 §5 에 있다. 우리 구현은 결합 변종이며
+                              우리가 찾은 x_1 = -0.962 가 문헌의 x_1 ~ -1 과 부합한다
+```
+
+### 통계
+
+```text
+wilcoxon1945          VERIFIED  JSTOR stable/3001968, Biometrics Bulletin vol. 1 no. 6
+                                (Dec. 1945) 목차에서 pp. 80--83 확인
+efron1979bootstrap    VERIFIED  다수 독립 인용원(Springer, tandfonline, R CRAN refman)이
+                                Ann. Statist. 7(1):1--26 로 일치
+schuirmann1987tost    VERIFIED  PubMed 3450848, Springer doi
+lakens2017equivalence VERIFIED  SAGE doi 10.1177/1948550617697177 원문.
+                                **권/호/페이지 미확인** -> §7 [C3]. doi 로 인용한다
+```

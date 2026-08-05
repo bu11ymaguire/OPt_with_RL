@@ -279,9 +279,15 @@ draft 의 [@key] 가 references.bib 에 있고 서지정보가 TODO 가 아닌�
 `scripts/check_claims.py` 가 기계적으로 보고, 뒤의 것은 사람이 봐야 한다.
 
 ```text
-paper/references.bib   서지정보. note 필드에 VERIFIED / TODO 를 남긴다
-paper/CITATIONS.md     인용별 내용 일치 체크리스트와 오인용 위험
+paper/references.bib   출판용 서지정보만. 내부 검증 메모를 넣지 않는다
+paper/CITATIONS.md     인용 검증의 유일한 기록
+                         §1~§6  인용별 내용 일치와 오인용 위험
+                         §7     서지 표기가 부분 미확인인 항목
+                         §9     서지정보 검증 출처 (어디서 확인했는가)
 ```
+
+`.bib` 에 검증 메모를 두지 않는 이유는 `plainnat` 이 `note` 필드를 **조판 결과에
+인쇄**하기 때문이다. 내부 메모를 적으면 논문 참고문헌 목록에 그대로 나온다.
 
 `paper/CITATIONS.md` 의 `RISK` 항목은 특히 주의한다. 예를 들어 확장 Rosenbrock 인용은
 **본문에 어느 변종을 썼는지 명시해야** 성립한다.

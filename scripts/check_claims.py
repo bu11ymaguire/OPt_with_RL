@@ -136,10 +136,15 @@ def normalize(ident: str) -> str:
 
 
 def parse_bib(path: Path) -> dict[str, str]:
-    """bib 파일에서 `{key: note}` 를 뽑는다.
+    """bib 파일에서 `{key: 항목 블록 전체}` 를 뽑는다.
 
-    본격적인 BibTeX 파서가 아니다. `@type{key,` 로 항목을 나누고 그 블록 안의
-    `note` 문자열을 통째로 담는다. 검증 상태(`VERIFIED` / `TODO`) 확인이 목적이다.
+    본격적인 BibTeX 파서가 아니다. `@type{key,` 로 항목을 나누고 그 블록의 텍스트를
+    통째로 담는다. `[6]` 검사가 블록 안에 `TODO` 가 남아 있는지 보는 것이 목적이다.
+
+    **주의.** 검증 상태는 `.bib` 에 두지 않는다. `plainnat` 이 `note` 필드를 조판
+    결과에 인쇄하므로 내부 메모를 넣으면 참고문헌 목록에 나온다. 검증 기록은
+    `paper/CITATIONS.md` 에 있다. 이 검사는 미완성 항목이 `.bib` 에 흘러드는 것을
+    막는 안전망일 뿐이며, 통과가 검증을 뜻하지 않는다.
     """
     text = path.read_text(encoding="utf-8")
     entries: dict[str, str] = {}
