@@ -511,18 +511,35 @@ status       EXPLORATORY (해석 주의 항목)
      source: docs/experiment_protocol.md D32
 ```
 
-## 인용이 필요한 위치
+## 인용
+
+**해결됐다.** `paper/references.bib` 에 26 항목이 있고 `paper/draft.md` 의
+`[CITATION NEEDED]` 는 남아 있지 않다. `scripts/check_claims.py` 의 `[6]` 검사가
+키 존재와 서지정보 상태를 기계적으로 확인한다.
 
 ```text
-[CITATION NEEDED] Hessian-free / truncated-Newton optimization
-[CITATION NEEDED] Levenberg-Marquardt damping, trust-region 방법
-[CITATION NEEDED] Conjugate gradient, Pearlmutter HVP
-[CITATION NEEDED] Learning to optimize / learned optimizers
-[CITATION NEEDED] PPO
-[CITATION NEEDED] Model predictive control, receding horizon, shrinking horizon
-[CITATION NEEDED] Hyperparameter schedule 예측 / amortized optimization
-[CITATION NEEDED] Rosenbrock d>=4 국소최소점의 존재
-[CITATION NEEDED] Wilcoxon signed-rank, bootstrap CI
-[CITATION NEEDED] Paired experimental design 의 분산 감소
-[CITATION NEEDED] Equivalence testing / TOST (C11 을 설명할 때)
+Hessian-free / truncated-Newton     dembo1982inexact steihaug1983cg nash1984lanczos
+                                    nash2000survey martens2010hessianfree martens2011rnn
+Levenberg-Marquardt damping         levenberg1944 marquardt1963
+trust-region                        conn2000trustregion steihaug1983cg
+Conjugate gradient                  hestenes1952cg
+Pearlmutter HVP                     pearlmutter1994hvp
+부분표본 곡률                        byrd2011stochastic
+Learning to optimize                andrychowicz2016l2l metz2019pathologies
+                                    metz2020effective
+PPO                                 schulman2017ppo
+MPC / receding horizon              rawlings2017mpc
+open-loop 대 closed-loop            bertsekas2017dp
+amortized optimization              amos2023amortized bae2022apo
+Rosenbrock d>=4 국소최소점            shang2006rosenbrock kok2009rosenbrock
+Wilcoxon signed-rank                wilcoxon1945
+bootstrap CI                        efron1979bootstrap
+Equivalence testing / TOST          schuirmann1987tost lakens2017equivalence
 ```
+
+`Paired experimental design 의 분산 감소` 항목은 **인용하지 않기로 했다.** 우리 문장
+(`§4.1` 의 "컨트롤러가 난수를 얼마나 쓰든 인스턴스가 같다")은 문헌에서 가져온 주장이
+아니라 우리 실행기의 설계 사실이며, `§4.3` 의 bitwise 재현 검사가 근거다.
+
+**서지정보 확인과 내용 일치는 다른 작업이다.** 각 인용이 실제로 그 자리의 주장을
+지지하는지, 어떤 오인용 위험이 있는지는 `paper/CITATIONS.md` 에 항목별로 기록했다.

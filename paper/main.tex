@@ -1,0 +1,77 @@
+% =========================================================================
+% When Does Feedback Help? Planning and Model Mismatch in Hessian-Free
+% Newton Control
+%
+% **표현 계층이다.** 내용의 source of truth 는 `paper/draft.md` 다.
+% 주장 강도는 `paper/claim_ledger.md` 가 통제하고, 인용 내용 검증은
+% `paper/CITATIONS.md` 에 있다.
+%
+% 규칙
+%   1. 표의 숫자를 이 파일이나 sections/ 에 쓰지 않는다.
+%      `scripts/make_tables.py` 가 `tables/*.tex` 를 생성한다
+%   2. 그림은 `scripts/make_figures.py` 가 생성한다
+%   3. 새 주장을 여기서 만들지 않는다. draft.md 에 없는 문장을 넣지 않는다
+%
+% 빌드
+%   pdflatex main && bibtex main && pdflatex main && pdflatex main
+% =========================================================================
+\documentclass[11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+
+% 컨트롤러 이름을 본문에서 일관되게 쓴다.
+\newcommand{\ctrl}[1]{\texttt{#1}}
+\newcommand{\GE}{\text{GE}}
+\newcommand{\JE}{J_E}
+
+% 사전 등록 게이트 표기.
+\newcommand{\gate}[1]{\textsf{#1}}
+
+\title{When Does Feedback Help?\\
+Planning and Model Mismatch in Hessian-Free Newton Control}
+
+\author{%
+  % 저자 정보는 제출 직전에 채운다.
+  Anonymous
+}
+\date{}
+
+\begin{document}
+\maketitle
+
+\input{sections/00_abstract}
+\input{sections/01_introduction}
+\input{sections/02_setup}
+\input{sections/03_controllers}
+\input{sections/04_protocol}
+\input{sections/05_eligibility}
+\input{sections/06_selection}
+\input{sections/07_heldout}
+\input{sections/08_decomposition}
+\input{sections/09_conditioning}
+\input{sections/10_mismatch}
+\input{sections/11_ablation}
+\input{sections/12_nopolicy}
+\input{sections/13_discussion}
+\input{sections/14_limitations}
+\input{sections/15_reproducibility}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

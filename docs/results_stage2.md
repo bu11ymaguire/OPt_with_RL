@@ -61,6 +61,18 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +0.217 | [-0.297, +0.264] | n/a | 3 | 2/3 |
 | ladder `committed_Q4_narrow` − `best_static` | quad_spd_d64_k1e+02 | +0.000 | [+0.000, +0.000] | n/a | 3 | 0/3 |
 | ladder `committed_Q4_narrow` − `best_static` | rosen_d2_s100_std | -5.422 | [-5.422, -5.422] | n/a | 3 | 0/3 |
+| B `onestep_absolute` − `onestep_narrow` | ALL | +0.035 | [+0.000, +29.768] | 0.0312 | 9 | 6/9 |
+| B `onestep_absolute` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+05 | +0.035 | [+0.012, +0.523] | n/a | 3 | 3/3 |
+| B `onestep_absolute` − `onestep_narrow` | quad_spd_d64_k1e+02 | +0.000 | [+0.000, +0.000] | n/a | 3 | 0/3 |
+| B `onestep_absolute` − `onestep_narrow` | rosen_d2_s100_std | +29.768 | [+29.768, +29.768] | n/a | 3 | 3/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | ALL | +0.308 | [+0.000, +1.438] | 0.0312 | 9 | 6/9 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+05 | +0.308 | [+0.078, +0.486] | n/a | 3 | 3/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_spd_d64_k1e+02 | +0.000 | [+0.000, +0.000] | n/a | 3 | 0/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | rosen_d2_s100_std | +1.438 | [+1.438, +1.438] | n/a | 3 | 3/3 |
+| heuristic `heuristic` − `best_static` | ALL | +0.000 | [-0.972, +24.346] | 0.4375 | 9 | 3/9 |
+| heuristic `heuristic` − `best_static` | quad_ill_conditioned_d100_k1e+05 | -0.972 | [-0.987, -0.771] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | quad_spd_d64_k1e+02 | +0.000 | [+0.000, +0.000] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | rosen_d2_s100_std | +24.346 | [+24.346, +24.346] | n/a | 3 | 3/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -73,6 +85,26 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | `onestep_absolute` | 6,900 | 139.1 | 0.00 |
 | `committed_Q4_narrow` | 50,236 | 143.8 | 0.00 |
 | `shrinking_Q4_narrow` | 196,675 | 147.1 | 0.00 |
+
+spec 별 탐색 비용 (median decision-search GE) 과 거절률
+
+| controller | quad_ill_conditioned_d100_k1e+05 GE / 거절률 | quad_spd_d64_k1e+02 GE / 거절률 | rosen_d2_s100_std GE / 거절률 |
+|---|---|---|---|
+| `best_static` | 0 / 0.00 | 0 / 0.00 | 0 / 0.17 |
+| `best_open_loop` | 0 / 0.00 | 0 / 0.00 | 0 / 0.06 |
+| `heuristic` | 0 / 0.00 | 0 / 0.00 | 0 / 0.25 |
+| `onestep_narrow` | 1,186 / 0.00 | 949 / 0.00 | 1,001 / 0.09 |
+| `onestep_absolute` | 10,784 / 0.00 | 6,895 / 0.00 | 6,900 / 0.00 |
+| `committed_Q4_narrow` | 50,414 / 0.00 | 50,785 / 0.00 | 1,596 / 0.09 |
+| `shrinking_Q4_narrow` | 233,032 / 0.00 | 207,890 / 0.00 | 93,622 / 0.09 |
+
+spec 별 `shrinking` 대비 `onestep` 탐색 비용 배수 (planner / onestep)
+
+| spec | onestep GE | shrinking GE | 배수 |
+|---|---|---|---|
+| quad_ill_conditioned_d100_k1e+05 | 1,186 | 233,032 | 196.5x |
+| quad_spd_d64_k1e+02 | 949 | 207,890 | 219.1x |
+| rosen_d2_s100_std | 1,001 | 93,622 | 93.5x |
 
 ## beam 8 challenge dev
 
@@ -131,6 +163,21 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +2.388 | [+2.150, +2.449] | n/a | 3 | 3/3 |
 | ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +1.288 | [+1.015, +1.454] | n/a | 3 | 3/3 |
 | ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+06 | +1.427 | [+1.136, +1.811] | n/a | 3 | 3/3 |
+| B `onestep_absolute` − `onestep_narrow` | ALL | +0.015 | [-0.070, +0.055] | 0.9097 | 12 | 8/12 |
+| B `onestep_absolute` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+03 | +0.017 | [+0.013, +0.254] | n/a | 3 | 3/3 |
+| B `onestep_absolute` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+04 | -0.712 | [-0.837, +0.019] | n/a | 3 | 1/3 |
+| B `onestep_absolute` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+05 | -0.056 | [-0.083, +0.012] | n/a | 3 | 1/3 |
+| B `onestep_absolute` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+06 | +0.083 | [+0.027, +0.513] | n/a | 3 | 3/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | ALL | +0.044 | [-0.059, +0.313] | 0.3804 | 12 | 7/12 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+03 | -0.055 | [-0.261, +0.264] | n/a | 3 | 1/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+04 | +0.009 | [-0.876, +1.120] | n/a | 3 | 2/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+05 | +0.078 | [-0.062, +0.432] | n/a | 3 | 2/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+06 | +0.107 | [-0.043, +0.361] | n/a | 3 | 2/3 |
+| heuristic `heuristic` − `best_static` | ALL | -0.000 | [-0.000, +0.000] | 0.7910 | 12 | 4/12 |
+| heuristic `heuristic` − `best_static` | quad_ill_conditioned_d100_k1e+03 | -0.000 | [-0.000, -0.000] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +0.000 | [-0.000, +0.000] | n/a | 3 | 2/3 |
+| heuristic `heuristic` − `best_static` | quad_ill_conditioned_d100_k1e+05 | -0.000 | [-0.000, +0.001] | n/a | 3 | 1/3 |
+| heuristic `heuristic` − `best_static` | quad_ill_conditioned_d100_k1e+06 | -0.000 | [-0.018, +0.002] | n/a | 3 | 1/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -143,6 +190,27 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | `onestep_absolute` | 10,552 | 141.2 | 0.00 |
 | `committed_Q4_narrow` | 69,336 | 143.7 | 0.00 |
 | `shrinking_Q4_narrow` | 193,894 | 144.0 | 0.00 |
+
+spec 별 탐색 비용 (median decision-search GE) 과 거절률
+
+| controller | quad_ill_conditioned_d100_k1e+03 GE / 거절률 | quad_ill_conditioned_d100_k1e+04 GE / 거절률 | quad_ill_conditioned_d100_k1e+05 GE / 거절률 | quad_ill_conditioned_d100_k1e+06 GE / 거절률 |
+|---|---|---|---|---|
+| `best_static` | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 |
+| `best_open_loop` | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 |
+| `heuristic` | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 |
+| `onestep_narrow` | 1,186 / 0.00 | 1,186 / 0.00 | 1,186 / 0.00 | 1,186 / 0.00 |
+| `onestep_absolute` | 9,380 / 0.00 | 9,081 / 0.00 | 10,781 / 0.00 | 11,430 / 0.00 |
+| `committed_Q4_narrow` | 73,613 / 0.00 | 66,485 / 0.00 | 69,466 / 0.00 | 71,021 / 0.00 |
+| `shrinking_Q4_narrow` | 193,107 / 0.00 | 190,726 / 0.00 | 205,524 / 0.00 | 192,275 / 0.00 |
+
+spec 별 `shrinking` 대비 `onestep` 탐색 비용 배수 (planner / onestep)
+
+| spec | onestep GE | shrinking GE | 배수 |
+|---|---|---|---|
+| quad_ill_conditioned_d100_k1e+03 | 1,186 | 193,107 | 162.8x |
+| quad_ill_conditioned_d100_k1e+04 | 1,186 | 190,726 | 160.8x |
+| quad_ill_conditioned_d100_k1e+05 | 1,186 | 205,524 | 173.3x |
+| quad_ill_conditioned_d100_k1e+06 | 1,186 | 192,275 | 162.1x |
 
 ## beam 8 held-out confirmatory
 
@@ -201,6 +269,21 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +2.400 | [+2.233, +2.504] | 0.0020 | 10 | 10/10 |
 | ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +1.322 | [+1.190, +1.514] | 0.0020 | 10 | 10/10 |
 | ladder `committed_Q4_narrow` − `best_static` | quad_ill_conditioned_d100_k1e+06 | +1.418 | [+1.208, +1.723] | 0.0020 | 10 | 10/10 |
+| B `onestep_absolute` − `onestep_narrow` | ALL | +0.005 | [-0.002, +0.026] | 0.5900 | 40 | 23/40 |
+| B `onestep_absolute` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+03 | +0.001 | [-0.029, +0.016] | 0.6953 | 10 | 5/10 |
+| B `onestep_absolute` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+04 | +0.018 | [-0.039, +0.319] | 0.3223 | 10 | 6/10 |
+| B `onestep_absolute` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+05 | +0.026 | [-0.117, +0.090] | 0.4922 | 10 | 7/10 |
+| B `onestep_absolute` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+06 | -0.050 | [-0.274, +0.036] | 0.3223 | 10 | 5/10 |
+| B_wide `onestep_wide` − `onestep_narrow` | ALL | -0.001 | [-0.041, +0.005] | 0.3611 | 40 | 18/40 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+03 | -0.002 | [-0.056, +0.001] | 0.1309 | 10 | 2/10 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+04 | +0.024 | [-0.112, +0.058] | 0.7695 | 10 | 6/10 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+05 | -0.001 | [-0.158, +0.014] | 0.6250 | 10 | 5/10 |
+| B_wide `onestep_wide` − `onestep_narrow` | quad_ill_conditioned_d100_k1e+06 | -0.011 | [-0.177, +0.110] | 0.6953 | 10 | 5/10 |
+| heuristic `heuristic` − `best_static` | ALL | -0.000 | [-0.000, +0.000] | 0.7750 | 40 | 20/40 |
+| heuristic `heuristic` − `best_static` | quad_ill_conditioned_d100_k1e+03 | -0.001 | [-0.001, +0.000] | 0.0488 | 10 | 3/10 |
+| heuristic `heuristic` − `best_static` | quad_ill_conditioned_d100_k1e+04 | +0.000 | [-0.000, +0.002] | 0.4316 | 10 | 6/10 |
+| heuristic `heuristic` − `best_static` | quad_ill_conditioned_d100_k1e+05 | +0.000 | [-0.002, +0.000] | 1.0000 | 10 | 6/10 |
+| heuristic `heuristic` − `best_static` | quad_ill_conditioned_d100_k1e+06 | -0.000 | [-0.000, +0.004] | 0.8457 | 10 | 5/10 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -213,6 +296,27 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | `onestep_absolute` | 10,084 | 140.2 | 0.00 |
 | `committed_Q4_narrow` | 69,401 | 144.0 | 0.00 |
 | `shrinking_Q4_narrow` | 194,095 | 146.0 | 0.00 |
+
+spec 별 탐색 비용 (median decision-search GE) 과 거절률
+
+| controller | quad_ill_conditioned_d100_k1e+03 GE / 거절률 | quad_ill_conditioned_d100_k1e+04 GE / 거절률 | quad_ill_conditioned_d100_k1e+05 GE / 거절률 | quad_ill_conditioned_d100_k1e+06 GE / 거절률 |
+|---|---|---|---|---|
+| `best_static` | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 |
+| `best_open_loop` | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 |
+| `heuristic` | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 | 0 / 0.00 |
+| `onestep_narrow` | 1,067 / 0.00 | 1,127 / 0.00 | 1,186 / 0.00 | 1,305 / 0.00 |
+| `onestep_absolute` | 8,438 / 0.00 | 10,078 / 0.00 | 10,772 / 0.00 | 11,434 / 0.00 |
+| `committed_Q4_narrow` | 70,502 / 0.00 | 68,688 / 0.00 | 69,401 / 0.00 | 69,401 / 0.00 |
+| `shrinking_Q4_narrow` | 183,009 / 0.00 | 195,525 / 0.00 | 200,035 / 0.00 | 193,204 / 0.00 |
+
+spec 별 `shrinking` 대비 `onestep` 탐색 비용 배수 (planner / onestep)
+
+| spec | onestep GE | shrinking GE | 배수 |
+|---|---|---|---|
+| quad_ill_conditioned_d100_k1e+03 | 1,067 | 183,009 | 171.5x |
+| quad_ill_conditioned_d100_k1e+04 | 1,127 | 195,525 | 173.5x |
+| quad_ill_conditioned_d100_k1e+05 | 1,186 | 200,035 | 168.7x |
+| quad_ill_conditioned_d100_k1e+06 | 1,305 | 193,204 | 148.1x |
 
 ## nonlinear diagnostic
 
@@ -247,6 +351,9 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | open_loop `best_open_loop` − `best_static` | ALL | +0.000 | [+0.000, +0.000] | n/a | 3 | 3/3 |
 | ladder `onestep_narrow` − `best_static` | ALL | +0.000 | [+0.000, +0.000] | n/a | 3 | 3/3 |
 | ladder `committed_Q4_narrow` − `best_static` | ALL | +0.000 | [+0.000, +0.000] | n/a | 3 | 3/3 |
+| B `onestep_absolute` − `onestep_narrow` | ALL | +0.000 | [+0.000, +0.000] | n/a | 3 | 0/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | ALL | -0.000 | [-0.000, -0.000] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | ALL | +0.000 | [+0.000, +0.000] | n/a | 3 | 3/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -311,6 +418,18 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs128 | -4.158 | [-4.167, -3.512] | n/a | 3 | 0/3 |
 | ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -1.943 | [-2.527, -0.988] | n/a | 3 | 0/3 |
 | ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_fb | +15.271 | [+14.596, +15.408] | n/a | 3 | 3/3 |
+| B `onestep_absolute` − `onestep_narrow` | ALL | +0.172 | [-0.615, +0.448] | 0.9102 | 9 | 5/9 |
+| B `onestep_absolute` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs128 | +0.421 | [-0.003, +0.548] | n/a | 3 | 2/3 |
+| B `onestep_absolute` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs64 | +0.426 | [-0.390, +0.448] | n/a | 3 | 2/3 |
+| B `onestep_absolute` − `onestep_narrow` | mlp_d32_h128_c5_n512_fb | -0.615 | [-0.661, +0.172] | n/a | 3 | 1/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | ALL | -0.250 | [-0.521, +0.397] | 0.7344 | 9 | 4/9 |
+| B_wide `onestep_wide` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs128 | +0.397 | [-0.260, +0.552] | n/a | 3 | 2/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs64 | +0.255 | [-0.250, +0.362] | n/a | 3 | 2/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | mlp_d32_h128_c5_n512_fb | -0.521 | [-0.742, -0.486] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | ALL | -1.603 | [-2.057, -0.091] | 0.0195 | 9 | 1/9 |
+| heuristic `heuristic` − `best_static` | mlp_d32_h128_c5_n512_cs128 | -1.732 | [-1.911, -1.603] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -2.057 | [-2.151, -1.434] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | mlp_d32_h128_c5_n512_fb | -0.091 | [-0.186, +0.696] | n/a | 3 | 1/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -323,6 +442,26 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | `onestep_absolute` | 11,541 | 148.4 | 0.00 |
 | `committed_Q4_narrow` | 21,449 | 148.8 | 0.66 |
 | `shrinking_Q4_narrow` | 265,056 | 146.9 | 0.00 |
+
+spec 별 탐색 비용 (median decision-search GE) 과 거절률
+
+| controller | mlp_d32_h128_c5_n512_cs128 GE / 거절률 | mlp_d32_h128_c5_n512_cs64 GE / 거절률 | mlp_d32_h128_c5_n512_fb GE / 거절률 |
+|---|---|---|---|
+| `best_static` | 0 / 0.10 | 0 / 0.14 | 0 / 0.07 |
+| `best_open_loop` | 0 / 0.20 | 0 / 0.20 | 0 / 0.14 |
+| `heuristic` | 0 / 0.27 | 0 / 0.24 | 0 / 0.17 |
+| `onestep_narrow` | 1,932 / 0.03 | 1,879 / 0.00 | 2,462 / 0.04 |
+| `onestep_absolute` | 12,774 / 0.00 | 11,541 / 0.00 | 10,095 / 0.08 |
+| `committed_Q4_narrow` | 15,934 / 0.79 | 17,761 / 0.66 | 26,385 / 0.00 |
+| `shrinking_Q4_narrow` | 321,428 / 0.04 | 275,286 / 0.00 | 198,102 / 0.00 |
+
+spec 별 `shrinking` 대비 `onestep` 탐색 비용 배수 (planner / onestep)
+
+| spec | onestep GE | shrinking GE | 배수 |
+|---|---|---|---|
+| mlp_d32_h128_c5_n512_cs128 | 1,932 | 321,428 | 166.3x |
+| mlp_d32_h128_c5_n512_cs64 | 1,879 | 275,286 | 146.5x |
+| mlp_d32_h128_c5_n512_fb | 2,462 | 198,102 | 80.5x |
 
 ## micro-neural 7aac1b26
 
@@ -369,6 +508,15 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | ladder `committed_Q4_narrow` − `best_static` | ALL | +6.804 | [-2.235, +15.340] | 0.4375 | 6 | 3/6 |
 | ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -1.943 | [-2.527, -0.988] | n/a | 3 | 0/3 |
 | ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_fb | +15.271 | [+14.596, +15.408] | n/a | 3 | 3/3 |
+| B `onestep_absolute` − `onestep_narrow` | ALL | -0.109 | [-0.638, +0.437] | 0.6875 | 6 | 3/6 |
+| B `onestep_absolute` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs64 | +0.426 | [-0.390, +0.448] | n/a | 3 | 2/3 |
+| B `onestep_absolute` − `onestep_narrow` | mlp_d32_h128_c5_n512_fb | -0.615 | [-0.661, +0.172] | n/a | 3 | 1/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | ALL | -0.368 | [-0.632, +0.309] | 0.3125 | 6 | 2/6 |
+| B_wide `onestep_wide` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs64 | +0.255 | [-0.250, +0.362] | n/a | 3 | 2/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | mlp_d32_h128_c5_n512_fb | -0.521 | [-0.742, -0.486] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | ALL | -0.810 | [-2.104, +0.302] | 0.1562 | 6 | 1/6 |
+| heuristic `heuristic` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -2.057 | [-2.151, -1.434] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | mlp_d32_h128_c5_n512_fb | -0.091 | [-0.186, +0.696] | n/a | 3 | 1/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -381,6 +529,25 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | `onestep_absolute` | 10,881 | 148.4 | 0.00 |
 | `committed_Q4_narrow` | 23,917 | 148.6 | 0.38 |
 | `shrinking_Q4_narrow` | 211,862 | 148.2 | 0.00 |
+
+spec 별 탐색 비용 (median decision-search GE) 과 거절률
+
+| controller | mlp_d32_h128_c5_n512_cs64 GE / 거절률 | mlp_d32_h128_c5_n512_fb GE / 거절률 |
+|---|---|---|
+| `best_static` | 0 / 0.14 | 0 / 0.07 |
+| `best_open_loop` | 0 / 0.20 | 0 / 0.14 |
+| `heuristic` | 0 / 0.24 | 0 / 0.17 |
+| `onestep_narrow` | 1,879 / 0.00 | 2,462 / 0.04 |
+| `onestep_absolute` | 11,541 / 0.00 | 10,095 / 0.08 |
+| `committed_Q4_narrow` | 17,761 / 0.66 | 26,385 / 0.00 |
+| `shrinking_Q4_narrow` | 275,286 / 0.00 | 198,102 / 0.00 |
+
+spec 별 `shrinking` 대비 `onestep` 탐색 비용 배수 (planner / onestep)
+
+| spec | onestep GE | shrinking GE | 배수 |
+|---|---|---|---|
+| mlp_d32_h128_c5_n512_cs64 | 1,879 | 275,286 | 146.5x |
+| mlp_d32_h128_c5_n512_fb | 2,462 | 198,102 | 80.5x |
 
 ## micro-neural 9f3194be
 
@@ -433,6 +600,18 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs128 | -1.735 | [-2.049, -1.024] | n/a | 3 | 0/3 |
 | ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -1.059 | [-1.221, -1.048] | n/a | 3 | 0/3 |
 | ladder `committed_Q4_narrow` − `best_static` | mlp_d32_h128_c5_n512_fb | +14.460 | [+14.093, +15.199] | n/a | 3 | 3/3 |
+| B `onestep_absolute` − `onestep_narrow` | ALL | +0.666 | [+0.045, +1.142] | 0.0195 | 9 | 8/9 |
+| B `onestep_absolute` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs128 | +0.315 | [+0.045, +1.280] | n/a | 3 | 3/3 |
+| B `onestep_absolute` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs64 | +0.666 | [+0.093, +1.142] | n/a | 3 | 3/3 |
+| B `onestep_absolute` − `onestep_narrow` | mlp_d32_h128_c5_n512_fb | +0.693 | [-0.295, +0.965] | n/a | 3 | 2/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | ALL | +0.400 | [-0.174, +1.225] | 0.0742 | 9 | 7/9 |
+| B_wide `onestep_wide` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs128 | +0.400 | [+0.018, +1.317] | n/a | 3 | 3/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | mlp_d32_h128_c5_n512_cs64 | +0.719 | [+0.199, +1.225] | n/a | 3 | 3/3 |
+| B_wide `onestep_wide` − `onestep_narrow` | mlp_d32_h128_c5_n512_fb | -0.174 | [-0.542, +1.019] | n/a | 3 | 1/3 |
+| heuristic `heuristic` − `best_static` | ALL | -0.729 | [-1.593, +0.025] | 0.0742 | 9 | 2/9 |
+| heuristic `heuristic` − `best_static` | mlp_d32_h128_c5_n512_cs128 | -1.593 | [-1.987, -1.290] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | mlp_d32_h128_c5_n512_cs64 | -0.729 | [-0.799, -0.633] | n/a | 3 | 0/3 |
+| heuristic `heuristic` − `best_static` | mlp_d32_h128_c5_n512_fb | +0.025 | [-0.129, +0.807] | n/a | 3 | 2/3 |
 
 탐색 비용과 거절률 (전체 인스턴스 median)
 
@@ -445,3 +624,23 @@ paired delta (nat, 양수면 treatment 가 좋다)
 | `onestep_absolute` | 11,030 | 147.6 | 0.00 |
 | `committed_Q4_narrow` | 2,822 | 145.0 | 0.89 |
 | `shrinking_Q4_narrow` | 31,438 | 146.8 | 0.29 |
+
+spec 별 탐색 비용 (median decision-search GE) 과 거절률
+
+| controller | mlp_d32_h128_c5_n512_cs128 GE / 거절률 | mlp_d32_h128_c5_n512_cs64 GE / 거절률 | mlp_d32_h128_c5_n512_fb GE / 거절률 |
+|---|---|---|---|
+| `best_static` | 0 / 0.20 | 0 / 0.27 | 0 / 0.07 |
+| `best_open_loop` | 0 / 0.24 | 0 / 0.31 | 0 / 0.12 |
+| `heuristic` | 0 / 0.08 | 0 / 0.12 | 0 / 0.17 |
+| `onestep_narrow` | 1,187 / 0.53 | 1,017 / 0.57 | 2,344 / 0.04 |
+| `onestep_absolute` | 11,559 / 0.00 | 11,030 / 0.00 | 9,542 / 0.00 |
+| `committed_Q4_narrow` | 1,966 / 0.89 | 2,822 / 0.92 | 23,538 / 0.04 |
+| `shrinking_Q4_narrow` | 31,438 / 0.42 | 16,219 / 0.36 | 191,572 / 0.04 |
+
+spec 별 `shrinking` 대비 `onestep` 탐색 비용 배수 (planner / onestep)
+
+| spec | onestep GE | shrinking GE | 배수 |
+|---|---|---|---|
+| mlp_d32_h128_c5_n512_cs128 | 1,187 | 31,438 | 26.5x |
+| mlp_d32_h128_c5_n512_cs64 | 1,017 | 16,219 | 15.9x |
+| mlp_d32_h128_c5_n512_fb | 2,344 | 191,572 | 81.7x |

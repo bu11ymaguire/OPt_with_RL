@@ -116,6 +116,24 @@ python scripts/make_figures.py  --out-dir paper/figures
 프로토콜 결정 `D1~D32` 는 `docs/experiment_protocol.md` 에 전부 기록돼 있다. 실험
 설계에 영향이 컸던 것들이다.
 
+### 실험은 전부 CPU 에서 돌았다
+
+> All Stage 2 optimization and planning experiments were executed on CPU. The
+> GPU-derived cost-model files in the repository originate from an earlier Stage 1
+> calibration and were not used in Stage 2; Stage 2 GE accounting used HVP-equivalent
+> oracle counts.
+
+`configs/cost_model.*.yaml` 에 `device: cuda:0` 과 GPU 모델명이 있다. **Stage 2 결과와
+무관하다.** `scripts/run_headroom.py` 는 cost model 을 로드하지 않으므로
+(`cost_model=None`) GE 가 HVP 등가 횟수로 계산됐고, 모든 실행이 `device=cpu` 로
+기록돼 있다. GPU 계수는 향후 신경망 task 를 위해 보존한다.
+
+탐색 비용을 읽을 때도 구분이 필요하다.
+
+> Search GE measures simulated oracle work rather than wall-clock GPU compute.
+
+`1,294배` 는 planner 가 수행한 **oracle 호출량**의 비율이며 GPU wall-clock 비율이 아니다.
+
 ### 비용은 GE 로 잰다
 
 ```text
@@ -249,7 +267,47 @@ NOT SUPPORTED claim 이 주장으로 인용되지 않았는가   (AVOID: 표시�
 금지 표현이 draft 에 없는가
 숫자를 담은 claim 에 evidence source 가 있는가
 draft 의 claim ID 가 ledger 에 존재하는가
+draft 의 [@key] 가 references.bib 에 있고 서지정보가 TODO 가 아닌가
 ```
 
 원고에는 `<!-- CLAIM: C03 -->` 형태의 주석을 붙인다. HTML 주석이므로 PDF 에는 나오지
 않는다.
+
+## 인용
+
+서지정보 확인과 "그 논문이 실제로 우리 주장을 지지하는가" 는 다른 작업이다. 앞의 것은
+`scripts/check_claims.py` 가 기계적으로 보고, 뒤의 것은 사람이 봐야 한다.
+
+```text
+paper/references.bib   서지정보. note 필드에 VERIFIED / TODO 를 남긴다
+paper/CITATIONS.md     인용별 내용 일치 체크리스트와 오인용 위험
+```
+
+`paper/CITATIONS.md` 의 `RISK` 항목은 특히 주의한다. 예를 들어 확장 Rosenbrock 인용은
+**본문에 어느 변종을 썼는지 명시해야** 성립한다.
+
+## 제출용 LaTeX
+
+`paper/draft.md` 가 내용의 source of truth 이고 LaTeX 는 표현 계층이다.
+
+```text
+paper/main.tex        문서 골격
+paper/sections/*.tex  본문 16개 파일
+paper/tables/*.tex    scripts/make_tables.py 가 raw 에서 생성한다
+paper/figures/*.png   scripts/make_figures.py 가 raw 에서 생성한다
+```
+
+**LaTeX 본문에 표 숫자를 쓰지 않는다.** 표는 `docs/results_stage2.md` 와 같은 로더·같은
+median 규약을 쓰는 스크립트가 만든다.
+
+```bash
+python scripts/make_tables.py --out-dir paper/tables
+python scripts/check_latex.py
+```
+
+`check_latex.py` 는 TeX 없이 `\input` 대상, 그림 파일, 인용 키, `\ref`/`\label` 만
+검사한다. **조판 오류는 잡지 못하므로** 제출 전에 TeX 환경에서 한 번 빌드해야 한다.
+
+```bash
+pdflatex main && bibtex main && pdflatex main && pdflatex main
+```

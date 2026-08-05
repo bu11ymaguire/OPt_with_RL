@@ -18,9 +18,9 @@ SHA-256 으로 고정된다. **본문에서 숫자를 손으로 고치지 않는
 / stochastic 결과와 정책 학습 미진행.)*
 
 <!-- CLAIM: scope -->
-Hessian-free Newton-CG 에서 damping 과 CG 반복 예산의 배분을 **순차적 의사결정
-문제로 구성한다** `[CITATION NEEDED]`. 그 이득이 다단계 계획에서 오는지 실행 중
-상태 피드백에서 오는지를 분리해 측정하는 것이 목적이다.
+Hessian-free Newton-CG [@martens2010hessianfree; @nash2000survey] 에서 damping 과 CG
+반복 예산의 배분을 **순차적 의사결정 문제로 구성한다.** 그 이득이 다단계 계획에서
+오는지 실행 중 상태 피드백에서 오는지를 분리해 측정하는 것이 목적이다.
 
 <!-- CLAIM: C07 -->
 고정 예산(150 gradient-equivalent, GE) 아래에서 상수 설정, 자원 시계 open-loop
@@ -51,17 +51,30 @@ micro-neural 문제를 결정론적 full-batch 와 minibatch regime 에서 비�
 
 ## 1. Introduction
 
-Truncated-Newton 또는 Hessian-free 방법은 Hessian-vector product 만으로 곡률 정보를
-쓴다 `[CITATION NEEDED]`. 실제 성능은 두 계산 자원 결정에 크게 의존한다.
+Truncated-Newton 또는 inexact Newton 방법은 Hessian 을 만들지 않고 Newton 방정식을
+반복법으로 근사해 푼다 [@dembo1982inexact; @steihaug1983cg; @nash1984lanczos;
+@nash2000survey]. 곡률 접근을 Hessian-vector product 로만 하는 구현은
+[@pearlmutter1994hvp] 가 제시한 정확 HVP 에 기반하며, 심층망 규모에서의 적용은
+[@martens2010hessianfree; @martens2011rnn] 가 보고했다. 실제 성능은 두 계산 자원
+결정에 크게 의존한다.
 
 ```text
-damping (Levenberg-Marquardt 유형 정칙화)   [CITATION NEEDED]
-step 당 CG 반복 예산                        [CITATION NEEDED]
+damping (Levenberg-Marquardt 유형 정칙화)
+step 당 CG 반복 예산
 ```
 
+damping 은 Levenberg-Marquardt 정칙화 [@levenberg1944; @marquardt1963] 계열이고
+trust-region 반경과 대응 관계가 있다 [@steihaug1983cg; @conn2000trustregion].
+Hessian-free 최적화에서 damping 조절 규칙이 성능을 좌우한다는 보고가 있다
+[@martens2010hessianfree; @martens2011rnn]. CG 반복 예산의 절단은 inexact Newton 의
+핵심 설계 변수다 [@dembo1982inexact; @nash2000survey].
+
 이 두 값을 고정하지 않고 최적화 도중 조절하려는 시도는 learned optimizer 문헌과
-맞닿아 있다 `[CITATION NEEDED]`. 강화학습으로 그 조절 정책을 학습하려면 상태를
-관찰하고 행동을 바꾸는 것에 가치가 있어야 한다 `[CITATION NEEDED]`.
+맞닿아 있다 [@andrychowicz2016l2l; @metz2019pathologies; @metz2020effective;
+@bae2022apo]. 강화학습으로 그 조절 정책을 학습하려면 [@schulman2017ppo] 상태를
+관찰하고 그에 따라 행동을 바꾸는 것에 가치가 있어야 한다. 계획을 미리 정해 두는 것과
+실행 중 상태에 반응하는 것의 구분은 open-loop 대 closed-loop 제어의 고전적 구분이다
+[@bertsekas2017dp].
 
 우리의 질문은 성능 향상 여부가 아니라 **그 향상이 어디서 오는가**다.
 
@@ -106,7 +119,8 @@ framework" 라고 쓰지 않는다. **보조 기여**이며 본문에서는 Meth
 
 ### 2.1 Newton-CG step 과 행동 공간
 
-각 step 에서 damped Newton 방정식을 truncated CG 로 푼다 `[CITATION NEEDED]`.
+각 step 에서 damped Newton 방정식을 truncated conjugate gradient [@hestenes1952cg;
+@steihaug1983cg] 로 푼다. 행렬은 만들지 않고 HVP 만 쓴다 [@pearlmutter1994hvp].
 
 ```text
 (H + λI) p = −g,   CG 반복 k 회에서 절단
@@ -159,7 +173,25 @@ cost_GE(k) = c_grad_graph + k · c_hvp + c_fwd
 `§7` 의 quadratic 비교는 모두 같은 목적함수 위에서 이루어지므로 이 한계와 무관하다.
 `§9` 의 micro-neural regime 간 절대값 비교에만 해당한다.
 
-### 2.3 평가 지표
+### 2.3 실행 환경과 GE 의 성격
+
+<!-- CLAIM: C06 -->
+> All Stage 2 optimization and planning experiments were executed on CPU. The
+> GPU-derived cost-model files in the repository originate from an earlier Stage 1
+> calibration and were not used in Stage 2; Stage 2 GE accounting used HVP-equivalent
+> oracle counts.
+
+이 문장이 없으면 저장소의 `device: cuda:0` 설정 파일을 보고 Stage 2 의 성능과 비용이
+GPU 기반이라고 오해할 수 있다.
+
+탐색 비용을 읽을 때도 구분이 필요하다.
+
+> Search GE measures simulated oracle work rather than wall-clock GPU compute.
+
+`§7.6` 의 `1,294배` 는 planner 가 수행한 **oracle 호출량**의 비율이다. GPU wall-clock
+비율이 아니다.
+
+### 2.4 평가 지표
 
 고정 예산에서의 개선을 nat 단위 로그 개선으로 잰다.
 
@@ -184,6 +216,10 @@ onestep (C0)       매 step 후보를 전수 평가해 즉시 효율이 최대�
 committed          초기 상태에서 계획을 한 번 세우고 **그대로 실행**한다
 shrinking          매 step 남은 쿼터로 재계획한다 (shrinking-horizon MPC)
 ```
+
+`shrinking` 은 model predictive control 의 receding-horizon 구조를 따르되 남은 예산이
+줄어들므로 horizon 이 축소된다 [@rawlings2017mpc]. `committed` 와 `shrinking` 의 대비가
+open-loop 계획과 closed-loop 정책의 구분에 해당한다 [@bertsekas2017dp].
 
 ### 3.1 `committed` 가 `best_open_loop` 와 다른 점
 
@@ -211,10 +247,11 @@ shrinking          매 step 남은 쿼터로 재계획한다 (shrinking-horizon 
 `seed` 는 난수 시드가 아니라 **실험 조건의 이름**이다. `seed = s` 일 때 모든
 컨트롤러가 동일한 인스턴스, 동일한 초기점, 동일한 minibatch 순서를 본다. task 생성용
 난수 스트림을 optimizer 실행 스트림과 완전히 분리했다. 그래야 컨트롤러가 난수를
-얼마나 쓰든 인스턴스가 같다 `[CITATION NEEDED]`.
+얼마나 쓰든 인스턴스가 같다. 이것은 문헌에서 가져온 주장이 아니라 우리 실행기의 설계
+사실이며 `§4.3` 의 bitwise 재현 검사로 확인했다.
 
-통계는 쌍별 차이에 대한 Wilcoxon signed-rank 와 중앙값 부트스트랩 CI 를 쓴다
-`[CITATION NEEDED]`. `p` 는 `0.0000` 으로 쓰지 않고 `p<0.0001` 로 쓴다.
+통계는 쌍별 차이에 대한 Wilcoxon signed-rank 검정 [@wilcoxon1945] 과 중앙값 부트스트랩
+CI [@efron1979bootstrap] 를 쓴다. `p` 는 `0.0000` 으로 쓰지 않고 `p<0.0001` 로 쓴다.
 
 ### 4.2 Seed 역할 분리
 
@@ -285,7 +322,19 @@ ceiling = log L_0 − log(L_0 · 100·eps) ≈ 31.44 nat
 개선이 `1.8175 nat` 이고 상한까지 여유가 `29.62 nat` 로 보였다.
 
 실제로는 네 baseline 이 **모두 정확히 `1.8175 nat`** 였다. 원인을 특정했다. 표준
-시작점의 basin 에 strict 국소최소점이 있다 `[CITATION NEEDED]`.
+시작점의 basin 에 strict 국소최소점이 있다.
+
+문헌은 확장 Rosenbrock 함수의 **두 변종을 구별한다** [@kok2009rosenbrock]. 짝수 차원의
+비결합 2D 합은 전역최소점만 갖고, 좌표가 결합된 변종은 `d ≥ 4` 에서 추가 정류점을
+갖는다 [@shang2006rosenbrock; @kok2009rosenbrock]. 우리가 쓴 것은 후자다.
+
+```text
+L(x) = sum_{i=1}^{d-1} [ 100 (x_{i+1} − x_i²)² + (1 − x_i)² ]
+```
+
+아래 점은 이 정의와 `d=5` 에서 우리가 직접 수렴시켜 확인한 것이다. 문헌의 표를 옮긴
+것이 아니다. 좌표 `x_1 = −0.962` 는 문헌이 보고하는 국소최소점의 대략적 위치와
+부합한다.
 
 ```text
 x*        (−0.96205102, 0.93573939, 0.88071360, 0.77787767, 0.60509367)
@@ -441,9 +490,10 @@ Table 2. `n=40`.
 | `shrinking` − `best_static` (A2) | +1.690 | [+1.462, +2.368] | <0.0001 | 40/40 |
 | `shrinking` − `onestep` (C2) | +0.456 | [+0.254, +0.720] | <0.0001 | 35/40 |
 | `shrinking` − `committed` (C3) | +0.010 | [−0.033, +0.053] | 0.97 | 21/40 |
-| `onestep_absolute` − `onestep_narrow` (B) | +0.005 | — | — | — |
+| `onestep_absolute` − `onestep_narrow` (B) | +0.005 | [−0.002, +0.026] | 0.59 | 23/40 |
+| `onestep_wide` − `onestep_narrow` (B) | −0.001 | [−0.041, +0.005] | 0.36 | 18/40 |
 | `best_open_loop` − `best_static` | +0.395 | [+0.350, +0.476] | <0.0001 | 40/40 |
-| `heuristic` − `best_static` | −0.000 | — | 0.78 | — |
+| `heuristic` − `best_static` | −0.000 | [−0.000, +0.000] | 0.78 | 20/40 |
 
 게이트 판정: `A1=GO  A2=GO  B=재설계  C1=판정불가  C2=GO  C3=재설계  D=GO`.
 
@@ -476,16 +526,21 @@ Table 2. `n=40`.
 > 관측되지 않았다.**
 
 우리는 등가성을 주장하지 않는다. equivalence margin 을 사전 등록하지 않았으므로
-"효과가 0 이다" 나 "효과가 `0.053 nat` 보다 작다" 를 검정 결과로 말할 수 없다
-`[CITATION NEEDED]`.
+"효과가 0 이다" 나 "효과가 `0.053 nat` 보다 작다" 를 검정 결과로 말할 수 없다.
+TOST 절차는 사전에 정한 경계를 요구하며 [@schuirmann1987tost], 그 경계를 미리 지정하는
+것이 권고 사항이다 [@lakens2017equivalence].
 
 ### 7.5 행동 공간은 병목이 아니다
 
 <!-- CLAIM: C05 -->
 `absolute`(132 action, log10 범위 15.27)가 `narrow`(12 action, 범위 0.95) 대비 얻는
-것은 `+0.005 nat` 다. `wide − narrow` 는 `−0.001 nat` 다. damping 을 자유롭게 고를 수
+것은 `+0.005 nat`(CI `[−0.002, +0.026]`, `p=0.59`, 23/40) 이다. `wide − narrow` 는
+`−0.001 nat`(CI `[−0.041, +0.005]`, `p=0.36`, 18/40) 다. damping 을 자유롭게 고를 수
 있게 해도 1-step 성능이 오르지 않는다. **음의 결과지만 값싼 좁은 행동 공간을
 정당화한다.**
+
+게이트 B 의 GO 임계값은 `0.5 nat` 였고 관측값이 그보다 두 자릿수 작으므로 판정은
+`재설계` 다. CI 가 0 을 포함하지만 등가성을 주장하지 않는다 (`§7.4` 와 같은 이유).
 
 ### 7.6 탐색 비용
 
@@ -598,6 +653,10 @@ R1 full-batch   전체 데이터로 gradient 와 HVP. 결정론적
 R2 minibatch    고정 seed 의 batch 시퀀스. step 마다 표본이 바뀐다
 ```
 
+`R2` 는 부분표본 곡률을 Newton-CG 에 넣는 설정이며, 그 자체가 어려운 문제라는 것은
+알려져 있다 [@byrd2011stochastic]. 우리 목적은 그 어려움을 해결하는 것이 아니라
+planner 의 내부 예측 모델이 틀렸을 때 재계획의 가치가 달라지는지를 보는 것이다.
+
 2-layer MLP(4,869 파라미터), 고정 teacher network 로 만든 512 샘플 5-class 분류
 문제다. 평가 목적함수는 항상 전체 데이터이므로 `J_E` 가 regime 간 비교 가능하다.
 
@@ -616,7 +675,7 @@ Table 4. 절대 median `J_E`, regime 당 `n=3`.
 | `heuristic` | 5.105 | 2.162 | 0.986 |
 | `onestep_narrow` | 19.886 | 4.296 | 3.468 |
 | `committed_Q4_narrow` | 20.491 | −0.402 | 1.086 |
-| `shrinking_Q4_narrow` | 20.396 | 3.185 | 2.757 |
+| `shrinking_Q4_narrow` | 20.395 | 3.185 | 2.757 |
 
 Table 5. regime 별 쌍별 차이.
 
@@ -633,7 +692,7 @@ Table 5. regime 별 쌍별 차이.
 
 ```text
 committed  R1 20.491  →  R2(64) 1.086,  R2(128) −0.402     붕괴
-shrinking  R1 20.396  →  R2(64) 2.757,  R2(128)  3.185
+shrinking  R1 20.395  →  R2(64) 2.757,  R2(128)  3.185
 ```
 
 `R2` 에서 `committed` 는 `best_static` 보다도 낮고 `onestep` 보다 `2.3 ~ 4.4 nat`
@@ -646,7 +705,8 @@ Figure 3. `committed` 거절률: R1 `0.00` → batch 128 `0.79` → batch 64 `0.
 
 동시에 `R2` 에서 planner 는 튜닝된 상수보다도, 값싼 1-step 제어보다도 낮다. 상태
 조건 제어 자체는 `R2` 에서도 도움이 되지만(`onestep 3.468` vs `best_static 3.029`),
-그것은 이미 1-step greedy 가 하고 있고 탐색 비용이 planner 의 `1/146` 이다.
+그것은 이미 1-step greedy 가 하고 있고 탐색 비용이 planner 의 `1/146` 이다
+(batch 64 regime 의 spec 별 median: `onestep 1,879 GE`, `shrinking 275,286 GE`).
 
 ### 10.4 한계
 
@@ -767,7 +827,7 @@ gradient 를 계산한 batch 의 loss 를 줄이는 것은 쉽다. 대체 기준
 > practically large feedback benefit.
 
 `equivalent` 나 `statistically the same` 을 쓰지 않는다. 사전 equivalence margin 이
-없다 `[CITATION NEEDED]`.
+없다 [@schuirmann1987tost; @lakens2017equivalence].
 
 <!-- CLAIM: C12 -->
 3. stochastic model mismatch 에서 committed plan 은 취약했다. 거절률이
@@ -817,7 +877,8 @@ PPO 를 실험하지 않았다
 `C2` 가 held-out 에서 GO 라는 것은 좋은 다단계 시퀀스가 존재한다는 뜻이고, `C3` 가
 작다는 것은 그 시퀀스를 초기 상태에서 정할 수 있다는 뜻이다. 이 조합은 step 단위
 feedback 정책보다 **초기 문제 특징에서 스케줄을 예측하는 amortized 접근**을 시사한다
-`[CITATION NEEDED]`. 우리는 그것을 구현하지 않았고 후속 방향으로만 언급한다.
+[@amos2023amortized; @andrychowicz2016l2l; @bae2022apo]. 우리는 그것을 구현하지 않았고
+후속 방향으로만 언급한다.
 
 ---
 
@@ -1000,6 +1061,19 @@ Rosenbrock 의 benchmark 결함과 median 규약 수정은 `§15` 와 위 이탈
 ---
 
 ## 15. Reproducibility
+
+### 15.1 실행 환경
+
+> All Stage 2 optimization and planning experiments were executed on CPU. The
+> GPU-derived cost-model files in the repository originate from an earlier Stage 1
+> calibration and were not used in Stage 2; Stage 2 GE accounting used HVP-equivalent
+> oracle counts.
+
+> Search GE measures simulated oracle work rather than wall-clock GPU compute.
+
+단일 스레드로 고정했다. wall-clock 은 어떤 판정에도 쓰지 않는다.
+
+### 15.2 산출물
 
 ```text
 재현 명령        docs/reproduce.md

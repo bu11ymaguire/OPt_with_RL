@@ -9,7 +9,12 @@
 3  금지 표현이 draft 에 없는가
 4  숫자가 있는 claim 에 evidence source 가 있는가
 5  draft 의 claim ID 가 ledger 에 존재하는가
+6  draft 의 `[@key]` 가 references.bib 에 있고 서지정보가 TODO 가 아닌가
+   `[CITATION NEEDED]` 가 남아 있지 않은가
 ```
+
+**[6] 이 검사하지 않는 것.** 인용한 논문의 *내용*이 우리 주장을 실제로 지지하는지는
+기계로 확인할 수 없다. 그것은 `paper/CITATIONS.md` 의 사람 검토 체크리스트로 관리한다.
 
 금지 표현은 리뷰어가 지정했다. 문장 안에 들어가면 주장 범위를 넘는다.
 
@@ -44,6 +49,7 @@ FORBIDDEN = (
 # 정당한 기술 용어. 금지 표현을 부분으로 포함하지만 주장이 아니다.
 LEGITIMATE_COMPOUNDS = (
     "gradient-equivalent",  # GE 단위의 정식 이름
+    "hvp-equivalent",       # 같은 단위를 HVP 기준으로 부른 이름 (§2.3 CPU 문구)
     "provenance",           # prove 를 부분으로 포함
     "monotonic acceptance",  # 수락 규칙의 이름. 리뷰어가 승인한 문장
     "monotonic descent",
@@ -72,6 +78,11 @@ ALLOWED_CONTEXT = (
 )
 
 CLAIM_RE = re.compile(r"<!--\s*CLAIM:\s*([A-Za-z0-9_]+)\s*-->")
+# 원고의 인용 표기. pandoc 형식 `[@key]` / `[@a; @b]` 를 쓴다.
+CITE_RE = re.compile(r"@([A-Za-z][A-Za-z0-9_:.\-]*)")
+BIB_ENTRY_RE = re.compile(r"^@\w+\{\s*([^,\s]+)\s*,", re.MULTILINE)
+# `[CITATION NEEDED]` 가 남아 있으면 인용 작업이 끝나지 않았다.
+CITATION_TODO_RE = re.compile(r"\[CITATION NEEDED\]")
 # 금지 주장을 **하지 않겠다고 밝히는** 참조. NOT SUPPORTED claim 은 이 형태만 허용한다.
 AVOID_RE = re.compile(r"<!--\s*AVOID:\s*([A-Za-z0-9_]+)\s*-->")
 LEDGER_HEADING = re.compile(r"^###\s+(C\d+)\.\s+(.*)$")
@@ -124,6 +135,21 @@ def normalize(ident: str) -> str:
     return ident
 
 
+def parse_bib(path: Path) -> dict[str, str]:
+    """bib 파일에서 `{key: note}` 를 뽑는다.
+
+    본격적인 BibTeX 파서가 아니다. `@type{key,` 로 항목을 나누고 그 블록 안의
+    `note` 문자열을 통째로 담는다. 검증 상태(`VERIFIED` / `TODO`) 확인이 목적이다.
+    """
+    text = path.read_text(encoding="utf-8")
+    entries: dict[str, str] = {}
+    matches = list(BIB_ENTRY_RE.finditer(text))
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        entries[m.group(1)] = text[m.end() : end]
+    return entries
+
+
 def scan_forbidden(path: Path) -> list[tuple[int, str, str]]:
     patterns = [(p, re.compile(rf"\b{p}\b", re.IGNORECASE)) for p in FORBIDDEN]
     hits: list[tuple[int, str, str]] = []
@@ -145,10 +171,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", type=Path, default=Path("paper/claim_ledger.md"))
     parser.add_argument("--draft", type=Path, default=Path("paper/draft.md"))
+    parser.add_argument("--bib", type=Path, default=Path("paper/references.bib"))
     parser.add_argument("--strict", action="store_true", help="경고도 실패로 취급한다")
     args = parser.parse_args()
 
-    for path in (args.ledger, args.draft):
+    for path in (args.ledger, args.draft, args.bib):
         if not path.exists():
             print(f"없음: {path}")
             return 2
@@ -222,6 +249,34 @@ def main() -> int:
         print(f"  **{ident}** 가 ledger 에 없다")
         errors.append(f"draft 의 claim ID {ident} 가 ledger 에 없다")
     print("  검사 완료")
+
+    # 6. 인용 무결성. draft 의 `[@key]` 가 bib 에 있고 검증 상태가 TODO 가 아닌가
+    print()
+    print("[6] 인용 무결성")
+    bib = parse_bib(args.bib)
+    used = set(CITE_RE.findall(draft_text))
+    print(f"  bib 항목 {len(bib)}개, draft 인용 키 {len(used)}종")
+    for key in sorted(used - set(bib)):
+        print(f"  **{key}** 가 {args.bib.name} 에 없다")
+        errors.append(f"draft 가 인용한 bib 키 {key} 가 없다")
+    for key in sorted(used & set(bib)):
+        if "TODO" in bib[key]:
+            print(f"  **{key}** 의 서지정보가 TODO 다")
+            errors.append(f"서지정보가 TODO 인 {key} 를 draft 가 인용했다")
+    todo_lines = [
+        i
+        for i, line in enumerate(draft_text.splitlines(), start=1)
+        if CITATION_TODO_RE.search(line)
+    ]
+    for line_no in todo_lines:
+        print(f"  {args.draft.name}:{line_no}  [CITATION NEEDED] 가 남아 있다")
+        errors.append(f"{args.draft.name}:{line_no} [CITATION NEEDED] 미해결")
+    unused = sorted(set(bib) - used)
+    if unused:
+        print(f"  미인용 bib 항목 {len(unused)}개: {', '.join(unused)}")
+        warnings.append(f"bib 항목 {len(unused)}개가 draft 에서 인용되지 않았다")
+    if not errors:
+        print("  검사 완료")
 
     print()
     print("=" * 88)

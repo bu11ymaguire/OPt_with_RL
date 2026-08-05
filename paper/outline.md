@@ -27,7 +27,11 @@ Abstract, Introduction, Discussion, Conclusion 의 주장 강도
 ```text
 목적    문제 설정과 질문 분해
 claim   없음 (배경). C7 의 사다리를 예고만 한다
-citation [CITATION NEEDED] Hessian-free/truncated Newton, learned optimizers, PPO
+citation dembo1982inexact steihaug1983cg nash1984lanczos nash2000survey
+         martens2010hessianfree martens2011rnn pearlmutter1994hvp
+         levenberg1944 marquardt1963 conn2000trustregion
+         andrychowicz2016l2l metz2019pathologies metz2020effective bae2022apo
+         schulman2017ppo bertsekas2017dp
 분량    1 페이지
 ```
 
@@ -39,7 +43,7 @@ citation [CITATION NEEDED] Hessian-free/truncated Newton, learned optimizers, PP
 claim   C6 (탐색 비용), C17 (GE 의 범위)
 내용    Newton-CG step, damping / CG budget action 공간
         GE 정의와 그 한계를 여기서 미리 밝힌다
-citation [CITATION NEEDED] CG, Pearlmutter HVP, LM damping
+citation hestenes1952cg steihaug1983cg pearlmutter1994hvp
 ```
 
 `GE normalizes gradient-equivalent oracle calls within a regime, not total
@@ -56,7 +60,7 @@ floating-point operations across different batch sizes.` (C17 허용 문장)
           committed            초기 상태에서 한 번 계획하고 맹목 실행
           shrinking            매 step 재계획 (shrinking quota MPC)
         committed 가 open_loop 와 다른 이유를 명시한다 (초기 상태에 조건화된 oracle)
-citation [CITATION NEEDED] MPC, receding/shrinking horizon
+citation rawlings2017mpc bertsekas2017dp
 ```
 
 ### 4. Experimental protocol
@@ -70,7 +74,8 @@ claim   C25 (설정을 held-out 으로 고르지 않았다)
         3계층 정체성 (run_semantics / sweep / aggregation)
         paired design, Wilcoxon signed-rank, bootstrap CI
         사전 등록된 게이트 A1/A2/B/C1/C2/C3/D 와 임계값
-citation [CITATION NEEDED] paired design, Wilcoxon, bootstrap
+citation wilcoxon1945 efron1979bootstrap
+         paired design 자체는 인용하지 않는다 (우리 실행기의 설계 사실)
 ```
 
 ### 5. Benchmark eligibility (방법론 기여)
@@ -82,7 +87,8 @@ claim   C8, C9, C10
         참조 solver panel. 단일 solver 금지 근거 (C9)
         다른 초기화는 진단이며 상한을 올리지 않는다 (C10)
         seed 복제 자동 검출
-citation [CITATION NEEDED] Rosenbrock d>=4 국소최소점
+citation shang2006rosenbrock kok2009rosenbrock
+         **변종을 본문에 명시해야 인용이 성립한다** (paper/CITATIONS.md §5)
 ```
 
 이 절은 **부정적 결과에서 나온 방법론 기여**다. 원고에서 이것을 약점이 아니라
@@ -171,7 +177,8 @@ claim   C20 의 대체 문장
           decision-search 비용이 예산의 1,294배 (C6)
         따라서 상태 의존 정책이 학습할 유용한 신호를 확인하지 못했다
         후속 방향으로 amortized schedule selector 를 언급 (구현하지 않았다)
-citation [CITATION NEEDED] PPO, amortized optimization
+citation schulman2017ppo amos2023amortized andrychowicz2016l2l bae2022apo
+         **PPO 를 실행하지 않았다.** 인용이 실행으로 읽히지 않게 쓴다
 ```
 
 **이 절의 논리 검증은 리뷰어 몫이다.**

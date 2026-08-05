@@ -104,10 +104,12 @@ public-release-stage2-v1    개인정보 정리와 원고를 포함한 공개점
 python -m pytest tests/ -q
 python -m ruff check .
 python scripts/check_claims.py
+python scripts/check_latex.py
 python scripts/sanitize_public_artifacts.py --check
 python scripts/make_report.py   --out docs/results_stage2.md
 python scripts/make_manifest.py --out paper/evidence_map.md
 python scripts/make_figures.py  --out-dir paper/figures
+python scripts/make_tables.py   --out-dir paper/tables
 git diff protocol-freeze-stage2-v1..HEAD
 ```
 
@@ -119,9 +121,37 @@ raw SHA-256 재생성됨
 README 재현 명령 유효
 ```
 
+## 인용
+
+`paper/references.bib` 에 26 항목이 있고 `paper/draft.md` 의 `[CITATION NEEDED]` 는
+남아 있지 않다. 서지정보는 원문 또는 출판사 페이지에서 확인했고 `note` 필드에
+검증 상태를 남겼다.
+
+세 항목에 **부분 미확인** 필드가 있다. 본문 주장에는 영향이 없고 표기 정밀도 문제다.
+
+```text
+bertsekas2017dp        절 번호 미확인 -> 특정 절을 지목하지 않는다
+amos2023amortized      FnT 권/호/페이지 미확인 -> arXiv ID 로 인용한다
+lakens2017equivalence  권/호/페이지 미확인 -> doi 로 인용한다
+```
+
+서지정보 확인과 **내용 일치**는 다른 작업이므로 후자는 `paper/CITATIONS.md` 에
+인용별로 기록했다. `RISK` 로 표시한 항목이 네 개 있다.
+
+```text
+kok2009rosenbrock  본문에 어느 Rosenbrock 변종인지 명시해야 성립한다
+bertsekas2017dp    절 번호를 지목하면 안 된다
+schulman2017ppo    PPO 를 실행하지 않았다. 인용이 실행으로 읽히면 안 된다
+schuirmann1987tost / lakens2017equivalence
+                   등가성 검정을 수행하지 않았다. margin 이 없다는 근거로만 쓴다
+```
+
 ## 남은 항목
 
 ```text
-LaTeX 소스가 없어 PDF 를 빌드하지 않았다. 원고는 Markdown 이다 (paper/draft.md)
-인용은 [CITATION NEEDED] 로 표시돼 있고 아직 채우지 않았다
+이 환경에 TeX 배포가 없어 PDF 를 빌드하지 않았다
+  paper/main.tex 와 sections/ 는 작성됐고 scripts/check_latex.py 로 구조만 검사했다
+  제출 전에 TeX 환경에서 pdflatex + bibtex 를 한 번 실행해야 한다
+LICENSE 와 CITATION.cff 가 없다
+외부 연구자 검토를 받지 않았다
 ```

@@ -97,6 +97,10 @@ DELTAS = (
     # 쌍별 차이의 median 은 선형이 아니므로 `A2 − C2` 가 `onestep − static` 이 아니다.
     ("ladder", "best_static", "onestep_narrow"),
     ("ladder", "best_static", "committed_Q4_narrow"),
+    # 게이트 B 와 heuristic baseline. 원고 Table 2 가 이 값을 인용한다.
+    ("B", "onestep_narrow", "onestep_absolute"),
+    ("B_wide", "onestep_narrow", "onestep_wide"),
+    ("heuristic", "best_static", "heuristic"),
 )
 
 
@@ -182,6 +186,57 @@ def section_cost(
         )
 
 
+def section_cost_by_spec(
+    out: list[str], by_controller: dict[str, list[RunSummary]], alias: dict[str, str]
+) -> None:
+    """spec 별 탐색 비용과 거절률.
+
+    pooled median 만 두면 원고에서 regime 별 비용비를 손으로 만들게 된다.
+    실제로 그런 오류가 있었다. **비율은 여기 값을 쓴다.**
+    """
+    specs = sorted({spec_of(r) for runs in by_controller.values() for r in runs})
+    if len(specs) < 2:
+        return
+    out.append("")
+    out.append("spec 별 탐색 비용 (median decision-search GE) 과 거절률")
+    out.append("")
+    out.append("| controller | " + " | ".join(f"{s} GE / 거절률" for s in specs) + " |")
+    out.append("|---|" + "---|" * len(specs))
+    for name in LADDER:
+        runs = by_controller.get(alias.get(name, name))
+        if not runs:
+            continue
+        cells = []
+        for spec in specs:
+            sub = [r for r in runs if spec_of(r) == spec]
+            if not sub:
+                cells.append("-")
+                continue
+            cells.append(
+                f"{median([r.search_cost_ge for r in sub]):,.0f} / "
+                f"{median([r.rejection_rate for r in sub]):.2f}"
+            )
+        out.append(f"| `{name}` | " + " | ".join(cells) + " |")
+
+    out.append("")
+    out.append("spec 별 `shrinking` 대비 `onestep` 탐색 비용 배수 (planner / onestep)")
+    out.append("")
+    out.append("| spec | onestep GE | shrinking GE | 배수 |")
+    out.append("|---|---|---|---|")
+    one = by_controller.get(alias.get("onestep_narrow", "onestep_narrow"))
+    shr = by_controller.get(alias.get("shrinking_Q4_narrow", "shrinking_Q4_narrow"))
+    if not one or not shr:
+        return
+    for spec in specs:
+        o = [r.search_cost_ge for r in one if spec_of(r) == spec]
+        s = [r.search_cost_ge for r in shr if spec_of(r) == spec]
+        if not o or not s:
+            continue
+        mo, ms = median(o), median(s)
+        ratio = f"{ms / mo:,.1f}x" if mo > 0.0 else "n/a"
+        out.append(f"| {spec} | {mo:,.0f} | {ms:,.0f} | {ratio} |")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-dir", type=Path, default=Path("results/raw"))
@@ -250,6 +305,7 @@ def main() -> int:
         section_absolute(out, by_controller, alias)
         section_deltas(out, by_controller, alias)
         section_cost(out, by_controller, alias)
+        section_cost_by_spec(out, by_controller, alias)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("\n".join(out) + "\n", encoding="utf-8")
