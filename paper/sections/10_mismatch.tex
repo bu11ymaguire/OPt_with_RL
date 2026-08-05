@@ -43,6 +43,7 @@ planner's look-ahead simulation, so the planner predicts the future using the
 current batch. Letting it see future batches would amount to oracle knowledge of
 the data and would defeat the purpose of R2.
 
+\Needspace{6\baselineskip}
 \subsection{Results}
 
 \begin{table}[!ht]
@@ -84,9 +85,11 @@ In R2, \ctrl{committed} falls below even \ctrl{best\_static} and trails
 \begin{figure}[!ht]
   \centering
   \includegraphics[width=\textwidth]{figure3_model_mismatch.png}
-  \caption{Rejection rate of \ctrl{committed}: $0.00$ in R1, $0.79$ at batch 128,
-  $0.66$ at batch 64. A large fraction of the plan formed at the initial state is
-  rejected by later batches.}
+  \caption{Exploratory micro-neural results under model mismatch, $n = 3$ per
+  regime. Panel (a) compares terminal improvement across the full-batch and
+  minibatch regimes. Panel (b) gives the rejection rate of \ctrl{committed}:
+  $0.00$ in R1, $0.79$ at batch 128, $0.66$ at batch 64, so a large fraction of
+  the plan formed at the initial state is rejected by later batches.}
   \label{fig:mismatch}
 \end{figure}
 

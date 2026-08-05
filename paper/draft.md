@@ -181,8 +181,8 @@ cost_GE(k) = c_grad_graph + k · c_hvp + c_fwd
 > calibration and were not used in Stage 2; Stage 2 GE accounting used HVP-equivalent
 > oracle counts.
 
-이 문장이 없으면 저장소의 `device: cuda:0` 설정 파일을 보고 Stage 2 의 성능과 비용이
-GPU 기반이라고 오해할 수 있다.
+저장소는 Stage 1 설정 파일을 `device: cuda:0` 항목까지 provenance 로 보존한다. 이
+파일들은 Stage 2 의 실행 환경을 서술하지 않는다.
 
 탐색 비용을 읽을 때도 구분이 필요하다.
 
@@ -553,7 +553,8 @@ Table 6. held-out median.
 | `committed_Q4_narrow` | 69,401 | 463× |
 | `shrinking_Q4_narrow` | 194,095 | 1,294× |
 
-보고한 헤드룸은 배포 예산의 `1,294배` 를 쓴 oracle 값이다. 이 값을 숨기지 않는다.
+보고한 헤드룸은 배포 예산의 `1,294배` 를 쓴 oracle 값이다. 이 비용 격차의 함의는
+`§13.4` 에서 다룬다.
 
 ---
 
@@ -808,12 +809,9 @@ gradient 를 계산한 batch 의 loss 를 줄이는 것은 쉽다. 대체 기준
 ## 12. Why we did not train a policy
 
 이 절은 **두 가지를 분리해** 서술한다. 하나는 데이터가 지지하는 과학적 결론이고,
-다른 하나는 자원 투입에 관한 프로젝트 결정이다. 둘을 섞으면 게이트 임계값을 학문적
-경계처럼 방어해야 한다.
+다른 하나는 자원 투입에 관한 프로젝트 결정이다.
 
 ### 12.1 Scientific conclusion
-
-**이 절은 결과만 서술한다.** 정책 학습이나 프로젝트 의사결정을 언급하지 않는다.
 
 <!-- CLAIM: C03 -->
 1. 다단계 planning 은 held-out 에서 1-step 제어보다 개선됐다
@@ -869,8 +867,8 @@ PPO 를 실험하지 않았다
 결과를 본 뒤 임계값을 바꾸지 않았다
 ```
 
-우리는 이 임계값이 옳다고 주장하지 않는다. **결과를 보기 전에 고정했고 이후 바꾸지
-않았다는 것만 주장한다.**
+임계값은 **결과를 보기 전에 고정했고 이후 바꾸지 않았다.** 그 구체적인 값은
+scope-control 선택이며 정확성 주장이 아니다.
 
 ### 12.4 후속 방향
 
@@ -1081,7 +1079,7 @@ Rosenbrock 의 benchmark 결함과 median 규약 수정은 `§15` 와 위 이탈
 raw checksum     paper/evidence_map.md  (SHA-256)
 주장 원장         paper/claim_ledger.md
 프로토콜          docs/experiment_protocol.md  (결정 D1~D31)
-태그             protocol-freeze-stage2-v1
+태그             public-release-stage2-v1
 테스트           455개
 ```
 

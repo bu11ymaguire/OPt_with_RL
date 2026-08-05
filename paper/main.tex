@@ -37,6 +37,14 @@
 % 없으면 표가 제목을 앞지른다. \subsection 에도 같은 barrier 를 넣는다.
 \let\rlnOldSubsection\subsection
 \renewcommand{\subsection}{\FloatBarrier\rlnOldSubsection}
+% barrier 를 넣으면 표만 있는 절의 제목이 페이지 맨 아래에 고아로 남는다. 제목 뒤에
+% 최소 공간을 요구해서 제목과 내용이 갈라지지 않게 한다.
+\usepackage{needspace}
+
+% 마지막 수단으로 줄 늘림을 조금 허용한다. §12.1 의 enumerate 항목 한 줄이 들여쓰기
+% 때문에 4.96pt 넘쳤다. 문장을 고치는 대신 조판으로 닫는다. 값이 커지면 줄이 헐거워
+% 지므로 1em 로 제한하고, Underfull 이 생기지 않는지 빌드 로그로 확인한다.
+\setlength{\emergencystretch}{1em}
 \usepackage{xcolor}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage[hidelinks]{hyperref}

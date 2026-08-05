@@ -146,8 +146,10 @@ def figure1(raw_dir: Path, out: Path) -> None:
     axes[1].text(
         0.5,
         -0.32,
+        # 번호 대신 대상을 이름으로 가리킨다. LaTeX caption 이 \ref 로 정확한 번호를
+        # 준다 (07_heldout.tex 의 fig:ladder caption).
         "Paired medians are not additive: bars must not be subtracted from each other.\n"
-        "For incremental effects (planning vs feedback) see Figure 2.",
+        "For incremental effects see the paired-effects figure (planning vs feedback).",
         transform=axes[1].transAxes,
         ha="center",
         va="top",
@@ -157,10 +159,11 @@ def figure1(raw_dir: Path, out: Path) -> None:
 
     # **역할 분리.** Figure 1 은 절대 성능을 설명한다. 인과적 분해와 핵심 주장은
     # Figure 2 의 직접 쌍별 delta 에서만 가져온다.
+    # **번호를 그리지 않는다.** 번호는 LaTeX 가 매긴다. 그림 안에 "Figure 1." 을
+    # 넣으면 caption 과 중복되고, 순서가 바뀔 때 PNG 를 다시 만들어야 한다.
     fig.suptitle(
-        "Figure 1. Absolute performance of the controller ladder on held-out instances\n"
-        "(4 ill-conditioned SPD quadratic specs $\\times$ 10 seeds). "
-        "Descriptive; see Figure 2 for the decomposition.",
+        "Absolute performance of the controller ladder on held-out instances\n"
+        "(4 ill-conditioned SPD quadratic specs $\\times$ 10 seeds). Descriptive.",
         fontsize=9.5,
     )
     fig.tight_layout()
@@ -234,7 +237,7 @@ def figure2(raw_dir: Path, out: Path) -> None:
         axes[1].legend(fontsize=8, loc="lower right")
 
     fig.suptitle(
-        "Figure 2. Directly measured paired effects. Multi-step planning improves over "
+        "Directly measured paired effects. Multi-step planning improves over "
         "one-step control;\nreplanning during execution shows no practically large "
         "benefit over a committed plan.",
         fontsize=9.5,
@@ -314,7 +317,7 @@ def figure3(raw_dir: Path, out: Path) -> None:
     axes[1].legend(fontsize=8)
 
     fig.suptitle(
-        "Figure 3. Model mismatch: planning loses its advantage, "
+        "Model mismatch: planning loses its advantage, "
         "committed plans collapse (exploratory)",
         fontsize=10,
     )
@@ -362,7 +365,7 @@ def figure4(raw_dir: Path, out: Path) -> None:
     axes[0].legend(fontsize=8)
 
     fig.suptitle(
-        "Figure 4. Acceptance criterion ablation. The alternative criterion reduced, "
+        "Acceptance criterion ablation. The alternative criterion reduced, "
         "but did not eliminate,\nthe apparent advantage of replanning (exploratory, "
         "$n=3$ per regime)",
         fontsize=9,
