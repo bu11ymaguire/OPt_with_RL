@@ -87,16 +87,19 @@ a140ed8  D27
 ## 태그의 의미
 
 ```text
-protocol-freeze-stage2-v1   실험 프로토콜과 설정이 고정된 시점
-                            hostname 정리 이전이다
 public-release-stage2-v1    개인정보 정리와 원고를 포함한 공개점
+arxiv-submission-v1         arXiv 제출 시점의 코드와 원고 (제출 시 생성)
 ```
 
-`protocol-freeze-stage2-v1` 은 로컬 기록으로 보존하고 공개 저장소에는 push 하지
-않는다. 공개 이력에 정리 이전 값을 추가로 노출할 이유가 없다.
+`docs/experiment_protocol.md` 의 `C2 protocol freeze` 절은 동결 시점에
+`git tag protocol-freeze-stage2-v1` 을 남기도록 규정했다. **그 태그는 실제로 만들어지지
+않았다.** 이전 판의 이 문서는 그것을 "로컬 기록으로 보존한다" 고 적었는데 사실이
+아니었다. 로컬에도 원격에도 없고 reflog 에도 흔적이 없다.
 
 프로토콜 동결점의 내용은 `docs/experiment_protocol.md` 의 결정 `D1~D32` 와 변경
 이력에 전부 남아 있으므로, 태그 없이도 무엇이 언제 고정됐는지 확인할 수 있다.
+**없는 태그를 소급 생성하지 않는다.** 그 시점에 실제로 동결했다는 이력을 사후에
+만들어내는 셈이기 때문이다.
 
 ## 공개 전 점검 목록
 
@@ -110,7 +113,7 @@ python scripts/make_report.py   --out docs/results_stage2.md
 python scripts/make_manifest.py --out paper/evidence_map.md
 python scripts/make_figures.py  --out-dir paper/figures
 python scripts/make_tables.py   --out-dir paper/tables
-git diff protocol-freeze-stage2-v1..HEAD
+git diff public-release-stage2-v1..HEAD
 ```
 
 ```text

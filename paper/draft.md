@@ -999,6 +999,7 @@ E8  게이트 C1 은 seed 1개 진단 baseline 이므로 판정에 쓰지 않았
 E9  3층 보고가 게이트 A1/B 에는 미적용이며 단일 통계를 쓴다
 E10 median 규약 불일치 (아래)
 E11 결과 식별자에 해당 run 이 쓰지 않는 설정이 포함되어 있었다 (아래)
+E12 프로토콜이 규정한 동결 태그를 만들지 않았다 (아래)
 ```
 
 **E5.**
@@ -1022,6 +1023,13 @@ E11 결과 식별자에 해당 run 이 쓰지 않는 설정이 포함되어 있�
 > restricted the identifier to the targets actually used and re-executed those runs; the
 > fixed-budget comparisons were unaffected, and the cost-to-target statistic is a
 > re-aggregation of the same measurements.
+
+**E12.**
+
+> The protocol specified that a tag be created at the configuration-freeze point. That
+> tag was never created, so the freeze cannot be verified by a tag-based diff. The
+> frozen decisions are recorded in the protocol document, and we did not create the tag
+> retroactively.
 
 ### 범위와 교란
 
@@ -1079,7 +1087,7 @@ Rosenbrock 의 benchmark 결함과 median 규약 수정은 `§15` 와 위 이탈
 raw checksum     paper/evidence_map.md  (SHA-256)
 주장 원장         paper/claim_ledger.md
 프로토콜          docs/experiment_protocol.md  (결정 D1~D31)
-태그             public-release-stage2-v1
+코드·원고 공개점   arxiv-submission-v1
 테스트           455개
 ```
 

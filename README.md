@@ -232,26 +232,29 @@ planner 는 oracle 이며 배포 가능한 방법이 아니다
 테스트  455개 통과
 ```
 
-`protocol-freeze-stage2-v1` 태그는 **프로토콜과 설정이 고정된 시점**을 가리킨다.
+프로토콜 동결점은 **태그가 아니라 `docs/experiment_protocol.md` 의 결정 기록**으로
+확인한다. `D1~D32` 가 무엇을 언제 고정했는지 순서대로 남긴다.
 
 ```text
-태그가 보장하는 것
-  게이트 정의와 임계값, 설정 선택 규칙, challenge spec 과 seed 역할이 그 시점에
-  확정되어 있고 이후 결과를 보고 바꾸지 않았다
+동결된 것
+  게이트 정의와 임계값, 설정 선택 규칙, challenge spec 과 seed 역할.
+  결과를 보고 바꾸지 않았다
 
-태그 이후 커밋에 포함된 것
+동결 이후에 한 것
   원고 작성, 그림 생성, README 재작성
   보고 도구의 median 규약 통일 (E10)
   run_semantics_id 에서 무관한 설정 제거 (E11, D32)
 
-태그 이후에 하지 않은 것
+동결 이후에 하지 않은 것
   게이트 임계값 변경
   설정 재선택
   새 실험 조건 추가
 ```
 
-`git diff protocol-freeze-stage2-v1..HEAD` 로 확인할 수 있다. 실험 조건이 아닌 변경만
-들어 있다.
+`docs/experiment_protocol.md` 의 `C2 protocol freeze` 절은 이 시점에 `git tag
+protocol-freeze-stage2-v1` 을 남기도록 규정했으나 **그 태그는 실제로 만들어지지
+않았다.** 따라서 태그 기반 diff 로는 확인할 수 없고, 결정 기록과 claim ledger 가
+근거다. 이 이탈은 `paper/claim_ledger.md` 의 프로토콜 이탈 항목에 적어 두었다.
 
 ## 주장 검증
 

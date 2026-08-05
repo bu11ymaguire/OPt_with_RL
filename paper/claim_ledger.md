@@ -509,6 +509,22 @@ status       EXPLORATORY (해석 주의 항목)
      Track E 는 영향이 없고 게이트 D 값도 변하지 않는다 (같은 run 재집계).
      표시용 config_hash 에 acceptance_loss 를 무조건 넣은 것도 같은 유형이었다.
      source: docs/experiment_protocol.md D32
+
+[E12] 프로토콜이 규정한 동결 태그를 만들지 않았다
+     docs/experiment_protocol.md 의 `C2 protocol freeze` 절은 config 고정 시점에
+     `git tag protocol-freeze-stage2-v1` 을 남기도록 규정했다. 그 태그는 만들어지지
+     않았다. 로컬과 원격 모두에 없고 reflog 에도 흔적이 없다. 이전 판의
+     PUBLIC_RELEASE_NOTES.md 는 그것을 "로컬 기록으로 보존한다" 고 적었는데 사실이
+     아니었다. 동결된 결정 자체는 D1~D32 에 순서대로 남아 있어 무엇이 언제 고정됐는지는
+     확인할 수 있으나, 태그 기반 diff 로 검증할 수는 없다.
+     **없는 태그를 소급 생성하지 않는다.** 그 시점에 동결했다는 이력을 사후에 만드는
+     셈이기 때문이다.
+     원고 문장:
+       The protocol specified that a tag be created at the configuration-freeze
+       point. That tag was never created, so the freeze cannot be verified by a
+       tag-based diff. The frozen decisions are recorded in the protocol document,
+       and we did not create the tag retroactively.
+     source: docs/experiment_protocol.md (C2 protocol freeze 절)
 ```
 
 ## 인용

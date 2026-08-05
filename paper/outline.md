@@ -196,7 +196,7 @@ citation schulman2017ppo amos2023amortized andrychowicz2016l2l bae2022apo
 ```text
 내용    docs/reproduce.md 참조
         paper/evidence_map.md 의 SHA-256
-        테스트 455개, protocol-freeze-stage2-v1 태그
+        테스트 455개, arxiv-submission-v1 태그
         정체성 3계층이 재실행을 막는 방식
 ```
 
