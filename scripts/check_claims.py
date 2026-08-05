@@ -180,6 +180,13 @@ def main() -> int:
     parser.add_argument("--ledger", type=Path, default=Path("paper/claim_ledger.md"))
     parser.add_argument("--draft", type=Path, default=Path("paper/draft.md"))
     parser.add_argument("--bib", type=Path, default=Path("paper/references.bib"))
+    parser.add_argument(
+        "--also",
+        nargs="*",
+        type=Path,
+        default=[Path("public/README.md")],
+        help="금지 표현을 함께 검사할 문서. 공개 README 도 주장을 한다",
+    )
     parser.add_argument("--strict", action="store_true", help="경고도 실패로 취급한다")
     args = parser.parse_args()
 
@@ -228,15 +235,21 @@ def main() -> int:
         if bad:
             errors.append(f"{claim.ident} (NOT SUPPORTED) 가 draft 에 주장으로 인용됐다")
 
-    # 3. 금지 표현
+    # 3. 금지 표현. 원고와 **공개 문서**를 같은 목록으로 본다.
+    # 공개 README 도 주장을 한다. 원고만 검사하면 README 로 과대주장이 새어 나간다.
     print()
     print("[3] 금지 표현 검사")
-    hits = scan_forbidden(args.draft)
-    if not hits:
-        print("  없음")
-    for line_no, word, text in hits:
-        print(f"  {args.draft.name}:{line_no}  '{word}'  {text}")
-        errors.append(f"{args.draft.name}:{line_no} 금지 표현 '{word}'")
+    targets = [args.draft] + [p for p in args.also if p.exists()]
+    total_hits = 0
+    for path in targets:
+        for line_no, word, text in scan_forbidden(path):
+            total_hits += 1
+            print(f"  {path}:{line_no}  '{word}'  {text}")
+            errors.append(f"{path}:{line_no} 금지 표현 '{word}'")
+    print(f"  대상 {len(targets)}개" + ("" if total_hits else ", 위반 없음"))
+    for path in args.also:
+        if not path.exists():
+            print(f"  건너뜀 (없음): {path}")
 
     # 4. 숫자가 있는 claim 은 근거 표기
     print()

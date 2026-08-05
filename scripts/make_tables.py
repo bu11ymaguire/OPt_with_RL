@@ -28,15 +28,29 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import sys
 from pathlib import Path
 
-from make_report import fmt_p, load, median, spec_of
+# **이 저장소의 src 를 우선한다.** 아래 project import 보다 먼저 와야 한다.
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if _SRC.is_dir() and str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
-from rl_newton.benchmark.metrics import RunSummary, compare_paired_delta
+from make_report import fmt_p, load, median, spec_of  # noqa: E402
+
+from rl_newton.benchmark.metrics import RunSummary, compare_paired_delta  # noqa: E402
+from rl_newton.reporting import load_public_grouped  # noqa: E402
 
 RAW_HELDOUT = "headroom_challenge-heldout_step_size_fixed_b8_9a18b6e9.jsonl"
 RAW_MICRO_CONTROL = "headroom_micro-neural_step_size_fixed_b8_0bec1125.jsonl"
 RAW_MICRO_FIXED_EVAL = "headroom_micro-neural_step_size_fixed_b8_9f3194be.jsonl"
+
+# 공개 저장소에는 raw 가 없다. `(공개 파일, acceptance_rule)` 로 대체한다.
+PUBLIC_EQUIVALENT = {
+    RAW_HELDOUT: ("heldout_quadratic.csv", None),
+    RAW_MICRO_CONTROL: ("micro_neural.csv", "control"),
+    RAW_MICRO_FIXED_EVAL: ("micro_neural.csv", "fixed_eval"),
+}
 
 # 원고의 컨트롤러 표기. LaTeX 에서는 `\texttt` 로 감싼다.
 LADDER_ROWS = (
@@ -105,7 +119,11 @@ def header(name: str, raw: str | tuple[str, ...]) -> list[str]:
         f"% 표: {name}",
     ]
     lines += [f"% raw: {s}" for s in sources]
-    lines.append("% SHA-256 은 paper/evidence_map.md 에 있다.")
+    lines.append("% raw 의 SHA-256 은 paper/evidence_map.md 에 있다.")
+    lines.append(
+        "% 공개 저장소에는 raw 가 없다. results/public/*.csv 에서 --public-dir 로 만들면"
+    )
+    lines.append("% 이 파일과 바이트 단위로 같아진다 (scripts/verify_public_results.py).")
     return lines
 
 
@@ -430,20 +448,38 @@ def main() -> int:
     parser.add_argument(
         "--budget-ge", type=float, default=150.0, help="배포 예산 GE. 비율 계산에만 쓴다"
     )
+    parser.add_argument(
+        "--public-dir",
+        type=Path,
+        default=None,
+        help="공개 CSV 에서 표를 만든다. raw 가 없는 공개 저장소에서 쓴다",
+    )
     args = parser.parse_args()
 
-    heldout_path = args.raw_dir / RAW_HELDOUT
-    control_path = args.raw_dir / RAW_MICRO_CONTROL
-    fixed_path = args.raw_dir / RAW_MICRO_FIXED_EVAL
-    missing = [p for p in (heldout_path, control_path, fixed_path) if not p.exists()]
+    def source(raw_name: str) -> tuple[dict[str, list[RunSummary]], dict[str, str]]:
+        """raw 또는 공개 CSV 에서 읽는다. 표 코드는 출처를 모른다."""
+        if args.public_dir is None:
+            return load(args.raw_dir / raw_name)
+        name, rule = PUBLIC_EQUIVALENT[raw_name]
+        return load_public_grouped(args.public_dir / name, acceptance_rule=rule)
+
+    names = (RAW_HELDOUT, RAW_MICRO_CONTROL, RAW_MICRO_FIXED_EVAL)
+    if args.public_dir is None:
+        missing = [args.raw_dir / n for n in names if not (args.raw_dir / n).exists()]
+        hint = "raw 결과가 없으면 표를 만들 수 없다. docs/reproduce.md 를 따른다."
+    else:
+        wanted = {args.public_dir / PUBLIC_EQUIVALENT[n][0] for n in names}
+        missing = sorted(p for p in wanted if not p.exists())
+        hint = "공개 CSV 가 없다. scripts/make_public_results.py 로 만든다."
     if missing:
         for p in missing:
             print(f"없음: {p}")
-        print("raw 결과가 없으면 표를 만들 수 없다. docs/reproduce.md 를 따른다.")
+        print(hint)
         return 2
 
+    print(f"소스: {'공개 CSV ' + str(args.public_dir) if args.public_dir else '비공개 raw'}")
     print("생성:")
-    hb, ha = load(heldout_path)
+    hb, ha = source(RAW_HELDOUT)
     write(
         args.out_dir / "heldout_absolute.tex",
         table_absolute(hb, ha, micro=False, raw=RAW_HELDOUT, label="held-out absolute"),
@@ -456,8 +492,8 @@ def main() -> int:
         table_cost(hb, ha, RAW_HELDOUT, budget_ge=args.budget_ge),
     )
 
-    cb, ca = load(control_path)
-    fb_, fa = load(fixed_path)
+    cb, ca = source(RAW_MICRO_CONTROL)
+    fb_, fa = source(RAW_MICRO_FIXED_EVAL)
     write(
         args.out_dir / "micro_absolute.tex",
         table_absolute(

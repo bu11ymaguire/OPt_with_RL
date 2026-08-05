@@ -20,9 +20,16 @@ import argparse
 import json
 import math
 import re
+import sys
 from pathlib import Path
 
-import matplotlib
+# **이 저장소의 src 를 우선한다.** 공개 저장소에서 설치 없이 실행하는 경우와
+# worktree 가 여러 개인 경우를 같은 방식으로 처리한다.
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if _SRC.is_dir() and str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+import matplotlib  # noqa: E402
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -33,12 +40,21 @@ from rl_newton.benchmark.metrics import (  # noqa: E402
     median_of,
 )
 from rl_newton.benchmark.store import ResultStore  # noqa: E402
+from rl_newton.reporting import load_public_grouped  # noqa: E402
 
 _SEED_SUFFIX = re.compile(r"_seed\d+$")
 
 HELD_OUT = "headroom_challenge-heldout_step_size_fixed_b8_9a18b6e9.jsonl"
 MICRO_CONTROL = "headroom_micro-neural_step_size_fixed_b8_0bec1125.jsonl"
 MICRO_FIXED = "headroom_micro-neural_step_size_fixed_b8_9f3194be.jsonl"
+
+# 공개 저장소에는 raw 가 없다. 같은 그림을 공개 CSV 에서도 만들 수 있어야 한다.
+# `(공개 파일, acceptance_rule)` 로 raw 파일명을 대체한다.
+PUBLIC_EQUIVALENT = {
+    HELD_OUT: ("heldout_quadratic.csv", None),
+    MICRO_CONTROL: ("micro_neural.csv", "control"),
+    MICRO_FIXED: ("micro_neural.csv", "fixed_eval"),
+}
 
 # 사다리 순서. 아래에서 위로 강해진다 (draft §3).
 LADDER = [
@@ -74,7 +90,7 @@ def regime_label(run: RunSummary) -> str:
     return f"batch {tail[2:]}" if tail.startswith("cs") else base
 
 
-def load(path: Path) -> tuple[dict[str, list[RunSummary]], dict[str, str]]:
+def load_raw(path: Path) -> tuple[dict[str, list[RunSummary]], dict[str, str]]:
     by_controller: dict[str, list[RunSummary]] = {}
     for record in ResultStore(path):
         if record.status != "completed" or record.summary is None:
@@ -89,6 +105,29 @@ def load(path: Path) -> tuple[dict[str, list[RunSummary]], dict[str, str]]:
             if label and label in by_controller:
                 alias["best_static" if family == "static" else f"best_{family}"] = label
     return by_controller, alias
+
+
+# `--public-dir` 로 전환되는 전역 소스. `main` 에서 한 번만 설정한다.
+_PUBLIC_DIR: Path | None = None
+
+
+def load(path: Path) -> tuple[dict[str, list[RunSummary]], dict[str, str]]:
+    """raw 또는 공개 CSV 에서 읽는다. 나머지 그림 코드는 출처를 모른다.
+
+    공개 저장소에는 raw 가 없으므로 두 경로가 모두 필요하다. **집계 코드를 복사하지
+    않는다.** 반환 모양이 같으므로 아래 그림 함수들은 그대로다.
+    """
+    if _PUBLIC_DIR is None:
+        return load_raw(path)
+    name, rule = PUBLIC_EQUIVALENT[path.name]
+    return load_public_grouped(_PUBLIC_DIR / name, acceptance_rule=rule)
+
+
+def source_exists(raw_dir: Path, raw_name: str) -> bool:
+    """이 그림에 필요한 입력이 있는가."""
+    if _PUBLIC_DIR is None:
+        return (raw_dir / raw_name).exists()
+    return (_PUBLIC_DIR / PUBLIC_EQUIVALENT[raw_name][0]).exists()
 
 
 def get(by_controller, alias, name) -> list[RunSummary]:
@@ -279,7 +318,7 @@ def _regime_table(by_controller, alias) -> tuple[list[str], dict[str, list[float
 def figure3(raw_dir: Path, out: Path) -> None:
     """model mismatch. regime 별 절대 개선과 committed 거절률."""
     path = raw_dir / MICRO_CONTROL
-    if not path.exists():
+    if not source_exists(raw_dir, MICRO_CONTROL):
         return
     by_controller, alias = load(path)
     regimes, values = _regime_table(by_controller, alias)
@@ -345,7 +384,7 @@ def figure4(raw_dir: Path, out: Path) -> None:
         "minibatch-local": raw_dir / MICRO_CONTROL,
         "fixed-evaluation": raw_dir / MICRO_FIXED,
     }
-    if not all(p.exists() for p in paths.values()):
+    if not all(source_exists(raw_dir, name) for name in (MICRO_CONTROL, MICRO_FIXED)):
         return
 
     comparisons = [
@@ -389,10 +428,19 @@ def figure4(raw_dir: Path, out: Path) -> None:
 
 
 def main() -> int:
+    global _PUBLIC_DIR
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-dir", type=Path, default=Path("results/raw"))
     parser.add_argument("--out-dir", type=Path, default=Path("paper/figures"))
+    parser.add_argument(
+        "--public-dir",
+        type=Path,
+        default=None,
+        help="공개 CSV 에서 그린다. raw 가 없는 공개 저장소에서 쓴다",
+    )
     args = parser.parse_args()
+    _PUBLIC_DIR = args.public_dir
+    print(f"소스: {'공개 CSV ' + str(args.public_dir) if args.public_dir else '비공개 raw'}")
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     jobs = [

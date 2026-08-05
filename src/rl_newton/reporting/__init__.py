@@ -9,6 +9,7 @@ notebook 과 검증 스크립트가 통계 구현을 복사하지 않도록 여�
 
 from rl_newton.reporting.public import (
     PUBLIC_COLUMNS,
+    load_public_grouped,
     load_public_results,
     paired,
     positive_count,
@@ -18,6 +19,7 @@ from rl_newton.reporting.public import (
 
 __all__ = [
     "PUBLIC_COLUMNS",
+    "load_public_grouped",
     "load_public_results",
     "paired",
     "positive_count",

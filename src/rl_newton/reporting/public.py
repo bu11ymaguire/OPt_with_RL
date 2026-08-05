@@ -34,6 +34,7 @@ from rl_newton.benchmark.metrics import PairedDelta, RunSummary, compare_paired_
 
 __all__ = [
     "PUBLIC_COLUMNS",
+    "load_public_grouped",
     "load_public_results",
     "paired",
     "positive_count",
@@ -184,6 +185,23 @@ def public_roles(
                     "acceptance_rule 로 분리해야 한다."
                 )
     return out
+
+
+def load_public_grouped(
+    path: str | Path, *, acceptance_rule: str | None = None
+) -> tuple[dict[str, list[RunSummary]], dict[str, str]]:
+    """`(controller -> runs, 역할 -> 라벨)`.
+
+    `scripts/make_report.py` 와 `scripts/make_figures.py` 의 `load()` 와 **같은 모양**을
+    반환한다. 그래서 두 스크립트가 raw 대신 공개 CSV 를 읽을 때 집계 코드를 복사하지
+    않고 이 함수만 갈아 끼우면 된다.
+
+    공개 저장소에는 raw 가 없으므로, 이 경로가 없으면 표와 그림을 재생성할 수 없다.
+    """
+    runs = load_public_results(path, acceptance_rule=acceptance_rule)
+    return split_by(runs, lambda r: r.controller), public_roles(
+        path, acceptance_rule=acceptance_rule
+    )
 
 
 def _select(
