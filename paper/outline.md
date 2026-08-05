@@ -196,7 +196,8 @@ citation schulman2017ppo amos2023amortized andrychowicz2016l2l bae2022apo
 ```text
 내용    docs/reproduce.md 참조
         paper/evidence_map.md 의 SHA-256
-        테스트 455개, arxiv-submission-v1 태그
+        테스트 465개
+        공개 저장소 URL 과 릴리스 태그 (아직 없다. 제출 전 채운다)
         정체성 3계층이 재실행을 막는 방식
 ```
 

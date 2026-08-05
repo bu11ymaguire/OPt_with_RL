@@ -87,19 +87,48 @@ a140ed8  D27
 ## 태그의 의미
 
 ```text
+protocol-freeze-stage2-v1   로컬 전용. push 하지 않는다 (아래)
 public-release-stage2-v1    개인정보 정리와 원고를 포함한 공개점
-arxiv-submission-v1         arXiv 제출 시점의 코드와 원고 (제출 시 생성)
+arxiv-submission-v1         arXiv 제출 시점의 코드와 원고. **아직 만들지 않았다**
 ```
 
-`docs/experiment_protocol.md` 의 `C2 protocol freeze` 절은 동결 시점에
-`git tag protocol-freeze-stage2-v1` 을 남기도록 규정했다. **그 태그는 실제로 만들어지지
-않았다.** 이전 판의 이 문서는 그것을 "로컬 기록으로 보존한다" 고 적었는데 사실이
-아니었다. 로컬에도 원격에도 없고 reflog 에도 흔적이 없다.
+### `protocol-freeze-stage2-v1`
 
-프로토콜 동결점의 내용은 `docs/experiment_protocol.md` 의 결정 `D1~D32` 와 변경
-이력에 전부 남아 있으므로, 태그 없이도 무엇이 언제 고정됐는지 확인할 수 있다.
-**없는 태그를 소급 생성하지 않는다.** 그 시점에 실제로 동결했다는 이력을 사후에
-만들어내는 셈이기 때문이다.
+`docs/experiment_protocol.md` 의 `C2 protocol freeze` 절은 동결 시점에 이 태그를
+남기고 이후 변경을 금지하도록 규정했다. 태그는 **존재한다.**
+
+```text
+annotated tag 16681b3 -> commit 40c84c3
+created 2026-08-04 21:53:22 +0900
+```
+
+그러나 시점과 대상이 규정과 다르다.
+
+```text
+17:48  e58e5cd  D24/D25  shrinking_Q4_narrow 동결   <- 규정된 태깅 시점
+19:07  0e5a182  D26      held-out confirmatory n=40
+21:47  40c84c3  D30/D31
+21:53  tag               protocol-freeze-stage2-v1 -> 40c84c3
+```
+
+동결 커밋보다 4시간 5분 뒤, confirmatory 실행 이후에 만들어졌다. 따라서 이 태그로는
+"held-out 실행 전에 config 가 고정됐다" 를 확인할 수 없다. 그 순서는 결정 기록
+`D24/D25` 와 동결 커밋 `e58e5cd` 가 근거다. `D1~D32` 에 무엇이 언제 고정됐는지 순서대로
+남아 있다. **태그를 소급해서 옮기지 않는다.**
+
+이 태그는 **원격에 올리지 않는다.** 가리키는 커밋 `40c84c3` 이 장치 이름 정리 이전이라
+push 하면 그 값이 공개 이력에 드러난다. private main 에 push 할 때 `--tags` 를 쓰지
+않는다.
+
+**clone 에서는 이 태그가 보이지 않는다.** 이 문서의 이전 판이 "태그가 만들어지지
+않았다" 고 적은 것은 clone 환경에서 판정했기 때문이며 사실이 아니었다. `git tag` 는
+HEAD reflog 를 쓰지 않으므로 reflog 검사로는 태그 존재를 판정할 수 없다.
+
+### 제출 전 게이트
+
+`arxiv-submission-v1` 과 공개 저장소 URL 은 아직 없다. 원고는 그 자리에 채움 표시를
+두고 있고 `scripts/check_latex.py --strict` 가 그것을 검출한다. **제출 전에 이 명령이
+통과해야 한다.**
 
 ## 공개 전 점검 목록
 

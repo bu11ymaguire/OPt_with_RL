@@ -510,21 +510,43 @@ status       EXPLORATORY (해석 주의 항목)
      표시용 config_hash 에 acceptance_loss 를 무조건 넣은 것도 같은 유형이었다.
      source: docs/experiment_protocol.md D32
 
-[E12] 프로토콜이 규정한 동결 태그를 만들지 않았다
+[E12] 동결 태그를 동결 시점이 아니라 Stage 2 종료 후에 만들었다
      docs/experiment_protocol.md 의 `C2 protocol freeze` 절은 config 고정 시점에
-     `git tag protocol-freeze-stage2-v1` 을 남기도록 규정했다. 그 태그는 만들어지지
-     않았다. 로컬과 원격 모두에 없고 reflog 에도 흔적이 없다. 이전 판의
-     PUBLIC_RELEASE_NOTES.md 는 그것을 "로컬 기록으로 보존한다" 고 적었는데 사실이
-     아니었다. 동결된 결정 자체는 D1~D32 에 순서대로 남아 있어 무엇이 언제 고정됐는지는
-     확인할 수 있으나, 태그 기반 diff 로 검증할 수는 없다.
-     **없는 태그를 소급 생성하지 않는다.** 그 시점에 동결했다는 이력을 사후에 만드는
-     셈이기 때문이다.
+     `git tag protocol-freeze-stage2-v1` 을 남기고 이후 변경을 금지하도록 규정했다.
+     태그는 존재한다. 그러나 시점과 대상이 규정과 다르다.
+
+       17:48  e58e5cd  D24/D25  shrinking_Q4_narrow 동결   <- 규정된 태깅 시점
+       19:07  0e5a182  D26      held-out confirmatory n=40
+       19:45  a140ed8  D27      micro-neural
+       20:04  b444b89  D28/D29  acceptance ablation
+       21:47  40c84c3  D30/D31
+       21:53  tag 16681b3  protocol-freeze-stage2-v1 -> 40c84c3
+
+     즉 태그는 동결 커밋보다 4시간 5분 뒤, **confirmatory 실행 이후**에 만들어졌고
+     동결 커밋이 아니라 Stage 2 종료 커밋을 가리킨다. 따라서 "held-out 실행 전에
+     config 가 고정됐다" 를 태그로 증명할 수 없다. 그 순서는 날짜가 붙은 결정 기록
+     D24/D25 와 동결 커밋 e58e5cd 자체가 증명한다.
+     태그는 원격에 올리지 않았다. 가리키는 커밋이 장치 이름 정리 이전이기 때문이다.
+     **소급해서 e58e5cd 로 태그를 옮기지 않는다.** 그 시점에 태깅했다는 이력을
+     사후에 만드는 셈이기 때문이다.
+
+     이 항목의 이전 판은 "그 태그는 만들어지지 않았다. 로컬과 원격 모두에 없다" 고
+     적었다. **그것이 틀렸다.** 원인은 그 기록을 clone 환경에서 작성했고 태그가
+     push 되지 않았다는 점이다. clone 에서는 `git tag -l`, `git ls-remote`, reflog 가
+     모두 빈 결과를 낸다. 덧붙여 `git tag` 는 HEAD reflog 를 쓰지 않으므로
+     "reflog 에 흔적이 없다" 는 애초에 태그 존재를 판정할 수 있는 검사가 아니었다.
+
      원고 문장:
        The protocol specified that a tag be created at the configuration-freeze
-       point. That tag was never created, so the freeze cannot be verified by a
-       tag-based diff. The frozen decisions are recorded in the protocol document,
-       and we did not create the tag retroactively.
-     source: docs/experiment_protocol.md (C2 protocol freeze 절)
+       point. The tag exists in the private repository, but it was created after the
+       confirmatory runs had completed and it points at the final Stage 2 commit
+       rather than at the freeze commit. It therefore cannot attest that the
+       configuration was fixed before the held-out runs; that ordering is attested by
+       the dated decision record and by the freeze commit itself. We did not move the
+       tag retroactively. The tag was not published, because the commit it marks
+       precedes the removal of device names from committed artifacts.
+     source: docs/experiment_protocol.md (C2 protocol freeze 절),
+             git for-each-ref refs/tags/protocol-freeze-stage2-v1
 ```
 
 ## 인용

@@ -66,9 +66,13 @@ Any value formed by adding or subtracting paired medians
     re-executed those runs; the fixed-budget comparisons were unaffected, and the
     cost-to-target statistic is a re-aggregation of the same measurements.
   \item[E12] The protocol specified that a tag be created at the
-    configuration-freeze point. That tag was never created, so the freeze cannot be
-    verified by a tag-based diff. The frozen decisions are recorded in the protocol
-    document, and we did not create the tag retroactively.
+    configuration-freeze point. The tag exists in the private repository, but it was
+    created after the confirmatory runs had completed and it points at the final
+    Stage~2 commit rather than at the freeze commit. It therefore cannot attest that
+    the configuration was fixed before the held-out runs; that ordering is attested by
+    the dated decision record and by the freeze commit itself. We did not move the tag
+    retroactively. The tag was not published, because the commit it marks precedes the
+    removal of device names from committed artifacts.
 \end{description}
 
 \subsection{Scope and confounds}

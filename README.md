@@ -252,9 +252,21 @@ planner 는 oracle 이며 배포 가능한 방법이 아니다
 ```
 
 `docs/experiment_protocol.md` 의 `C2 protocol freeze` 절은 이 시점에 `git tag
-protocol-freeze-stage2-v1` 을 남기도록 규정했으나 **그 태그는 실제로 만들어지지
-않았다.** 따라서 태그 기반 diff 로는 확인할 수 없고, 결정 기록과 claim ledger 가
-근거다. 이 이탈은 `paper/claim_ledger.md` 의 프로토콜 이탈 항목에 적어 두었다.
+protocol-freeze-stage2-v1` 을 남기도록 규정했다. 태그는 존재하지만 **동결 시점이 아니라
+Stage 2 종료 후에 만들어졌고 동결 커밋이 아니라 종료 커밋을 가리킨다.**
+
+```text
+17:48  e58e5cd  D24/D25  shrinking_Q4_narrow 동결   <- 규정된 태깅 시점
+19:07  0e5a182  D26      held-out confirmatory
+21:53  tag               protocol-freeze-stage2-v1 -> 40c84c3
+```
+
+따라서 "held-out 실행 전에 config 가 고정됐다" 를 태그로 확인할 수는 없다. 그 순서는
+날짜가 붙은 결정 기록 D24/D25 와 동결 커밋 `e58e5cd` 가 근거다. 태그를 소급해서 옮기지
+않았다. 이 이탈은 `paper/claim_ledger.md` 의 프로토콜 이탈 항목 `E12` 에 있다.
+
+이 태그는 **원격에 올리지 않았다.** 가리키는 커밋이 장치 이름 정리 이전이기 때문이다.
+따라서 clone 에서는 보이지 않는다. clone 만 보고 "태그가 없다" 고 판정하면 안 된다.
 
 ## 주장 검증
 

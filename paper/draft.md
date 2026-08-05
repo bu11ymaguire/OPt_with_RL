@@ -999,7 +999,7 @@ E8  게이트 C1 은 seed 1개 진단 baseline 이므로 판정에 쓰지 않았
 E9  3층 보고가 게이트 A1/B 에는 미적용이며 단일 통계를 쓴다
 E10 median 규약 불일치 (아래)
 E11 결과 식별자에 해당 run 이 쓰지 않는 설정이 포함되어 있었다 (아래)
-E12 프로토콜이 규정한 동결 태그를 만들지 않았다 (아래)
+E12 동결 태그를 동결 시점이 아니라 Stage 2 종료 후에 만들었다 (아래)
 ```
 
 **E5.**
@@ -1026,10 +1026,14 @@ E12 프로토콜이 규정한 동결 태그를 만들지 않았다 (아래)
 
 **E12.**
 
-> The protocol specified that a tag be created at the configuration-freeze point. That
-> tag was never created, so the freeze cannot be verified by a tag-based diff. The
-> frozen decisions are recorded in the protocol document, and we did not create the tag
-> retroactively.
+> The protocol specified that a tag be created at the configuration-freeze point. The
+> tag exists in the private repository, but it was created after the confirmatory runs
+> had completed and it points at the final Stage 2 commit rather than at the freeze
+> commit. It therefore cannot attest that the configuration was fixed before the
+> held-out runs; that ordering is attested by the dated decision record and by the
+> freeze commit itself. We did not move the tag retroactively. The tag was not
+> published, because the commit it marks precedes the removal of device names from
+> committed artifacts.
 
 ### 범위와 교란
 
@@ -1086,10 +1090,20 @@ Rosenbrock 의 benchmark 결함과 median 규약 수정은 `§15` 와 위 이탈
 자동 생성 결과표  docs/results_stage2.md
 raw checksum     paper/evidence_map.md  (SHA-256)
 주장 원장         paper/claim_ledger.md
-프로토콜          docs/experiment_protocol.md  (결정 D1~D31)
-코드·원고 공개점   arxiv-submission-v1
-테스트           455개
+인용 검증         paper/CITATIONS.md
+프로토콜          docs/experiment_protocol.md  (결정 D1~D32)
+공개 저장소 URL    [TO BE FILLED: public repository URL]
+공개 릴리스 태그   [TO BE FILLED: release tag]
+테스트           465개
 ```
+
+공개 저장소는 검증된 private 소스 트리의 allowlist export 이며 **Git 이력을 공유하지
+않는다.** export 와 함께 나가는 manifest 가 private 소스 커밋과 파일별 SHA-256 을
+기록하므로, private 이력을 공개하지 않고도 한 방향으로 두 트리를 대조할 수 있다.
+
+위 표의 채움 표시 두 줄은 아직 존재하지 않는 값이다. 공개 저장소를 만든 뒤 채운다.
+`scripts/check_claims.py` 가 그 표시를 세고 `scripts/check_latex.py --strict` 가 LaTeX
+쪽에서 실패시킨다. **제출 전에 남은 자리가 0 이어야 한다.**
 
 결과 저장소는 완료된 run 을 건너뛴다. 정체성 3층 분리 덕에 집계 코드나 문서를
 고쳐도 optimizer 가 재실행되지 않는다.

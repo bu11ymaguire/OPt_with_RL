@@ -59,6 +59,12 @@
 % 사전 등록 게이트 표기.
 \newcommand{\gate}[1]{\textsf{#1}}
 
+% 아직 존재하지 않는 값의 자리. **눈에 보이게** 조판한다. 조용히 비워 두면 존재하지
+% 않는 태그나 URL 을 실재하는 artifact 처럼 제시하는 사고가 난다(E12 와 같은 유형).
+% scripts/check_latex.py 가 이 표시를 검출하고 --strict 에서 실패한다.
+% 제출 전에 남은 자리가 0 이어야 한다.
+\newcommand{\PLACEHOLDER}[1]{\textbf{[TO BE FILLED: #1]}}
+
 \title{When Does Feedback Help?\\
 Planning and Model Mismatch in Hessian-Free Newton Control}
 

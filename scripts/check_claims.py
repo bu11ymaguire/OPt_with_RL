@@ -10,7 +10,8 @@
 4  숫자가 있는 claim 에 evidence source 가 있는가
 5  draft 의 claim ID 가 ledger 에 존재하는가
 6  draft 의 `[@key]` 가 references.bib 에 있고 서지정보가 TODO 가 아닌가
-   `[CITATION NEEDED]` 가 남아 있지 않은가
+   `[CITATION NEEDED]` 가 남아 있지 않은가 (실패)
+   `[TO BE FILLED: ...]` 가 남아 있지 않은가 (경고. 제출 전에 0 이어야 한다)
 ```
 
 **[6] 이 검사하지 않는 것.** 인용한 논문의 *내용*이 우리 주장을 실제로 지지하는지는
@@ -83,6 +84,8 @@ CITE_RE = re.compile(r"@([A-Za-z][A-Za-z0-9_:.\-]*)")
 BIB_ENTRY_RE = re.compile(r"^@\w+\{\s*([^,\s]+)\s*,", re.MULTILINE)
 # `[CITATION NEEDED]` 가 남아 있으면 인용 작업이 끝나지 않았다.
 CITATION_TODO_RE = re.compile(r"\[CITATION NEEDED\]")
+# 아직 존재하지 않는 값의 자리 (공개 저장소 URL, 릴리스 태그 등).
+FILL_TODO_RE = re.compile(r"\[TO BE FILLED:[^\]]*\]")
 # 금지 주장을 **하지 않겠다고 밝히는** 참조. NOT SUPPORTED claim 은 이 형태만 허용한다.
 AVOID_RE = re.compile(r"<!--\s*AVOID:\s*([A-Za-z0-9_]+)\s*-->")
 LEDGER_HEADING = re.compile(r"^###\s+(C\d+)\.\s+(.*)$")
@@ -276,6 +279,18 @@ def main() -> int:
     for line_no in todo_lines:
         print(f"  {args.draft.name}:{line_no}  [CITATION NEEDED] 가 남아 있다")
         errors.append(f"{args.draft.name}:{line_no} [CITATION NEEDED] 미해결")
+    # 아직 존재하지 않는 값의 자리. 인용과 달리 제출 직전에 채우므로 경고로 둔다.
+    fill_lines = [
+        (i, line.strip()[:90])
+        for i, line in enumerate(draft_text.splitlines(), start=1)
+        if FILL_TODO_RE.search(line)
+    ]
+    for line_no, text in fill_lines:
+        print(f"  {args.draft.name}:{line_no}  채움 표시  {text}")
+    if fill_lines:
+        warnings.append(
+            f"draft 에 채움 표시 {len(fill_lines)}개가 남아 있다. 제출 전에 0 이어야 한다"
+        )
     unused = sorted(set(bib) - used)
     if unused:
         print(f"  미인용 bib 항목 {len(unused)}개: {', '.join(unused)}")

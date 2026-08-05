@@ -16,7 +16,11 @@ Overfull/Underfull box, float 배치, 페이지 나눔 같은 조판 결과는 �
 5  정의했지만 참조하지 않은 \label 이 있는가 (경고)
 6  생성 파일(tables/*.tex)을 사람이 고친 흔적이 있는가
 7  금지 표현이 LaTeX 본문에 없는가 (check_claims 와 같은 목록)
+8  아직 채우지 않은 \PLACEHOLDER 가 남아 있는가
 ```
+
+**`--strict` 는 제출 전 게이트다.** `[8]` 이 비어 있어야 통과한다. 존재하지 않는
+태그나 URL 을 실재하는 artifact 처럼 제시하는 사고를 막는 장치다 (E12 와 같은 유형).
 
 `[7]` 은 `check_claims.py` 의 목록을 그대로 import 한다. 목록이 갈리면 markdown 은
 통과하고 LaTeX 만 과대주장하는 상태가 생긴다.
@@ -47,6 +51,8 @@ BIB_ENTRY_RE = re.compile(r"^@\w+\{\s*([^,\s]+)\s*,", re.MULTILINE)
 GENERATED_MARK = "scripts/make_tables.py 가 생성한다"
 # LaTeX 인용부호. 안쪽 문구는 부인하려고 옮겨 적은 것이므로 금지어 검사에서 뺀다.
 LATEX_QUOTE_RE = re.compile(r"``.*?''", re.DOTALL)
+# 아직 존재하지 않는 값의 자리. main.tex 의 \PLACEHOLDER 매크로.
+PLACEHOLDER_RE = re.compile(r"\\PLACEHOLDER\{([^}]*)\}")
 
 
 def strip_comments(text: str) -> str:
@@ -185,13 +191,10 @@ def main() -> int:
         errors.append(f"\\ref{{{name}}} 의 label 이 없다")
 
     print()
-    print("[5] 참조되지 않은 \\label (경고)")
+    print("[5] 참조되지 않은 \\label (정보)")
+    print("    절 anchor 는 참조 없이도 정상이다. 경고로 올리지 않는다.")
     orphan = sorted(labels - refs)
-    if orphan:
-        print(f"  {len(orphan)}개: {', '.join(orphan)}")
-        warnings.append(f"label {len(orphan)}개가 참조되지 않았다")
-    else:
-        print("  없음")
+    print(f"  {len(orphan)}개" + (f": {', '.join(orphan)}" if orphan else ""))
 
     print()
     print("[6] 생성 표를 손으로 고쳤는지")
@@ -213,6 +216,23 @@ def main() -> int:
             print(f"  {path.name}:{line_no}  '{word}'  {text}")
             errors.append(f"{path.name}:{line_no} 금지 표현 '{word}'")
     if total == 0:
+        print("  없음")
+
+    # 8. 아직 채우지 않은 자리. **제출 전 게이트다.**
+    print()
+    print("[8] 미해결 채움 표시 (\\PLACEHOLDER)")
+    print("    존재하지 않는 URL·태그를 실재하는 artifact 처럼 제시하는 사고를 막는다")
+    pending = 0
+    for path in sorted(bodies):
+        for i, line in enumerate(bodies[path].splitlines(), start=1):
+            for what in PLACEHOLDER_RE.findall(line):
+                pending += 1
+                print(f"  {path.name}:{i}  {what}")
+    if pending:
+        warnings.append(
+            f"채움 표시 {pending}개가 남아 있다. 제출 전에 0 이어야 한다"
+        )
+    else:
         print("  없음")
 
     print()
