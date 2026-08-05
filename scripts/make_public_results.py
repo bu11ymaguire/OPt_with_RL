@@ -306,8 +306,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    source = private_commit()
-    if args.require_clean and source["dirty"]:
+    # 아래 루프가 `source` 를 쓰므로 이름을 겹치지 않게 둔다.
+    source_commit = private_commit()
+    if args.require_clean and source_commit["dirty"]:
         print("**중단** 추적 중인 파일이 수정돼 있다.")
         print("  manifest 의 source.commit 이 이 데이터를 만든 코드를 가리키지 못한다.")
         print("  코드를 먼저 커밋한 뒤 다시 실행한다.")
@@ -357,7 +358,7 @@ def main() -> int:
 
     manifest = {
         "export_version": "public-results-v1",
-        "source": source,
+        "source": source_commit,
         "aggregation": {
             "median": "rl_newton.benchmark.metrics.median_of",
             "paired": "rl_newton.benchmark.metrics.compare_paired_delta",
