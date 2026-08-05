@@ -1092,7 +1092,7 @@ raw checksum     paper/evidence_map.md  (SHA-256)
 주장 원장         paper/claim_ledger.md
 인용 검증         paper/CITATIONS.md
 프로토콜          docs/experiment_protocol.md  (결정 D1~D32)
-공개 저장소 URL    [TO BE FILLED: public repository URL]
+공개 저장소       https://github.com/bu11ymaguire/When_Does_Feedback_Help
 공개 릴리스 태그   [TO BE FILLED: release tag]
 테스트           465개
 ```
@@ -1101,9 +1101,13 @@ raw checksum     paper/evidence_map.md  (SHA-256)
 않는다.** export 와 함께 나가는 manifest 가 private 소스 커밋과 파일별 SHA-256 을
 기록하므로, private 이력을 공개하지 않고도 한 방향으로 두 트리를 대조할 수 있다.
 
-위 표의 채움 표시 두 줄은 아직 존재하지 않는 값이다. 공개 저장소를 만든 뒤 채운다.
-`scripts/check_claims.py` 가 그 표시를 세고 `scripts/check_latex.py --strict` 가 LaTeX
-쪽에서 실패시킨다. **제출 전에 남은 자리가 0 이어야 한다.**
+export 에는 여기 보고한 모든 쌍별 통계를 다시 계산할 수 있는 행 단위 결과가 들어간다.
+쌍별 비교는 결정론적이므로(부트스트랩 10,000회, 고정 시드) median 과 CI 와 `p` 가
+근사가 아니라 **정확히** 재현된다.
+
+릴리스 태그는 아직 만들지 않았다. `scripts/check_claims.py` 가 그 채움 표시를 세고
+`scripts/check_latex.py --strict` 가 LaTeX 쪽에서 실패시킨다. **제출 전에 남은 자리가
+0 이어야 한다.**
 
 결과 저장소는 완료된 run 을 건너뛴다. 정체성 3층 분리 덕에 집계 코드나 문서를
 고쳐도 optimizer 가 재실행되지 않는다.
