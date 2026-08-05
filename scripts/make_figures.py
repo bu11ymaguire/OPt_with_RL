@@ -134,9 +134,14 @@ def figure1(raw_dir: Path, out: Path) -> None:
     axes[1].axvline(0.0, color="black", lw=0.8)
     axes[1].set_xlabel("paired $\\Delta$ vs tuned constant [nat]")
     axes[1].set_title("(b) paired improvement, 95% CI, $n=40$")
+    # 값 라벨을 막대 끝이 아니라 **CI 상한 바깥**에 둔다. 막대 끝에 두면 오차막대
+    # whisker 가 숫자를 관통해 읽을 수 없다.
+    upper = [d + h for d, h in zip(deltas, his, strict=True)]
+    pad = max(upper) * 0.03
+    axes[1].set_xlim(right=max(upper) + pad * 6.0)
     for i, v in enumerate(deltas):
         if i:
-            axes[1].text(v + 0.04, i, f"{v:+.2f}", va="center", fontsize=8)
+            axes[1].text(upper[i] + pad, i, f"{v:+.2f}", va="center", fontsize=8)
 
     # **막대를 서로 빼서 읽으면 안 된다.** 쌍별 차이의 median 은 선형이 아니다.
     # 실측: median(committed−constant)=+2.09, median(replanning−constant)=+1.69 인데
@@ -208,8 +213,12 @@ def figure2(raw_dir: Path, out: Path) -> None:
     axes[0].axhline(0.0, color="black", lw=0.8)
     axes[0].set_ylabel("paired $\\Delta$ [nat]")
     axes[0].set_title("(a) where the improvement comes from")
+    # 라벨을 CI 상한 위에 둔다. 막대 높이에 두면 whisker 가 숫자를 관통한다.
+    upper = [m + h for m, h in zip(meds, his, strict=True)]
+    pad = max(upper) * 0.04
+    axes[0].set_ylim(top=max(upper) + pad * 3.0)
     for i, v in enumerate(meds):
-        axes[0].text(i, v + 0.05, f"{v:+.3f}", ha="center", fontsize=8)
+        axes[0].text(i, upper[i] + pad * 0.5, f"{v:+.3f}", ha="center", fontsize=8)
 
     axes[0].text(
         0.5,
@@ -284,7 +293,11 @@ def figure3(raw_dir: Path, out: Path) -> None:
     axes[0].axhline(0.0, color="black", lw=0.8)
     axes[0].set_ylabel("median $J_E$ [nat]")
     axes[0].set_title("(a) terminal improvement by regime  ($n=3$ each)")
-    axes[0].legend(fontsize=7, ncols=2)
+    # legend 가 full-batch 막대를 덮지 않도록 위쪽 여백을 확보한다. 막대 높이가
+    # regime 간 20배 차이라 기본 ylim 으로는 legend 자리가 없다.
+    tallest = max(v for vals in values.values() for v in vals)
+    axes[0].set_ylim(top=tallest * 1.42)
+    axes[0].legend(fontsize=7, ncols=3, loc="upper center", framealpha=0.95)
     # GE 는 regime 내부에서만 compute-matched 다 (draft §2.2). regime 간 막대 높이를
     # FLOP 비교로 읽으면 안 된다.
     axes[0].text(
