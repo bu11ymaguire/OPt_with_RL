@@ -45,7 +45,7 @@ the data and would defeat the purpose of R2.
 
 \subsection{Results}
 
-\begin{table}[t]
+\begin{table}[!ht]
   \centering
   \input{tables/micro_absolute}
   \caption{Absolute median $\JE$ on the micro-neural problem, $n = 3$ per regime.
@@ -53,7 +53,7 @@ the data and would defeat the purpose of R2.
   \label{tab:micro-absolute}
 \end{table}
 
-\begin{table}[t]
+\begin{table}[!ht]
   \centering
   \input{tables/micro_paired}
   \caption{Paired differences by regime. \emph{We do not quote confidence
@@ -81,7 +81,7 @@ Controller & R1 & R2 (batch 64) & R2 (batch 128) \\
 In R2, \ctrl{committed} falls below even \ctrl{best\_static} and trails
 \ctrl{onestep} by $2.3$ to $4.4$~nat. The rejection rate is decisive.
 
-\begin{figure}[t]
+\begin{figure}[!ht]
   \centering
   \includegraphics[width=\textwidth]{figure3_model_mismatch.png}
   \caption{Rejection rate of \ctrl{committed}: $0.00$ in R1, $0.79$ at batch 128,

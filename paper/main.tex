@@ -26,8 +26,17 @@
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
+\usepackage{tabularx}
 \usepackage{graphicx}
 \usepackage{subcaption}
+% float 이 자기 절 제목을 추월하지 못하게 막는다. `[t]` 만 쓰면 표가 페이지 최상단으로
+% 올라가 제목 위에 놓인다 (§9 의 Table 7 이 그랬다). 절 경계에서 float 를 flush 한다.
+\usepackage[section]{placeins}
+% placeins 의 `section` 옵션은 \section 에만 barrier 를 넣는다. 표만 있는 절
+% (§7.4 Search cost, §10.2 Results, §11.3 Results) 은 subsection 단위라 barrier 가
+% 없으면 표가 제목을 앞지른다. \subsection 에도 같은 barrier 를 넣는다.
+\let\rlnOldSubsection\subsection
+\renewcommand{\subsection}{\FloatBarrier\rlnOldSubsection}
 \usepackage{xcolor}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage[hidelinks]{hyperref}
@@ -46,8 +55,14 @@
 Planning and Model Mismatch in Hessian-Free Newton Control}
 
 \author{%
-  % 저자 정보는 제출 직전에 채운다.
-  Anonymous
+  Jin-Uk Kim \\
+  Department of Data Science \\
+  Hanyang University \\
+  Seoul, Republic of Korea
+  % TODO 제출 전 결정. 공개할 이메일을 확정하면 아래 줄의 주석을 풀고 주소를 넣는다.
+  % arXiv 는 보통 연락 이메일 하나를 넣는 편이 유용하다. ORCID 나 project URL 도
+  % 같은 자리에 넣을 수 있다.
+  % \\ \texttt{...@hanyang.ac.kr}
 }
 \date{}
 

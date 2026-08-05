@@ -4,19 +4,20 @@
 We define the ladder from the bottom up. Every controller receives the same GE
 budget.
 
+% 설명 열은 가변 폭이다. `{ll}` 로 두면 onestep 행이 본문 폭을 23.9pt 넘친다.
 \begin{center}
-\begin{tabular}{ll}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
 \toprule
 Controller & Description \\
 \midrule
-\ctrl{best\_static}    & Constant action; best of six candidates tuned on dev seeds \\
+\ctrl{best\_static}     & Constant action; best of six candidates tuned on dev seeds \\
 \ctrl{best\_open\_loop} & Four-segment schedule with boundaries at consumed-GE fractions; state-blind \\
-\ctrl{heuristic}       & Rule-based damping adjustment \\
-\ctrl{onestep}         & Enumerates candidates each step and takes the immediately most efficient action \\
-\ctrl{committed}       & Forms one plan at the initial state and \emph{executes it unchanged} \\
-\ctrl{shrinking}       & Replans at every step with the remaining quota \\
+\ctrl{heuristic}        & Rule-based damping adjustment \\
+\ctrl{onestep}          & Enumerates candidates each step and takes the immediately most efficient action \\
+\ctrl{committed}        & Forms one plan at the initial state and \emph{executes it unchanged} \\
+\ctrl{shrinking}        & Replans at every step with the remaining quota \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \ctrl{shrinking} follows the receding-horizon structure of model predictive

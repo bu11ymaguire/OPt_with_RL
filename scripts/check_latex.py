@@ -1,8 +1,12 @@
-r"""LaTeX 원고의 구조를 LaTeX 없이 검사한다.
+r"""LaTeX 원고의 구조를 TeX 엔진 없이 빠르게 검사한다.
 
-이 환경에 TeX 배포가 없어 `pdflatex` 로 빌드할 수 없다. 컴파일 대신 **깨지기 쉬운
-참조만** 기계적으로 확인한다. 실제 조판 오류는 잡지 못하므로, 제출 전에 TeX 가 있는
-환경에서 한 번 빌드해야 한다.
+**깨지기 쉬운 참조만** 기계적으로 확인한다. 조판 자체는 이 검사의 대상이 아니고
+문서화된 4-pass 빌드로 따로 검증한다.
+
+    pdflatex main && bibtex main && pdflatex main && pdflatex main
+
+Overfull/Underfull box, float 배치, 페이지 나눔 같은 조판 결과는 여기서 잡지 못한다.
+빌드 로그를 직접 봐야 한다.
 
 ```text
 1  \input{...} 대상 파일이 존재하는가
