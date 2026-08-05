@@ -87,10 +87,17 @@ a140ed8  D27
 ## 태그의 의미
 
 ```text
-protocol-freeze-stage2-v1   로컬 전용. push 하지 않는다 (아래)
-public-release-stage2-v1    개인정보 정리와 원고를 포함한 공개점
-arxiv-submission-v1         arXiv 제출 시점의 코드와 원고. **아직 만들지 않았다**
+private 저장소 (이 저장소)
+  protocol-freeze-stage2-v1   로컬 전용. push 하지 않는다 (아래)
+  public-release-stage2-v1    개인정보 정리와 원고를 포함한 공개점
+  stage2-private-archive-v1   검증된 최종 상태. **아직 만들지 않았다**
+
+공개 저장소  https://github.com/bu11ymaguire/When_Does_Feedback_Help
+  arxiv-submission-v1         arXiv 제출 시점의 코드와 원고. **아직 만들지 않았다**
 ```
+
+공개 저장소는 생성됐고 비어 있다. 원고 `§15` 가 그 URL 을 인용한다. **릴리스 태그는
+아직 없으므로 원고에 채움 표시로 남아 있고, 태그를 push 한 뒤에 채운다.**
 
 ### `protocol-freeze-stage2-v1`
 
