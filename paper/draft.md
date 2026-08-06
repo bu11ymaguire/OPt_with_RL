@@ -1118,3 +1118,20 @@ scripts/check_latex.py --check-remote
 
 결과 저장소는 완료된 run 을 건너뛴다. 정체성 3층 분리 덕에 집계 코드나 문서를
 고쳐도 optimizer 가 재실행되지 않는다.
+
+### 15.3 개인정보 정리
+
+> Hostnames in committed public artifacts were replaced with stable pseudonymous labels
+> before public release. This sanitization did not modify experimental configurations,
+> results, checksums of raw numerical records, or scientific conclusions.
+
+**두 저장소를 구별해야 한다.** 이전 판은 "Git ancestry 에 과거 hostname 이 남아 있다"
+고만 적어, 새 공개 저장소에도 그것이 남아 있다는 뜻으로 읽힐 수 있었다.
+
+> Earlier hostnames remain in the private source repository's history. The public
+> reproducibility repository is an allowlist export with independent Git history and
+> contains only pseudonymous host identifiers.
+
+뒤 문장은 주장이 아니라 검사 결과다. `scripts/export_public_repo.py` 가 공개 대상 파일
+중 하나라도 장치 이름을 담으면 실행을 거부한다. 현재 export 에는 별칭 `host-a` 만
+있다 (summary JSON 9곳, cost-model YAML 2곳).
