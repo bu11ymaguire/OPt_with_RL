@@ -133,9 +133,26 @@ HEAD reflog 를 쓰지 않으므로 reflog 검사로는 태그 존재를 판정�
 
 ### 제출 전 게이트
 
-`arxiv-submission-v1` 과 공개 저장소 URL 은 아직 없다. 원고는 그 자리에 채움 표시를
-두고 있고 `scripts/check_latex.py --strict` 가 그것을 검출한다. **제출 전에 이 명령이
-통과해야 한다.**
+공개 저장소 URL 은 확정됐고 원고 `§15` 가 그것을 채워서 인용한다. `arxiv-submission-v1`
+태그는 아직 공개 저장소에 없다.
+
+**따라서 원고에 채움 표시는 남아 있지 않다.** `scripts/check_latex.py --strict` 의 채움
+표시 검사 `[8]` 은 0 건을 반환한다. 이름을 채우는 것과 그 artifact 가 실재하는 것은
+다른 문제이고, `[8]` 은 앞의 것만 본다. 실재 확인은 `[9]` 가 한다.
+
+```bash
+python scripts/check_latex.py --strict --check-remote
+```
+
+**제출 전에 이 명령이 통과해야 한다.** 2026-08-05 기준 조회 결과다.
+
+```text
+https://github.com/bu11ymaguire/When_Does_Feedback_Help   도달함, 저장소가 비어 있다
+arxiv-submission-v1                                       없음  ->  [9] 실패
+```
+
+즉 원고 `§15` 는 아직 존재하지 않는 릴리스를 published 로 서술하고 있다. 공개 저장소에
+export 를 push 하고 태그를 만든 뒤 이 명령을 다시 돌려야 한다.
 
 ## 공개 전 점검 목록
 

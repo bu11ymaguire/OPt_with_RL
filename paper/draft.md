@@ -1094,7 +1094,7 @@ raw checksum     paper/evidence_map.md  (SHA-256)
 프로토콜          docs/experiment_protocol.md  (결정 D1~D32)
 공개 저장소       https://github.com/bu11ymaguire/When_Does_Feedback_Help
 공개 릴리스 태그   arxiv-submission-v1
-테스트           465개
+테스트           497개 (구현 465 + 공개 재현 패키지 32)
 ```
 
 공개 저장소는 검증된 private 소스 트리의 allowlist export 이며 **Git 이력을 공유하지
