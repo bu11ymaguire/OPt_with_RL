@@ -1093,7 +1093,7 @@ raw checksum     paper/evidence_map.md  (SHA-256)
 인용 검증         paper/CITATIONS.md
 프로토콜          docs/experiment_protocol.md  (결정 D1~D32)
 공개 저장소       https://github.com/bu11ymaguire/When_Does_Feedback_Help
-공개 릴리스 태그   [TO BE FILLED: release tag]
+공개 릴리스 태그   arxiv-submission-v1
 테스트           465개
 ```
 
@@ -1105,9 +1105,16 @@ export 에는 여기 보고한 모든 쌍별 통계를 다시 계산할 수 있�
 쌍별 비교는 결정론적이므로(부트스트랩 10,000회, 고정 시드) median 과 CI 와 `p` 가
 근사가 아니라 **정확히** 재현된다.
 
-릴리스 태그는 아직 만들지 않았다. `scripts/check_claims.py` 가 그 채움 표시를 세고
-`scripts/check_latex.py --strict` 가 LaTeX 쪽에서 실패시킨다. **제출 전에 남은 자리가
-0 이어야 한다.**
+**릴리스 태그는 아직 공개 저장소에 없다.** 이름은 정했고 원고가 그것을 인용하지만,
+태그를 push 하기 전에 제출하면 원고가 존재하지 않는 artifact 를 가리킨다.
+
+```text
+scripts/check_latex.py --check-remote
+```
+
+이 명령이 원고가 인용한 URL 과 태그를 공개 원격에서 조회한다. **제출 전에 통과해야
+한다.** 채움 표시 검사보다 강하다. 이름을 채우는 것만으로는 그 artifact 가 존재하는지
+알 수 없기 때문이다.
 
 결과 저장소는 완료된 run 을 건너뛴다. 정체성 3층 분리 덕에 집계 코드나 문서를
 고쳐도 optimizer 가 재실행되지 않는다.
