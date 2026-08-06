@@ -45,6 +45,9 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 from rl_newton.benchmark.metrics import RunSummary  # noqa: E402
 from rl_newton.benchmark.store import ResultStore  # noqa: E402
 
+# public-export-allow-tokens: `--forbid` 기본값이 금지 문자열 **패턴**을 담는다.
+# 실제 장치 이름이나 사용자 경로는 담지 않는다.
+
 _SEED_SUFFIX = re.compile(r"_seed\d+$")
 _KAPPA = re.compile(r"quad_\w*?_?d(\d+)_k([0-9.e+]+)$")
 _MICRO_BATCH = re.compile(r"_cs(\d+)$")

@@ -24,6 +24,10 @@ from pathlib import Path
 
 from rl_newton.benchmark.store import HOST_ID_FALLBACK
 
+# public-export-allow-tokens: 이 파일은 장치 이름 **패턴**을 정규식과 주석에 담는다.
+# 실제 장치 이름은 담지 않는다. scripts/export_public_repo.py 의 금지어 검사가 이
+# 표식을 보고 면제하며, 면제 사실을 export manifest 에 기록한다.
+
 # 치환 대상. summary JSON 은 `hostname`, cost-model YAML 은 `host` 키를 쓴다.
 TARGETS = (
     Path("results/summaries"),

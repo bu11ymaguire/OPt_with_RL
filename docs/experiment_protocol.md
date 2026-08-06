@@ -20,7 +20,7 @@
 | Gymnasium | 1.3.0 |
 | Stable-Baselines3 | 2.9.0 |
 | 의존성 고정 | `uv.lock` (해시 포함, 커밋 대상) |
-| venv 위치 | `C:\Users\<user>\.venvs\opt-with-rl` (OneDrive 동기화 회피, `UV_PROJECT_ENVIRONMENT`) |
+| venv 위치 | 저장소 **밖**에 둔다 (`UV_PROJECT_ENVIRONMENT`). 파일 동기화 서비스가 있는 디렉터리 안에 두면 설치가 손상될 수 있다 |
 
 사전 확인 완료 사항:
 
