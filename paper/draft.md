@@ -1093,9 +1093,15 @@ raw checksum     paper/evidence_map.md  (SHA-256)
 인용 검증         paper/CITATIONS.md
 프로토콜          docs/experiment_protocol.md  (결정 D1~D32)
 공개 저장소       https://github.com/bu11ymaguire/When_Does_Feedback_Help
-공개 릴리스 태그   arxiv-submission-v1
-테스트           497개 (구현 465 + 공개 재현 패키지 32)
+공개 릴리스 태그   stage2-report-v1
+테스트           490개 (구현 458 + 공개 재현 패키지 32). CPU 수집 기준
 ```
+
+테스트 개수는 **장비 의존적이다.** `tests/test_cg.py` 와 `tests/test_hvp.py` 의 수치
+정확도 테스트 7개가 사용 가능한 device 로 파라미터화돼 있어, CUDA 가 있는 장비는 497개를
+수집한다. Stage 2 는 CPU 에서 수행됐고 재현 경로가 지정하는 환경도 CPU 이므로 CPU 기준
+값을 적는다. 이전 판이 CUDA 장비 기준 497 만 적어서 CPU 에서 clone 한 사람에게는 틀린
+값으로 보였다.
 
 공개 저장소는 검증된 private 소스 트리의 allowlist export 이며 **Git 이력을 공유하지
 않는다.** export 와 함께 나가는 manifest 가 private 소스 커밋과 파일별 SHA-256 을
@@ -1120,8 +1126,8 @@ matplotlib 판본        그림의 PNG 바이트에 직접 영향을 준다
 그래서 바이트 단위 동일성은 고정된 환경으로 한정해 말한다.
 
 `scripts/check_latex.py --check-remote` 가 원고가 인용한 URL 과 릴리스 태그를 공개
-원격에서 조회한다. **제출 전에 통과해야 한다.** 채움 표시 검사보다 강하다. 이름을
-채우는 것만으로는 그 artifact 가 존재하는지 알 수 없기 때문이다. 현재 통과한다.
+원격에서 조회한다. **공개 저장소를 갱신할 때마다 통과해야 한다.** 채움 표시 검사보다
+강하다. 이름을 채우는 것만으로는 그 artifact 가 존재하는지 알 수 없기 때문이다.
 
 결과 저장소는 완료된 run 을 건너뛴다. 정체성 3층 분리 덕에 집계 코드나 문서를
 고쳐도 optimizer 가 재실행되지 않는다.

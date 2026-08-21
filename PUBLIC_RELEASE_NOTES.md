@@ -1,7 +1,7 @@
 # Public release notes
 
 공개 전에 수행한 정리 내역이다. **실험 프로토콜 이탈이 아니다.** 프로토콜 이탈은
-`paper/claim_ledger.md` 의 `E1~E11` 에 별도로 기록돼 있다.
+`paper/claim_ledger.md` 의 `E1~E12` 에 별도로 기록돼 있다.
 
 ## `configs/cost_model.*.yaml` 의 GPU 정보에 대해
 
@@ -86,18 +86,34 @@ a140ed8  D27
 
 ## 태그의 의미
 
-```text
-private 저장소 (이 저장소)
-  protocol-freeze-stage2-v1   로컬 전용. push 하지 않는다 (아래)
-  public-release-stage2-v1    개인정보 정리와 원고를 포함한 공개점
-  stage2-private-archive-v1   검증된 최종 상태. **아직 만들지 않았다**
+**이 절의 이전 판은 사실과 달랐다.** "공개 저장소는 비어 있다", "릴리스 태그는 아직
+없다", "protocol-freeze 태그는 push 하지 않는다" 세 가지가 모두 틀렸다. 원격을 조회하지
+않고 계획을 서술한 것이 원인이다. 아래는 `git ls-remote` 로 확인한 값이다.
 
-공개 저장소  https://github.com/bu11ymaguire/When_Does_Feedback_Help
-  arxiv-submission-v1         arXiv 제출 시점의 코드와 원고. **아직 만들지 않았다**
+```text
+private 저장소  https://github.com/bu11ymaguire/OPt_with_RL   (private 유지)
+  protocol-freeze-stage2-v1   16681b3 -> 40c84c3   **origin 에 이미 있다** (아래)
+  public-release-stage2-v1    4b3e644 -> beee6f4   origin 에 있다
+  stage2-private-archive-v1   만들지 않았다
+
+공개 저장소     https://github.com/bu11ymaguire/When_Does_Feedback_Help   (public)
+  main                        내용 push 완료 (2026-08-06)
+  arxiv-submission-v1         **폐기 예정.** 아래 참조
+  stage2-report-v1            현재 원고 §15 가 인용하는 태그
 ```
 
-공개 저장소는 생성됐고 비어 있다. 원고 `§15` 가 그 URL 을 인용한다. **릴리스 태그는
-아직 없으므로 원고에 채움 표시로 남아 있고, 태그를 push 한 뒤에 채운다.**
+### `arxiv-submission-v1` 을 폐기하는 이유
+
+이 태그는 arXiv 제출을 전제로 만들어졌다. **제출은 일어나지 않았다.** 2026-08-07
+endorsement 요청이 거절됐고 그 이후 제출을 시도하지 않았다.
+
+따라서 이 이름은 **일어나지 않은 사건을 가리킨다.** 태그 이름만 보고 "arXiv 에 올라간
+버전" 으로 읽는 사람이 생기며, 그것이 이 저장소가 다른 곳에서 지키려는 기준과 정면으로
+어긋난다. 존재하지 않는 artifact 를 실재하는 것처럼 제시하는 사고를 막기 위해 `\PLACEHOLDER`
+와 `check_latex.py [9]` 를 도입했는데, 태그 이름 자체가 같은 종류의 허위 진술이었다.
+
+`stage2-report-v1` 로 교체한다. Stage 2 를 정리한 미심사 technical report 의 코드·데이터
+동결점이라는 뜻이며, 그 이상을 주장하지 않는다.
 
 ### `protocol-freeze-stage2-v1`
 
@@ -123,36 +139,46 @@ created 2026-08-04 21:53:22 +0900
 `D24/D25` 와 동결 커밋 `e58e5cd` 가 근거다. `D1~D32` 에 무엇이 언제 고정됐는지 순서대로
 남아 있다. **태그를 소급해서 옮기지 않는다.**
 
-이 태그는 **원격에 올리지 않는다.** 가리키는 커밋 `40c84c3` 이 장치 이름 정리 이전이라
-push 하면 그 값이 공개 이력에 드러난다. private main 에 push 할 때 `--tags` 를 쓰지
+**이 태그는 origin 에 이미 올라가 있다.** 이 문서의 이전 판은 "원격에 올리지 않는다" 고
+적었는데 사실이 아니었다.
+
+```bash
+git ls-remote --tags origin
+# 16681b30c8a34e5cd574e7b521f47feb00add2eb  refs/tags/protocol-freeze-stage2-v1
+# 40c84c326f6aa00ec45c45184c712c40222be607  refs/tags/protocol-freeze-stage2-v1^{}
+```
+
+가리키는 커밋 `40c84c3` 이 **장치 이름 정리 이전**이므로 실질적 함의가 있다.
+
+```text
+지금        origin 이 private 이므로 노출되지 않는다
+전환하면    이 저장소를 public 으로 바꾸면 40c84c3 의 hostname 이 드러난다
+```
+
+따라서 **이 저장소는 private 로 유지한다.** 공개는 `scripts/export_public_repo.py` 가
+`git init` 으로 새 이력을 만드는 별도 저장소로만 한다. 그 저장소는 이 태그를 포함하지
 않는다.
 
-**clone 에서는 이 태그가 보이지 않는다.** 이 문서의 이전 판이 "태그가 만들어지지
-않았다" 고 적은 것은 clone 환경에서 판정했기 때문이며 사실이 아니었다. `git tag` 는
-HEAD reflog 를 쓰지 않으므로 reflog 검사로는 태그 존재를 판정할 수 없다.
+이 저장소를 굳이 public 으로 바꾸려면 이력 재작성(`filter-repo`)과 force push 가 필요하고,
+그것은 파괴적 작업이며 이미 배포된 커밋 해시를 모두 무효화한다. **수행하지 않았다.**
 
-### 제출 전 게이트
+### 공개 갱신 게이트
 
-공개 저장소 URL 은 확정됐고 원고 `§15` 가 그것을 채워서 인용한다. `arxiv-submission-v1`
-태그는 아직 공개 저장소에 없다.
-
-**따라서 원고에 채움 표시는 남아 있지 않다.** `scripts/check_latex.py --strict` 의 채움
-표시 검사 `[8]` 은 0 건을 반환한다. 이름을 채우는 것과 그 artifact 가 실재하는 것은
-다른 문제이고, `[8]` 은 앞의 것만 본다. 실재 확인은 `[9]` 가 한다.
+`scripts/check_latex.py --strict` 의 채움 표시 검사 `[8]` 은 0 건을 반환한다. 이름을
+채우는 것과 그 artifact 가 실재하는 것은 다른 문제이고, `[8]` 은 앞의 것만 본다. 실재
+확인은 `[9]` 가 한다.
 
 ```bash
 python scripts/check_latex.py --strict --check-remote
 ```
 
-**제출 전에 이 명령이 통과해야 한다.** 2026-08-05 기준 조회 결과다.
+**공개 저장소를 갱신할 때마다 이 명령이 통과해야 한다.** 원고가 인용하는 태그를 바꿨으면
+공개 저장소에 그 태그를 만든 뒤에 돌린다. 순서를 뒤집으면 `[9]` 가 실패한다.
 
 ```text
-https://github.com/bu11ymaguire/When_Does_Feedback_Help   도달함, 저장소가 비어 있다
-arxiv-submission-v1                                       없음  ->  [9] 실패
+원고 §15 가 인용하는 것    stage2-report-v1
+공개 저장소에 있어야 하는 것  같은 이름의 태그
 ```
-
-즉 원고 `§15` 는 아직 존재하지 않는 릴리스를 published 로 서술하고 있다. 공개 저장소에
-export 를 push 하고 태그를 만든 뒤 이 명령을 다시 돌려야 한다.
 
 ## 공개 전 점검 목록
 
@@ -160,7 +186,7 @@ export 를 push 하고 태그를 만든 뒤 이 명령을 다시 돌려야 한�
 python -m pytest tests/ -q
 python -m ruff check .
 python scripts/check_claims.py
-python scripts/check_latex.py
+python scripts/check_latex.py --strict --check-remote
 python scripts/sanitize_public_artifacts.py --check
 python scripts/make_report.py   --out docs/results_stage2.md
 python scripts/make_manifest.py --out paper/evidence_map.md
@@ -205,10 +231,30 @@ schuirmann1987tost / lakens2017equivalence
 
 ## 남은 항목
 
+이 절의 이전 판은 세 항목을 미완으로 적었는데 두 개는 이미 해결됐다.
+
 ```text
-이 환경에 TeX 배포가 없어 PDF 를 빌드하지 않았다
-  paper/main.tex 와 sections/ 는 작성됐고 scripts/check_latex.py 로 구조만 검사했다
-  제출 전에 TeX 환경에서 pdflatex + bibtex 를 한 번 실행해야 한다
-LICENSE 와 CITATION.cff 가 없다
-외부 연구자 검토를 받지 않았다
+해결  MiKTeX 로 pdflatex + bibtex 4-pass 빌드가 된다
+        paper/main.pdf 는 .gitignore 에 있다. 재생성 가능한 산출물이므로 추적하지 않는다
+해결  LICENSE (MIT) 와 CITATION.cff 가 public/ 에 있다
+        export 시 RENAMES 규칙으로 공개 저장소 루트에 놓인다
+
+미해결  외부 연구자 검토를 받지 않았다
 ```
+
+### 외부 검토에 대해
+
+이것은 도구로 닫을 수 없는 유일한 항목이고, 실제로 시도했으며 실패했다. 기록해 둔다.
+
+```text
+2026-08-06  arXiv cs.LG endorsement 요청 (main.pdf 첨부)
+2026-08-07  거절. 사유: 원고가 AI 생성물로 보이며 endorse 할 수 없다
+```
+
+거절 사유를 반박하지 않는다. AI 보조 범위는 원고 `§15` 와 공개 README 에 적혀 있고,
+그 서술이 축소된 것도 아니다. 다만 **"AI 가 관여했다" 와 "주장이 증거를 넘었다" 는 다른
+문제**이므로, 후자에 대해서는 기계적으로 검사 가능한 형태를 남겼다 (`check_claims.py`,
+`claim_ledger.md`, `D1~D32`). 전자에 대해서는 방어하지 않고 공개한다.
+
+따라서 이 저장소는 **심사를 통과한 결과물이 아니라 검사 가능한 산출물**로 공개한다.
+원고 표지와 공개 README 상단에 그 지위를 명시했다.

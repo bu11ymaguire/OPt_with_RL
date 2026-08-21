@@ -83,7 +83,7 @@ src/rl_newton/
 scripts/          실행과 진단 (아래)
 docs/             프로토콜, 자동 생성 결과표, 재현 명령
 paper/            claim ledger, evidence map, outline, draft, figures
-tests/            455개
+tests/            490개 (CPU 수집 기준. CUDA 있으면 497개)
 ```
 
 ## 빠른 시작
@@ -222,15 +222,20 @@ planner 는 oracle 이며 배포 가능한 방법이 아니다
 게이트 C1 (fresh) 은 seed 1개 진단 baseline 이므로 판정에 쓰지 않는다
 ```
 
-프로토콜 이탈 `E1~E11` 은 `paper/claim_ledger.md` 에 전부 기록돼 있다.
+프로토콜 이탈 `E1~E12` 은 `paper/claim_ledger.md` 에 전부 기록돼 있다.
 
 ## 상태와 태그의 의미
 
 ```text
 실험    Stage 2 종료
-원고    초안 (paper/draft.md). 주장 강도 검토 중
-테스트  455개 통과
+원고    미심사 technical report. arXiv endorsement 거절로 preprint 공개는 하지 않았다
+테스트  490개 통과 (CPU). CUDA 있는 장비에서는 497개
 ```
+
+테스트 개수가 장비에 따라 다르다. `tests/test_cg.py` 와 `tests/test_hvp.py` 의 수치 정확도
+테스트 7개가 `torch.cuda.is_available()` 로 device 를 파라미터화한다. **개수를 문서에 적을
+때 어느 환경에서 센 값인지 함께 적는다.** 이전 판이 CUDA 장비 기준 497 만 적어서 CPU 에서
+clone 한 사람에게는 틀린 값으로 보였다.
 
 프로토콜 동결점은 **태그가 아니라 `docs/experiment_protocol.md` 의 결정 기록**으로
 확인한다. `D1~D32` 가 무엇을 언제 고정했는지 순서대로 남긴다.
@@ -265,8 +270,18 @@ Stage 2 종료 후에 만들어졌고 동결 커밋이 아니라 종료 커밋�
 날짜가 붙은 결정 기록 D24/D25 와 동결 커밋 `e58e5cd` 가 근거다. 태그를 소급해서 옮기지
 않았다. 이 이탈은 `paper/claim_ledger.md` 의 프로토콜 이탈 항목 `E12` 에 있다.
 
-이 태그는 **원격에 올리지 않았다.** 가리키는 커밋이 장치 이름 정리 이전이기 때문이다.
-따라서 clone 에서는 보이지 않는다. clone 만 보고 "태그가 없다" 고 판정하면 안 된다.
+이 태그는 **private 원격 `origin` 에 이미 올라가 있다.** `git ls-remote --tags origin`
+으로 확인된다. 이 문서의 이전 판은 "원격에 올리지 않았다" 고 적었는데 사실이 아니었다.
+
+```text
+16681b3  refs/tags/protocol-freeze-stage2-v1        (annotated)
+40c84c3  refs/tags/protocol-freeze-stage2-v1^{}     장치명 정리 이전 커밋
+```
+
+가리키는 커밋 `40c84c3` 이 **장치 이름 정리 이전**이므로 실질적 함의가 있다. 이 저장소를
+public 으로 전환하면 그 커밋의 hostname 이 드러난다. 공개는 `scripts/export_public_repo.py`
+가 만드는 별도 저장소로 하고 **이 저장소는 private 로 유지한다.** 공개 저장소는 이 태그를
+포함하지 않는다.
 
 ## 주장 검증
 
@@ -307,7 +322,7 @@ paper/CITATIONS.md     인용 검증의 유일한 기록
 `paper/CITATIONS.md` 의 `RISK` 항목은 특히 주의한다. 예를 들어 확장 Rosenbrock 인용은
 **본문에 어느 변종을 썼는지 명시해야** 성립한다.
 
-## 제출용 LaTeX
+## 원고 LaTeX
 
 `paper/draft.md` 가 내용의 source of truth 이고 LaTeX 는 표현 계층이다.
 
@@ -327,8 +342,22 @@ python scripts/check_latex.py
 ```
 
 `check_latex.py` 는 TeX 없이 `\input` 대상, 그림 파일, 인용 키, `\ref`/`\label` 만
-검사한다. **조판 오류는 잡지 못하므로** 제출 전에 TeX 환경에서 한 번 빌드해야 한다.
+검사한다. **조판 오류는 잡지 못하므로** 공개 전에 TeX 환경에서 한 번 빌드해야 한다.
 
 ```bash
 pdflatex main && bibtex main && pdflatex main && pdflatex main
 ```
+
+`paper/main.pdf` 는 `.gitignore` 에 있다. 재생성 가능한 산출물이므로 추적하지 않는다.
+빌드한 PDF 를 배포하려면 공개 저장소의 GitHub Release 에 첨부한다.
+
+원고의 지위는 표지에 적혀 있다.
+
+```text
+Technical report, August 2026
+Unrefereed. This document has not been peer reviewed and is not
+available from any preprint server.
+```
+
+**이 표기를 지우지 않는다.** PDF 만 따로 돌아다닐 때 심사를 통과한 논문으로 오독되는 것을
+막는 유일한 장치다. 경위는 `PUBLIC_RELEASE_NOTES.md` 의 `외부 검토에 대해` 절에 있다.
