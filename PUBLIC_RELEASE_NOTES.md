@@ -97,12 +97,15 @@ private 저장소  https://github.com/bu11ymaguire/OPt_with_RL   (private 유지
   stage2-private-archive-v1   만들지 않았다
 
 공개 저장소     https://github.com/bu11ymaguire/When_Does_Feedback_Help   (public)
-  main                        내용 push 완료 (2026-08-06)
-  arxiv-submission-v1         **폐기 예정.** 아래 참조
-  stage2-report-v1            현재 원고 §15 가 인용하는 태그
+  main                        bd395c4
+  stage2-report-v1            9e82fe0 -> bd395c4   원고 §15 가 인용하는 태그
+  arxiv-submission-v1         **삭제했다** (2026-08-21). 아래 참조
 ```
 
-### `arxiv-submission-v1` 을 폐기하는 이유
+`git ls-remote` 로 확인한 값이다. **이 표를 계획으로 채우지 않는다.** 이전 판이 그렇게
+해서 세 항목이 틀렸다.
+
+### `arxiv-submission-v1` 을 삭제한 이유
 
 이 태그는 arXiv 제출을 전제로 만들어졌다. **제출은 일어나지 않았다.** 2026-08-07
 endorsement 요청이 거절됐고 그 이후 제출을 시도하지 않았다.
@@ -112,8 +115,17 @@ endorsement 요청이 거절됐고 그 이후 제출을 시도하지 않았다.
 어긋난다. 존재하지 않는 artifact 를 실재하는 것처럼 제시하는 사고를 막기 위해 `\PLACEHOLDER`
 와 `check_latex.py [9]` 를 도입했는데, 태그 이름 자체가 같은 종류의 허위 진술이었다.
 
-`stage2-report-v1` 로 교체한다. Stage 2 를 정리한 미심사 technical report 의 코드·데이터
+`stage2-report-v1` 로 교체했다. Stage 2 를 정리한 미심사 technical report 의 코드·데이터
 동결점이라는 뜻이며, 그 이상을 주장하지 않는다.
+
+```bash
+git push origin stage2-report-v1
+git push origin :refs/tags/arxiv-submission-v1
+```
+
+삭제는 되돌리기 어려운 작업이므로 근거를 남긴다. 삭제 시점에 공개 저장소의 star, fork,
+watcher 가 모두 0 이었고 그 태그를 참조하는 외부 문서가 없었다. 원고도 이미
+`stage2-report-v1` 을 인용하도록 고친 뒤였다.
 
 ### `protocol-freeze-stage2-v1`
 
@@ -179,6 +191,16 @@ python scripts/check_latex.py --strict --check-remote
 원고 §15 가 인용하는 것    stage2-report-v1
 공개 저장소에 있어야 하는 것  같은 이름의 태그
 ```
+
+2026-08-21 기준 이 명령은 **통과한다** (exit 0). `[9]` 의 실제 조회 결과다.
+
+```text
+https://github.com/bu11ymaguire/When_Does_Feedback_Help   도달함
+stage2-report-v1                                          있음
+```
+
+이전 판은 이 자리에 "`[9]` 실패. 원고가 아직 존재하지 않는 릴리스를 published 로
+서술하고 있다" 고 적혀 있었다. 그 상태는 해소됐다.
 
 ## 공개 전 점검 목록
 
