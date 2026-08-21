@@ -80,11 +80,26 @@ src/rl_newton/
   benchmark/      정체성 3계층, 지표, paired 통계, eligibility audit
   utils/          파라미터 평탄화, 난수 스트림 분리
 
+  reporting/      공개 결과 위의 읽기 전용 계층
+
 scripts/          실행과 진단 (아래)
 docs/             프로토콜, 자동 생성 결과표, 재현 명령
 paper/            claim ledger, evidence map, outline, draft, figures
+notebooks/        개요와 재현 노트북 (공개 저장소로 나간다)
 tests/            490개 (CPU 수집 기준. CUDA 있으면 497개)
+
+results/public/   행 단위 공개 결과 2,418행과 manifest.
+                  raw 를 공개하지 않고 모든 통계를 재계산할 수 있게 하는 층이다
+public/           공개 저장소 루트에 놓이는 파일들. **이 저장소에서는 하위 디렉터리**
+                  README.md      한국어. 공개 저장소의 기본 README
+                  README.en.md   영문
+                  LICENSE        MIT
+                  CITATION.cff   인용 메타데이터
+                  .gitignore     공개용
 ```
+
+`public/` 이 하위 디렉터리인 이유는 private 루트의 `README.md`(이 파일)를 덮지 않기
+위해서다. `scripts/export_public_repo.py` 의 `RENAMES` 가 export 시점에 루트로 옮긴다.
 
 ## 빠른 시작
 
@@ -321,6 +336,53 @@ paper/CITATIONS.md     인용 검증의 유일한 기록
 
 `paper/CITATIONS.md` 의 `RISK` 항목은 특히 주의한다. 예를 들어 확장 Rosenbrock 인용은
 **본문에 어느 변종을 썼는지 명시해야** 성립한다.
+
+## 공개 저장소
+
+이 저장소는 **private 로 유지한다.** 공개는 별도 저장소로 한다.
+
+```text
+private  https://github.com/bu11ymaguire/OPt_with_RL              작업 저장소
+public   https://github.com/bu11ymaguire/When_Does_Feedback_Help  공개 산출물
+```
+
+**두 저장소는 Git 이력을 공유하지 않는다.** 같은 `.git` 을 새 원격에 push 하면 과거
+커밋의 장치 이름과 중간 시행착오가 함께 공개되고, 장치 이름을 정리한 이유가 사라진다.
+
+```bash
+python scripts/export_public_repo.py --dest ..\OPt_with_RL_public_stage --require-clean --force
+```
+
+`--dest` 가 이미 공개 저장소를 가리키는 clone 이면 **갱신 모드**로 동작한다. 그 원격이
+선언된 공개 저장소인지 확인한 뒤 `.git` 만 보존하고 나머지를 갈아치운다. 따라서 공개
+이력 위에 커밋이 쌓이고 force push 가 필요하지 않다.
+
+**allowlist 방식이다.** 무엇을 뺄지가 아니라 무엇을 넣을지 적는다. denylist 는 새 파일이
+생길 때마다 조용히 새어 나가므로 공개 준비에 쓰면 안 된다.
+
+```text
+나간다      src, scripts, tests, configs, uv.lock, notebooks
+            results/public/*.csv, results/summaries/*.json
+            paper/main.tex, sections, tables, figures
+            원고 §15 가 artifact 로 인용하는 기록 (claim_ledger, CITATIONS,
+              evidence_map, docs/reproduce.md, results_stage2.md,
+              experiment_protocol.md). 인용했으므로 없으면 인용이 거짓이 된다
+안 나간다   .git, results/raw/*.jsonl, results/checkpoints
+            paper/draft.md, paper/outline.md, paper/REVIEW_PACKAGE.md
+            PUBLIC_RELEASE_NOTES.md, 이 README, .kiro/
+            docs/*.png  (제3자의 이름과 얼굴이 찍힌 스크린샷이 들어온다)
+```
+
+`docs/*.png` 를 와일드카드로 열지 않는다. `docs/` 에 스크린샷을 떨구는 순간 조용히
+공개된다. 공개할 이미지는 `paper/figures/` 에 두거나 ALLOWLIST 에 파일 단위로 적는다.
+
+export 는 금지 문자열(`DESKTOP-`, `OneDrive`, `C:\Users`, 사용자 경로)이 공개 대상 파일에
+나오면 **중단한다.** 개인정보 정리 도구 자신은 그 패턴을 담을 수밖에 없으므로
+`public-export-allow-tokens` 표식을 스스로 선언하고, 표식을 쓴 파일은 export 출력과
+manifest 에 드러난다.
+
+릴리스 태그 상태와 공개 절차는 `PUBLIC_RELEASE_NOTES.md` 에 있다. **그 문서는 공개되지
+않는다.**
 
 ## 원고 LaTeX
 
